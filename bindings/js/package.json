@@ -1,0 +1,32 @@
+{
+  "name": "tapline",
+  "version": "0.1.0",
+  "description": "Install Steam apps, dedicated servers and Workshop content. A steamcmd replacement, for Deno, Bun and Node.",
+  "license": "MPL-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "koffi": "^3.1.6"
+  },
+  "peerDependenciesMeta": {
+    "koffi": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test:deno": "deno test --allow-ffi --allow-env --allow-read --unstable-ffi test/",
+    "test:bun": "bun test test/",
+    "test:node": "node --test test/"
+  }
+}

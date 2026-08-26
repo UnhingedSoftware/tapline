@@ -1,0 +1,445 @@
+/**
+ * Loading the shared library, in whichever runtime we happen to be.
+ *
+ * The three runtimes disagree about everything except that they can call a C
+ * function, so this module is the only place that knows which one we are in.
+ * Everything above it sees one `Ffi` object.
+ *
+ * The important difference is how `tapline_job_next` is called. It blocks until
+ * an event arrives or its timeout elapses:
+ *
+ * - Deno marks it `nonblocking`, which runs it on a thread pool and returns a
+ *   real promise. No polling, no latency.
+ * - Node's koffi has `.async()`, same idea.
+ * - Bun's FFI is synchronous only, so it is called with a zero timeout and
+ *   polled. That costs a wake-up every few milliseconds during a download and
+ *   nothing at all when idle.
+ */
+
+/** How the library is reached, regardless of runtime. */
+export interface Ffi {
+  install(
+    app: number,
+    dir: string,
+    branch: string | null,
+    concurrency: number,
+    os: number,
+    validate: number,
+    includeDlc: number,
+    fileModes: number,
+  ): bigint;
+  plan(
+    app: number,
+    dir: string,
+    branch: string | null,
+    os: number,
+    includeDlc: number,
+  ): bigint;
+  workshop(app: number, item: bigint, dir: string, concurrency: number): bigint;
+  /** Waits for the next event. Resolves to null when the job is over. */
+  next(job: bigint, timeoutMs: number): Promise<string | null>;
+  cancel(job: bigint): void;
+  free(job: bigint): void;
+  version(): string;
+  /** True when `next` genuinely suspends rather than polling. */
+  readonly nativeAsync: boolean;
+}
+
+/** Return codes, matching the Rust constants. */
+export const OK = 0;
+export const TIMEOUT = 1;
+export const DONE = 2;
+export const BUFFER_TOO_SMALL = -1;
+export const BAD_ARGUMENT = -2;
+
+/** Most events are well under this; the buffer grows if one is not. */
+const INITIAL_BUFFER = 4096;
+
+/** NUL-terminated UTF-8, which is what a `const char *` means. */
+function cstring(value: string): Uint8Array {
+  const bytes = new TextEncoder().encode(value);
+  const out = new Uint8Array(bytes.length + 1);
+  out.set(bytes);
+  return out;
+}
+
+/** Where the shared library is. */
+export function libraryPath(): string {
+  const override = getEnv("TAPLINE_LIB");
+  if (override) return override;
+
+  const platform = getPlatform();
+  const name =
+    platform === "darwin"
+      ? "libtapline_ffi.dylib"
+      : platform === "win32"
+        ? "tapline_ffi.dll"
+        : "libtapline_ffi.so";
+
+  // Beside the package first, then the cargo target directory, which is where
+  // it is during development and the single most common reason for a confusing
+  // "library not found" while working on tapline itself.
+  return getEnv("TAPLINE_TARGET_DIR")
+    ? `${getEnv("TAPLINE_TARGET_DIR")}/${name}`
+    : name;
+}
+
+function getEnv(key: string): string | undefined {
+  // deno-lint-ignore no-explicit-any
+  const g = globalThis as any;
+  if (g.Deno?.env?.get) return g.Deno.env.get(key) ?? undefined;
+  if (g.process?.env) return g.process.env[key];
+  return undefined;
+}
+
+function getPlatform(): string {
+  // deno-lint-ignore no-explicit-any
+  const g = globalThis as any;
+  if (g.Deno?.build?.os) {
+    const os = g.Deno.build.os;
+    return os === "windows" ? "win32" : os;
+  }
+  return g.process?.platform ?? "linux";
+}
+
+/** Which runtime this is. */
+export function detectRuntime(): "deno" | "bun" | "node" {
+  // deno-lint-ignore no-explicit-any
+  const g = globalThis as any;
+  if (g.Deno?.dlopen) return "deno";
+  if (g.Bun) return "bun";
+  return "node";
+}
+
+/** Opens the library for the current runtime. */
+export async function load(path = libraryPath()): Promise<Ffi> {
+  switch (detectRuntime()) {
+    case "deno":
+      return loadDeno(path);
+    case "bun":
+      return loadBun(path);
+    default:
+      return loadNode(path);
+  }
+}
+
+/** Reads a job pointer written through an out-parameter. */
+function readJobPointer(out: BigUint64Array, code: number, what: string): bigint {
+  if (code !== OK) {
+    throw new Error(`${what} failed (code ${code})`);
+  }
+  const job = out[0];
+  if (job === undefined || job === 0n) {
+    throw new Error(`${what} returned no job`);
+  }
+  return job;
+}
+
+// --- Deno ------------------------------------------------------------------
+
+async function loadDeno(path: string): Promise<Ffi> {
+  // deno-lint-ignore no-explicit-any
+  const Deno = (globalThis as any).Deno;
+  const lib = Deno.dlopen(path, {
+    tapline_install: {
+      parameters: ["u32", "buffer", "buffer", "u32", "u8", "u8", "u8", "u8", "buffer"],
+      result: "i32",
+    },
+    tapline_plan: {
+      parameters: ["u32", "buffer", "buffer", "u8", "u8", "buffer"],
+      result: "i32",
+    },
+    tapline_workshop_download: {
+      parameters: ["u32", "u64", "buffer", "u32", "buffer"],
+      result: "i32",
+    },
+    tapline_job_next: {
+      parameters: ["pointer", "u32", "buffer", "usize", "buffer"],
+      result: "i32",
+      // The whole reason this design uses a queue instead of callbacks: Deno
+      // turns a blocking C call into a promise for free, on its own threads.
+      nonblocking: true,
+    },
+    tapline_job_cancel: { parameters: ["pointer"], result: "void" },
+    tapline_job_free: { parameters: ["pointer"], result: "void" },
+    tapline_version: { parameters: [], result: "pointer" },
+  });
+
+  const ptr = (value: bigint) => Deno.UnsafePointer.create(value);
+
+  return {
+    nativeAsync: true,
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_install(
+        app,
+        cstring(dir),
+        branch === null ? null : cstring(branch),
+        concurrency,
+        os,
+        validate,
+        includeDlc,
+        fileModes,
+        new Uint8Array(out.buffer),
+      );
+      return readJobPointer(out, code, "install");
+    },
+    plan(app, dir, branch, os, includeDlc) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_plan(
+        app,
+        cstring(dir),
+        branch === null ? null : cstring(branch),
+        os,
+        includeDlc,
+        new Uint8Array(out.buffer),
+      );
+      return readJobPointer(out, code, "plan");
+    },
+    workshop(app, item, dir, concurrency) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_workshop_download(
+        app,
+        item,
+        cstring(dir),
+        concurrency,
+        new Uint8Array(out.buffer),
+      );
+      return readJobPointer(out, code, "workshop download");
+    },
+    async next(job, timeoutMs) {
+      let buffer = new Uint8Array(INITIAL_BUFFER);
+      for (;;) {
+        const len = new BigUint64Array(1);
+        const code = await lib.symbols.tapline_job_next(
+          ptr(job),
+          timeoutMs,
+          buffer,
+          BigInt(buffer.length),
+          new Uint8Array(len.buffer),
+        );
+        const needed = Number(len[0] ?? 0n);
+        if (code === BUFFER_TOO_SMALL) {
+          buffer = new Uint8Array(needed);
+          continue;
+        }
+        if (code === DONE) return null;
+        if (code === TIMEOUT) return "";
+        if (code !== OK) throw new Error(`tapline_job_next failed (${code})`);
+        return new TextDecoder().decode(buffer.subarray(0, needed));
+      }
+    },
+    cancel(job) {
+      lib.symbols.tapline_job_cancel(ptr(job));
+    },
+    free(job) {
+      lib.symbols.tapline_job_free(ptr(job));
+    },
+    version() {
+      const raw = lib.symbols.tapline_version();
+      return new Deno.UnsafePointerView(raw).getCString();
+    },
+  };
+}
+
+// --- Bun -------------------------------------------------------------------
+
+async function loadBun(path: string): Promise<Ffi> {
+  const { dlopen, FFIType, ptr, CString } = await import("bun:ffi");
+  const lib = dlopen(path, {
+    tapline_install: {
+      args: [
+        FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32,
+        FFIType.u8, FFIType.u8, FFIType.u8, FFIType.u8, FFIType.ptr,
+      ],
+      returns: FFIType.i32,
+    },
+    tapline_plan: {
+      args: [FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u8, FFIType.u8, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    tapline_workshop_download: {
+      args: [FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    tapline_job_next: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u64, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    tapline_job_cancel: { args: [FFIType.ptr], returns: FFIType.void },
+    tapline_job_free: { args: [FFIType.ptr], returns: FFIType.void },
+    tapline_version: { args: [], returns: FFIType.ptr },
+  });
+
+  // Bun's FFI has no async form, so a blocking call would block the only
+  // thread that can resolve the promise. Zero timeout plus a yield is the
+  // honest translation: it never blocks, and it costs one wake-up per tick.
+  const POLL_MS = 4;
+
+  // Bun wants pointers as numbers and rejects a BigInt outright — the out
+  // parameter hands one back as a BigUint64Array element, so it is converted
+  // here rather than in the shared code. Exact: Linux user-space addresses are
+  // below 2^47, well inside what a double represents without loss.
+  const asBunPointer = (job: bigint) => Number(job);
+
+  return {
+    nativeAsync: false,
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_install(
+        app, ptr(cstring(dir)), branch === null ? null : ptr(cstring(branch)),
+        concurrency, os, validate, includeDlc, fileModes, ptr(out),
+      );
+      return readJobPointer(out, code, "install");
+    },
+    plan(app, dir, branch, os, includeDlc) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_plan(
+        app, ptr(cstring(dir)), branch === null ? null : ptr(cstring(branch)),
+        os, includeDlc, ptr(out),
+      );
+      return readJobPointer(out, code, "plan");
+    },
+    workshop(app, item, dir, concurrency) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_workshop_download(
+        app, item, ptr(cstring(dir)), concurrency, ptr(out),
+      );
+      return readJobPointer(out, code, "workshop download");
+    },
+    async next(job, timeoutMs) {
+      let buffer = new Uint8Array(INITIAL_BUFFER);
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const len = new BigUint64Array(1);
+        const code = lib.symbols.tapline_job_next(
+          asBunPointer(job), 0, ptr(buffer), BigInt(buffer.length), ptr(len),
+        );
+        const needed = Number(len[0] ?? 0n);
+        if (code === BUFFER_TOO_SMALL) {
+          buffer = new Uint8Array(needed);
+          continue;
+        }
+        if (code === DONE) return null;
+        if (code === OK) {
+          return new TextDecoder().decode(buffer.subarray(0, needed));
+        }
+        if (code !== TIMEOUT) throw new Error(`tapline_job_next failed (${code})`);
+        if (Date.now() >= deadline) return "";
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      }
+    },
+    cancel(job) {
+      lib.symbols.tapline_job_cancel(asBunPointer(job));
+    },
+    free(job) {
+      lib.symbols.tapline_job_free(asBunPointer(job));
+    },
+    version() {
+      return new CString(lib.symbols.tapline_version()).toString();
+    },
+  };
+}
+
+// --- Node ------------------------------------------------------------------
+
+async function loadNode(path: string): Promise<Ffi> {
+  let koffi: typeof import("koffi");
+  try {
+    koffi = await import("koffi");
+  } catch {
+    throw new Error(
+      "Node has no built-in FFI, so tapline needs koffi here: `npm install koffi`. " +
+        "Deno and Bun need nothing.",
+    );
+  }
+
+  const lib = koffi.load(path);
+  const install = lib.func(
+    "int tapline_install(uint32_t, const char*, const char*, uint32_t, uint8_t, uint8_t, uint8_t, uint8_t, _Out_ void**)",
+  );
+  const planFn = lib.func(
+    "int tapline_plan(uint32_t, const char*, const char*, uint8_t, uint8_t, _Out_ void**)",
+  );
+  const workshop = lib.func(
+    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
+  );
+  const next = lib.func(
+    "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
+  );
+  const cancel = lib.func("void tapline_job_cancel(void*)");
+  const free = lib.func("void tapline_job_free(void*)");
+  const version = lib.func("const char* tapline_version()");
+
+  const asPointer = (out: unknown[]): bigint => {
+    const value = out[0];
+    return typeof value === "bigint" ? value : BigInt(koffi.address(value as never));
+  };
+
+  return {
+    nativeAsync: true,
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
+      const out: unknown[] = [null];
+      const code = install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, out);
+      if (code !== OK) throw new Error(`install failed (code ${code})`);
+      return asPointer(out);
+    },
+    plan(app, dir, branch, os, includeDlc) {
+      const out: unknown[] = [null];
+      const code = planFn(app, dir, branch, os, includeDlc, out);
+      if (code !== OK) throw new Error(`plan failed (code ${code})`);
+      return asPointer(out);
+    },
+    workshop(app, item, dir, concurrency) {
+      const out: unknown[] = [null];
+      const code = workshop(app, item, dir, concurrency, out);
+      if (code !== OK) throw new Error(`workshop download failed (code ${code})`);
+      return asPointer(out);
+    },
+    next(job, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        const buffer = Buffer.alloc(INITIAL_BUFFER);
+        const len = [0];
+        next.async(
+          job,
+          timeoutMs,
+          buffer,
+          buffer.length,
+          len,
+          (error: Error | null, code: number) => {
+            if (error) return reject(error);
+            const needed = Number(len[0] ?? 0);
+            if (code === BUFFER_TOO_SMALL) {
+              const bigger = Buffer.alloc(needed);
+              return next.async(
+                job, 0, bigger, bigger.length, len,
+                (err2: Error | null, code2: number) => {
+                  if (err2) return reject(err2);
+                  if (code2 === DONE) return resolve(null);
+                  if (code2 === TIMEOUT) return resolve("");
+                  if (code2 !== OK) {
+                    return reject(new Error(`tapline_job_next failed (${code2})`));
+                  }
+                  resolve(bigger.subarray(0, Number(len[0] ?? 0)).toString("utf8"));
+                },
+              );
+            }
+            if (code === DONE) return resolve(null);
+            if (code === TIMEOUT) return resolve("");
+            if (code !== OK) return reject(new Error(`tapline_job_next failed (${code})`));
+            resolve(buffer.subarray(0, needed).toString("utf8"));
+          },
+        );
+      });
+    },
+    cancel(job) {
+      cancel(job);
+    },
+    free(job) {
+      free(job);
+    },
+    version() {
+      return version();
+    },
+  };
+}

@@ -1331,6 +1331,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-ffi"
+version = "0.1.0"
+dependencies = [
+ "tapline",
+ "tapline-ids",
+ "tokio",
+]
+
+[[package]]
 name = "tapline-fs"
 version = "0.1.0"
 dependencies = [

@@ -173,6 +173,33 @@ It also never executes a depot's `installscript.vdf`. steamcmd does; tapline
 parses it and reports it. Installing a game server should not be a
 remote-code-execution primitive.
 
+## From JavaScript
+
+There is a C ABI and a TypeScript package on top of it, so Deno, Bun and Node
+can install Steam content without spawning anything:
+
+```ts
+import { install, plan } from "tapline";
+
+const { downloadBytes } = await plan({ app: 4020, dir: "/srv/gmod" });
+
+await install({
+  app: 4020,
+  dir: "/srv/gmod",
+  onProgress: (p) => console.log(`${p.percent.toFixed(1)}%`),
+});
+```
+
+The same object is awaitable, async-iterable, cancellable and callback-able.
+No function pointer crosses the FFI boundary — jobs push events into a queue
+and the binding pulls them — because a download thread calling into a torn-down
+isolate takes the host process with it, and all three runtimes share that
+failure mode. See `bindings/js/README.md` for the reasoning and
+`crates/tapline-ffi/include/tapline.h` for the C API.
+
+Verified on Deno 2.9.5, Bun 1.3.14 and Node 26.7.0: the same test file, 10/10
+on each, including real downloads.
+
 ## Shape
 
 Twelve crates. Everything above the leaves is IO-free and reaches the network
@@ -219,7 +246,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 322 tests, no network
+cargo test --workspace                # 350 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 
