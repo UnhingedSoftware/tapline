@@ -48,6 +48,8 @@ export interface Ffi {
   cancel(job: bigint): void;
   free(job: bigint): void;
   version(): string;
+  /** The last error on this thread, or "" if there is none. */
+  lastError(): string;
   /** Sets the process-wide chunk budget. Must precede the first job. */
   setTotalConcurrency(chunks: number): number;
   /** The process-wide chunk budget. */
@@ -196,9 +198,18 @@ export async function load(path?: string): Promise<Ffi> {
 }
 
 /** Reads a job pointer written through an out-parameter. */
-function readJobPointer(out: BigUint64Array, code: number, what: string): bigint {
+function readJobPointer(
+  out: BigUint64Array,
+  code: number,
+  what: string,
+  lastError?: () => string,
+): bigint {
   if (code !== OK) {
-    throw new Error(`${what} failed (code ${code})`);
+    // The library already recorded why. Reporting only the number turns
+    // "unknown extension \"bogus\"" into "code -2", which tells nobody
+    // anything.
+    const detail = lastError?.() ?? "";
+    throw new Error(detail ? `${what}: ${detail}` : `${what} failed (code ${code})`);
   }
   const job = out[0];
   if (job === undefined || job === 0n) {
@@ -234,6 +245,10 @@ async function loadDeno(path: string): Promise<Ffi> {
     },
     tapline_job_cancel: { parameters: ["pointer"], result: "void" },
     tapline_job_free: { parameters: ["pointer"], result: "void" },
+    tapline_last_error: {
+      parameters: ["buffer", "usize", "buffer"],
+      result: "i32",
+    },
     tapline_version: { parameters: [], result: "pointer" },
     tapline_set_total_concurrency: { parameters: ["u32"], result: "i32" },
     tapline_total_concurrency: { parameters: [], result: "u32" },
@@ -242,8 +257,19 @@ async function loadDeno(path: string): Promise<Ffi> {
 
   const ptr = (value: bigint) => Deno.UnsafePointer.create(value);
 
+  const lastError = (): string => {
+    const len = new BigUint64Array(1);
+    lib.symbols.tapline_last_error(null, 0n, new Uint8Array(len.buffer));
+    const needed = Number(len[0] ?? 0n);
+    if (needed === 0) return "";
+    const buf = new Uint8Array(needed);
+    lib.symbols.tapline_last_error(buf, BigInt(needed), new Uint8Array(len.buffer));
+    return new TextDecoder().decode(buf);
+  };
+
   return {
     nativeAsync: true,
+    lastError,
     install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_install(
@@ -257,7 +283,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         fileModes,
         new Uint8Array(out.buffer),
       );
-      return readJobPointer(out, code, "install");
+      return readJobPointer(out, code, "install", lastError);
     },
     plan(app, dir, branch, os, includeDlc) {
       const out = new BigUint64Array(1);
@@ -269,7 +295,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         includeDlc,
         new Uint8Array(out.buffer),
       );
-      return readJobPointer(out, code, "plan");
+      return readJobPointer(out, code, "plan", lastError);
     },
     workshop(app, item, dir, concurrency, flat, extensions) {
       const out = new BigUint64Array(1);
@@ -282,7 +308,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         extensions === null ? null : cstring(extensions),
         new Uint8Array(out.buffer),
       );
-      return readJobPointer(out, code, "workshop download");
+      return readJobPointer(out, code, "workshop download", lastError);
     },
     async next(job, timeoutMs) {
       let buffer = new Uint8Array(INITIAL_BUFFER);
@@ -351,6 +377,10 @@ async function loadBun(path: string): Promise<Ffi> {
     },
     tapline_job_cancel: { args: [FFIType.ptr], returns: FFIType.void },
     tapline_job_free: { args: [FFIType.ptr], returns: FFIType.void },
+    tapline_last_error: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr],
+      returns: FFIType.i32,
+    },
     tapline_version: { args: [], returns: FFIType.ptr },
     tapline_set_total_concurrency: { args: [FFIType.u32], returns: FFIType.i32 },
     tapline_total_concurrency: { args: [], returns: FFIType.u32 },
@@ -368,15 +398,26 @@ async function loadBun(path: string): Promise<Ffi> {
   // below 2^47, well inside what a double represents without loss.
   const asBunPointer = (job: bigint) => Number(job);
 
+  const lastError = (): string => {
+    const len = new BigUint64Array(1);
+    lib.symbols.tapline_last_error(null, 0n, ptr(len));
+    const needed = Number(len[0] ?? 0n);
+    if (needed === 0) return "";
+    const buf = new Uint8Array(needed);
+    lib.symbols.tapline_last_error(ptr(buf), BigInt(needed), ptr(len));
+    return new TextDecoder().decode(buf);
+  };
+
   return {
     nativeAsync: false,
+    lastError,
     install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_install(
         app, ptr(cstring(dir)), branch === null ? null : ptr(cstring(branch)),
         concurrency, os, validate, includeDlc, fileModes, ptr(out),
       );
-      return readJobPointer(out, code, "install");
+      return readJobPointer(out, code, "install", lastError);
     },
     plan(app, dir, branch, os, includeDlc) {
       const out = new BigUint64Array(1);
@@ -384,7 +425,7 @@ async function loadBun(path: string): Promise<Ffi> {
         app, ptr(cstring(dir)), branch === null ? null : ptr(cstring(branch)),
         os, includeDlc, ptr(out),
       );
-      return readJobPointer(out, code, "plan");
+      return readJobPointer(out, code, "plan", lastError);
     },
     workshop(app, item, dir, concurrency, flat, extensions) {
       const out = new BigUint64Array(1);
@@ -392,7 +433,7 @@ async function loadBun(path: string): Promise<Ffi> {
         app, item, ptr(cstring(dir)), concurrency, flat,
         extensions === null ? null : ptr(cstring(extensions)), ptr(out),
       );
-      return readJobPointer(out, code, "workshop download");
+      return readJobPointer(out, code, "workshop download", lastError);
     },
     async next(job, timeoutMs) {
       let buffer = new Uint8Array(INITIAL_BUFFER);
@@ -460,6 +501,7 @@ async function loadNode(path: string): Promise<Ffi> {
   const cancel = lib.func("void tapline_job_cancel(void*)");
   const free = lib.func("void tapline_job_free(void*)");
   const version = lib.func("const char* tapline_version()");
+  const lastErrorFn = lib.func("int tapline_last_error(_Out_ uint8_t*, size_t, _Out_ size_t*)");
   const setTotal = lib.func("int tapline_set_total_concurrency(uint32_t)");
   const total = lib.func("uint32_t tapline_total_concurrency()");
   const available = lib.func("uint32_t tapline_available_concurrency()");
@@ -469,24 +511,37 @@ async function loadNode(path: string): Promise<Ffi> {
     return typeof value === "bigint" ? value : BigInt(koffi.address(value as never));
   };
 
+  const lastError = (): string => {
+    const len = [0];
+    lastErrorFn(null, 0, len);
+    const needed = Number(len[0] ?? 0);
+    if (needed === 0) return "";
+    const buf = Buffer.alloc(needed);
+    lastErrorFn(buf, needed, len);
+    return buf.toString("utf8");
+  };
+
   return {
     nativeAsync: true,
+    lastError,
     install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
       const out: unknown[] = [null];
       const code = install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, out);
-      if (code !== OK) throw new Error(`install failed (code ${code})`);
+      if (code !== OK) throw new Error(`install: ${lastError() || `code ${code}`}`);
       return asPointer(out);
     },
     plan(app, dir, branch, os, includeDlc) {
       const out: unknown[] = [null];
       const code = planFn(app, dir, branch, os, includeDlc, out);
-      if (code !== OK) throw new Error(`plan failed (code ${code})`);
+      if (code !== OK) throw new Error(`plan: ${lastError() || `code ${code}`}`);
       return asPointer(out);
     },
     workshop(app, item, dir, concurrency, flat, extensions) {
       const out: unknown[] = [null];
       const code = workshop(app, item, dir, concurrency, flat, extensions, out);
-      if (code !== OK) throw new Error(`workshop download failed (code ${code})`);
+      if (code !== OK) {
+        throw new Error(`workshop download: ${lastError() || `code ${code}`}`);
+      }
       return asPointer(out);
     },
     next(job, timeoutMs) {

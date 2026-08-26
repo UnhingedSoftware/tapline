@@ -176,6 +176,52 @@ if (process_env("TAPLINE_LIVE") === "1") {
     assertEquals(head, "GMAD", "the file is not a Garry's Mod addon");
   });
 
+  await test("an addon can be unpacked and zipped as it lands", async () => {
+    const dir = scratch("ext");
+    const extended: Record<string, number> = {};
+    await downloadWorkshopItem({
+      app: 4000,
+      item: 104691717n,
+      dir,
+      layout: "flat",
+      extensions: ["gmad", "gmad-zip"],
+      onEvent: (event) => {
+        if (event.kind === "extended") extended[event.extension] = event.produced;
+      },
+    });
+
+    const fs = await import("node:fs");
+    assert(fs.existsSync(`${dir}/104691717.gma`), "the archive is missing");
+    assert(fs.existsSync(`${dir}/104691717.zip`), "the zip was not produced");
+    assert(fs.existsSync(`${dir}/104691717`), "the addon was not unpacked");
+
+    // PAC3 is 348 files; asserting the count catches a partial extraction that
+    // a "the directory exists" check would not.
+    assertEquals(extended["gmad"], 348, "wrong unpacked count");
+    assertEquals(extended["gmad-zip"], 1, "the zip should be one file");
+
+    const head = fs.readFileSync(`${dir}/104691717.zip`).subarray(0, 2).toString();
+    assertEquals(head, "PK", "the zip has no PK signature");
+  });
+
+  await test("an unknown extension is refused rather than ignored", async () => {
+    let message = "";
+    try {
+      await downloadWorkshopItem({
+        app: 4000,
+        item: 104691717n,
+        dir: scratch("ext-bogus"),
+        extensions: ["definitely-not-real"],
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assert(
+      message.includes("unknown extension"),
+      `expected a refusal, got: ${message}`,
+    );
+  });
+
   await test("the default layout is still steamcmd's", async () => {
     const dir = scratch("addons-nested");
     await downloadWorkshopItem({ app: 4000, item: 104691717n, dir });

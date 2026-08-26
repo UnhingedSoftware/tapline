@@ -279,9 +279,16 @@ async fn workshop(
     extensions: Vec<String>,
     json: bool,
 ) -> Result<(), String> {
+    // Resolved before connecting. A typo should cost a message, not a login and
+    // a round trip to Steam first.
+    let resolved: Vec<_> = extensions
+        .iter()
+        .map(|name| extension_by_name(name))
+        .collect::<Result<_, _>>()?;
+
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
-    for name in &extensions {
-        session.register(extension_by_name(name)?);
+    for extension in resolved {
+        session.register(extension);
     }
     let target = download_item(&mut session, app, item, dir, flat).await?;
 
