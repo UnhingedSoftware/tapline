@@ -24,6 +24,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
+      # --all-features turns on tapline-auth's `keyring`, which links
+      # libdbus. The feature is off by default precisely because a headless
+      # game-server node has no dbus — but it still has to compile, so CI
+      # supplies the header rather than skipping the feature.
+      - name: Install the dbus headers the keyring feature needs
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # Network-touching tests are #[ignore]d, so this stays offline and
@@ -37,9 +44,13 @@ jobs:
     runs-on: [self-hosted, Linux, X64, selfhosted-32c]
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: dtolnay/rust-toolchain@stable
+      # The official cargo-deny action runs in Docker, and these runners have no
+      # Docker daemon. This installs the same binary directly.
+      - uses: taiki-e/install-action@v2
         with:
-          command: check all
+          tool: cargo-deny
+      - run: cargo deny check all
 
   # The shipped binary has a size budget, and a budget nobody checks is a wish.
   # Also proves the static musl build works, which needs a musl-targeting C
