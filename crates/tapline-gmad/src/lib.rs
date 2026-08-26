@@ -29,10 +29,14 @@
 #![forbid(unsafe_code)]
 
 mod format;
+mod sink;
+mod split;
 mod stream;
 mod zip;
 
 pub use format::{Addon, Entry, MAGIC, parse, parse_index};
+pub use sink::{ToDirectory, ToZip as ZipSink};
+pub use split::{EntrySink, Splitter};
 pub use stream::StreamingExtractor;
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -244,7 +248,7 @@ pub fn to_zip(archive: &Path, dest: &Path, compress: bool) -> Result<usize, Exte
 /// into equal slices: an addon's files differ in size by orders of magnitude,
 /// and a static split leaves one thread with the 4 MB model while the others
 /// finish their `.lua` files and idle.
-fn compress_batch(
+pub(crate) fn compress_batch(
     batch: Vec<(String, Vec<u8>)>,
     compress: bool,
     threads: usize,
@@ -408,6 +412,101 @@ impl Extension for ToZip {
             files: vec![relative],
             remove_original: self.remove_original,
         })
+    }
+}
+
+/// Where a streamed archive is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamTarget<'a> {
+    /// Unpack into a directory.
+    Directory(&'a Path),
+    /// Write a ZIP, deflating entries that get smaller for it.
+    Zip(&'a Path),
+    /// Write a ZIP without deflating. Roughly four times faster, and the right
+    /// choice when the result goes somewhere that compresses on the wire.
+    ZipStored(&'a Path),
+}
+
+/// What a streamed archive produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Streamed {
+    /// How many entries were written.
+    pub entries: usize,
+    /// Their paths, for a directory target. Empty for a ZIP, whose own index
+    /// is the list.
+    pub files: Vec<String>,
+}
+
+/// Consumes an archive as it arrives, writing it to `target`.
+///
+/// One state machine, two destinations: see [`Splitter`] for why they are the
+/// same problem. Add a third by implementing [`EntrySink`].
+pub struct StreamWriter {
+    inner: Inner,
+}
+
+enum Inner {
+    Directory(split::Splitter<sink::ToDirectory>),
+    Zip(split::Splitter<sink::ToZip>),
+}
+
+impl StreamWriter {
+    /// A writer for `target`.
+    ///
+    /// The target borrows its path only for this call; the writer owns what it
+    /// needs afterwards.
+    pub fn new(target: StreamTarget<'_>) -> Result<Self, ExtensionError> {
+        let inner = match target {
+            StreamTarget::Directory(dest) => {
+                Inner::Directory(split::Splitter::new(sink::ToDirectory::new(dest)))
+            }
+            StreamTarget::Zip(dest) => {
+                Inner::Zip(split::Splitter::new(sink::ToZip::new(dest, true)?))
+            }
+            StreamTarget::ZipStored(dest) => {
+                Inner::Zip(split::Splitter::new(sink::ToZip::new(dest, false)?))
+            }
+        };
+        Ok(Self { inner })
+    }
+
+    /// Feeds the next bytes of the archive, in order.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
+        match &mut self.inner {
+            Inner::Directory(splitter) => splitter.push(bytes),
+            Inner::Zip(splitter) => splitter.push(bytes),
+        }
+    }
+
+    /// The archive's metadata, once its index has arrived.
+    #[must_use]
+    pub fn addon(&self) -> Option<&Addon> {
+        match &self.inner {
+            Inner::Directory(splitter) => splitter.addon(),
+            Inner::Zip(splitter) => splitter.addon(),
+        }
+    }
+
+    /// Finishes, closing whatever was being written.
+    pub fn finish(self) -> Result<Streamed, ExtensionError> {
+        match self.inner {
+            Inner::Directory(splitter) => {
+                let files = splitter.finish()?.into_produced();
+                Ok(Streamed {
+                    entries: files.len(),
+                    files,
+                })
+            }
+            Inner::Zip(splitter) => {
+                // `close` writes the central directory. Without it the file is
+                // one most readers refuse.
+                let entries = splitter.finish()?.close()?;
+                Ok(Streamed {
+                    entries,
+                    files: Vec::new(),
+                })
+            }
+        }
     }
 }
 

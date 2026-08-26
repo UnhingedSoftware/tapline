@@ -279,11 +279,11 @@ async fn workshop(
     dir: PathBuf,
     flat: bool,
     extensions: Vec<String>,
-    stream: bool,
+    stream: Option<String>,
     json: bool,
 ) -> Result<(), String> {
-    if stream {
-        return stream_workshop(app, item, dir, json).await;
+    if let Some(target) = stream {
+        return stream_workshop(app, item, dir, &target, json).await;
     }
     // Resolved before connecting. A typo should cost a message, not a login and
     // a round trip to Steam first.
@@ -320,6 +320,7 @@ async fn stream_workshop(
     app: AppId,
     item: PublishedFileId,
     dir: PathBuf,
+    target: &str,
     json: bool,
 ) -> Result<(), String> {
     let _ = app;
@@ -333,8 +334,16 @@ async fn stream_workshop(
         .ok_or_else(|| format!("Steam said nothing about item {item}"))?
         .map_err(|error| error.to_string())?;
 
+    // A zip target names a file; a directory target names a directory.
+    let zip_path = dir.join(format!("{item}.zip"));
+    let chosen = match target {
+        "zip" => tapline_gmad::StreamTarget::Zip(&zip_path),
+        "zip-stored" => tapline_gmad::StreamTarget::ZipStored(&zip_path),
+        _ => tapline_gmad::StreamTarget::Directory(&dir),
+    };
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let mut extractor = tapline_gmad::StreamingExtractor::new(&dir);
+    let mut extractor =
+        tapline_gmad::StreamWriter::new(chosen).map_err(|error| error.to_string())?;
 
     let started = std::time::Instant::now();
     let report = session
@@ -351,7 +360,7 @@ async fn stream_workshop(
         .await
         .map_err(|error| error.to_string())?;
 
-    let files = extractor.finish().map_err(|error| error.to_string())?;
+    let produced = extractor.finish().map_err(|error| error.to_string())?;
     let elapsed = started.elapsed();
 
     if json {
@@ -359,7 +368,8 @@ async fn stream_workshop(
             "event": "streamed",
             "item": item.get(),
             "path": dir.display().to_string(),
-            "files": files.len(),
+            "target": target,
+            "files": produced.entries,
             "bytes_downloaded": report.bytes_downloaded,
             "bytes_streamed": report.bytes_streamed,
             "peak_buffered_chunks": report.peak_buffered,
@@ -367,9 +377,10 @@ async fn stream_workshop(
         }));
     } else {
         println!(
-            "streamed item {item} into {}: {} files, {} bytes, {} chunks, peak {} buffered, {:.2}s",
+            "streamed item {item} into {} as {target}: {} files, {} bytes, {} chunks, \
+             peak {} buffered, {:.2}s",
             dir.display(),
-            files.len(),
+            produced.entries,
             report.bytes_streamed,
             report.chunks,
             report.peak_buffered,

@@ -433,9 +433,11 @@ pub unsafe extern "C" fn tapline_plan(
 /// `extensions` is a comma-separated list of built-in extension names, or null
 /// for none. See [`build_extensions`] for what is known.
 ///
-/// `stream` non-zero unpacks a Garry's Mod addon as it downloads, without ever
-/// writing the `.gma`. It implies the flat layout and ignores `extensions`,
-/// because the archive those would act on never exists.
+/// `stream` selects a streaming target, writing the addon as it downloads and
+/// never storing the `.gma`: 0 off, 1 unpack into `dir`, 2 write a `.zip`,
+/// 3 write a `.zip` without deflating. Any of the streaming modes imply the
+/// flat layout and ignore `extensions`, because the archive those would act on
+/// never exists.
 ///
 /// # Safety
 ///
@@ -514,7 +516,7 @@ pub unsafe extern "C" fn tapline_workshop_download(
                         }
                     };
                     if stream != 0 {
-                        stream_addon(&mut session, &details, &install, &sender).await;
+                        stream_addon(&mut session, &details, &install, stream, &sender).await;
                         return;
                     }
 
@@ -545,13 +547,27 @@ async fn stream_addon(
     session: &mut Session,
     details: &tapline::WorkshopItem,
     options: &InstallOptions,
+    mode: u8,
     sender: &tokio::sync::mpsc::UnboundedSender<String>,
 ) {
     if let Err(error) = std::fs::create_dir_all(&options.install_dir) {
         send_error(sender, &error.to_string());
         return;
     }
-    let mut extractor = tapline_gmad::StreamingExtractor::new(&options.install_dir);
+
+    let zip_path = options.install_dir.join(format!("{}.zip", details.id));
+    let target = match mode {
+        2 => tapline_gmad::StreamTarget::Zip(&zip_path),
+        3 => tapline_gmad::StreamTarget::ZipStored(&zip_path),
+        _ => tapline_gmad::StreamTarget::Directory(&options.install_dir),
+    };
+    let mut extractor = match tapline_gmad::StreamWriter::new(target) {
+        Ok(writer) => writer,
+        Err(error) => {
+            send_error(sender, &error.to_string());
+            return;
+        }
+    };
 
     let forward = sender.clone();
     let result = session
@@ -573,10 +589,10 @@ async fn stream_addon(
         Err(error) => send_error(sender, &error.to_string()),
         Ok(report) => match extractor.finish() {
             Err(error) => send_error(sender, &error.to_string()),
-            Ok(files) => {
+            Ok(produced) => {
                 let mut out = String::from("{");
                 json::push_str_field(&mut out, "kind", "streamed");
-                json::push_u64(&mut out, "files", files.len() as u64);
+                json::push_u64(&mut out, "files", produced.entries as u64);
                 json::push_u64(&mut out, "bytesDownloaded", report.bytes_downloaded);
                 json::push_u64(&mut out, "bytesStreamed", report.bytes_streamed);
                 json::push_u64(&mut out, "chunks", report.chunks);

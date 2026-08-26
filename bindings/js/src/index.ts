@@ -451,7 +451,7 @@ export class Batch implements PromiseLike<InstallReport[]> {
 
 /** Downloads one Workshop item. */
 export function downloadWorkshopItem(
-  options: WorkshopOptions & { stream: true },
+  options: WorkshopOptions & { stream: NonNullable<WorkshopOptions["stream"]> },
 ): Job<StreamReport>;
 export function downloadWorkshopItem(
   options: WorkshopOptions,
@@ -459,7 +459,20 @@ export function downloadWorkshopItem(
 export function downloadWorkshopItem(
   options: WorkshopOptions,
 ): Job<InstallReport | StreamReport> {
-  const streaming = options.stream === true;
+  const streamMode = ((): number => {
+    switch (options.stream) {
+      case undefined:
+      case false:
+        return 0;
+      case "zip":
+        return 2;
+      case "zip-stored":
+        return 3;
+      default:
+        return 1;
+    }
+  })();
+  const streaming = streamMode !== 0;
   return new Job<InstallReport | StreamReport>(
     (ffi) =>
       ffi.workshop(
@@ -471,7 +484,7 @@ export function downloadWorkshopItem(
         // build a steamcmd path around.
         streaming || options.layout === "flat" ? 1 : 0,
         options.extensions?.length ? options.extensions.join(",") : null,
-        streaming ? 1 : 0,
+        streamMode,
       ),
     (events) => {
       if (streaming) {

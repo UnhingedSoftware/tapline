@@ -215,11 +215,15 @@ export interface WorkshopOptions {
    * order, so each file can be written the moment its bytes land. Measured on
    * PAC3: 8.3 MB on disk instead of 16.6 MB, and nothing read back.
    *
-   * Implies `layout: "flat"` and ignores `extensions` — the archive they would
-   * act on never exists. Resolves to a {@link StreamReport} rather than an
-   * install report.
+   * The target is pluggable: `true` or `"extract"` unpacks into `dir`,
+   * `"zip"` writes `<item>.zip` as it downloads, `"zip-stored"` does so
+   * without deflating.
+   *
+   * Any of them imply `layout: "flat"` and ignore `extensions` — the archive
+   * they would act on never exists. Resolves to a {@link StreamReport} rather
+   * than an install report.
    */
-  stream?: boolean;
+  stream?: boolean | "extract" | "zip" | "zip-stored";
   onEvent?: (event: TaplineEvent) => void;
   onProgress?: (progress: {
     bytesDone: number;

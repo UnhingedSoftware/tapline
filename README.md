@@ -200,6 +200,22 @@ It also never executes a depot's `installscript.vdf`. steamcmd does; tapline
 parses it and reports it. Installing a game server should not be a
 remote-code-execution primitive.
 
+## In a container
+
+No steamcmd, no Steam client, no 32-bit runtime, no CA bundle: tapline speaks the
+CM protocol itself and `rustls` carries Mozilla's roots compiled in. The
+`Dockerfile` builds a **1.6 MB image on `scratch`** — one static binary and
+nothing else, not even a shell.
+
+```sh
+docker build -t tapline .
+docker run --rm -v /srv/gmod:/data tapline \
+  +login anonymous +force_install_dir /data +app_update 4020 +quit
+```
+
+Verified by running a real Workshop download inside it: 348 files streamed in
+0.60 s, with nothing in the image but the binary.
+
 ## From JavaScript
 
 There is a C ABI and a TypeScript package on top of it, so Deno, Bun and Node
@@ -264,17 +280,36 @@ because an archive only this crate can read is not a zip.
 ### Streaming
 
 A format whose contents arrive in a knowable order can be consumed as it
-downloads, without the archive touching the disk at all. GMAD is one:
+downloads, without the archive touching the disk at all. GMAD is one, and the
+target is pluggable:
 
 ```sh
-tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons --stream
+tapline workshop download 4000 104691717 --dir addons --stream            # unpack
+tapline workshop download 4000 104691717 --dir addons --stream zip        # a .zip
+tapline workshop download 4000 104691717 --dir addons --stream zip-stored # no deflate
 ```
+
+Measured on PAC3 (348 files, 8.4 MB archive):
+
+| | wall | read back | on disk |
+|---|---|---|---|
+| download, then unpack | 2.00 s | 13.3 MB | 16.6 MB |
+| `--stream` | 1.78 s | 0.01 MB | 8.3 MB |
+| download, then convert to zip | 2.00 s | 16.6 MB | 12.3 MB |
+| `--stream zip` | **1.94 s** | **0.01 MB** | **4.0 MB** |
 
 Chunks are still fetched in parallel — that is where the throughput is — and
 reordered through a bounded window, so peak memory is the window rather than the
-file. Measured on PAC3: 8.3 MB on disk instead of 16.6 MB, 0.01 MB read back
-instead of 13.3 MB, and slightly *more* resident memory (30.9 MB against 26.8),
-because the window is a fixed cost the archive size is not.
+file. It does not save memory: streaming measured 30.9 MB resident against 26.8,
+because that window is a fixed cost the archive size is not. It saves disk, and
+that saving scales with the addon.
+
+Streaming to a zip was 2.29 s before it batched: compressing each entry the
+moment it completed gave up the parallel deflate to save the disk. Queueing
+completed entries and deflating them together gets both.
+
+Adding a target means writing an `EntrySink` — the byte-boundary state machine
+is shared, and unpacking and zipping differ only in what they do with an entry.
 
 ## Shape
 
@@ -323,7 +358,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 398 tests, no network
+cargo test --workspace                # 409 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

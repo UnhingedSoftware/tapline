@@ -1,0 +1,8 @@
+# The build happens inside the image; sending a 40 GB target directory to the
+# daemon first would take longer than the compile.
+target/
+bindings/js/node_modules/
+.git/
+*.so
+*.dylib
+*.dll

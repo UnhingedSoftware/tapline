@@ -86,9 +86,10 @@ int32_t tapline_plan(uint32_t app_id,
  * gmad name deletes the original once it has been processed. An unknown name
  * is an error rather than a no-op.
  *
- * stream non-zero unpacks a Garry's Mod addon as it downloads, without ever
- * writing the .gma. It implies the flat layout and ignores extensions, because
- * the archive those would act on never exists. */
+ * stream selects a streaming target, writing the addon as it downloads and
+ * never storing the .gma: 0 off, 1 unpack into dir, 2 write a .zip, 3 write a
+ * .zip without deflating. Any streaming mode implies the flat layout and
+ * ignores extensions, because the archive those would act on never exists. */
 int32_t tapline_workshop_download(uint32_t app_id,
                                   uint64_t item_id,
                                   const char *dir,

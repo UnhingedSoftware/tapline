@@ -230,6 +230,25 @@ if (process_env("TAPLINE_LIVE") === "1") {
     );
   });
 
+  await test("an addon can be streamed straight into a zip", async () => {
+    const dir = scratch("streamzip");
+    const report = await downloadWorkshopItem({
+      app: 4000,
+      item: 104691717n,
+      dir,
+      stream: "zip",
+    });
+    assertEquals(report.files, 348, "wrong entry count");
+
+    const fs = await import("node:fs");
+    const entries = fs.readdirSync(dir);
+    // Only the zip: the archive it was built from never existed.
+    assertEquals(entries.length, 1, `expected one file, got ${entries.join(",")}`);
+    assertEquals(entries[0], "104691717.zip");
+    const head = fs.readFileSync(`${dir}/104691717.zip`).subarray(0, 2).toString();
+    assertEquals(head, "PK", "not a zip");
+  });
+
   await test("an unknown extension is refused rather than ignored", async () => {
     let message = "";
     try {
@@ -318,7 +337,27 @@ function scratch(name: string): string {
   // Never /tmp: it is tmpfs on the development machine, and a depot test there
   // is that many gigabytes of RAM.
   const home = process_env("HOME") ?? ".";
-  return `${home}/.cache/tapline-test/js-${name}`;
+  const path = `${home}/.cache/tapline-test/js-${name}`;
+  // Cleared here rather than by the caller. A test that asserts "this
+  // directory holds exactly one file" passes or fails depending on what the
+  // last run left behind, which is how a green suite goes red for no reason.
+  try {
+    // deno-lint-ignore no-explicit-any
+    const fs = (globalThis as any).process
+      ? require_fs()
+      : undefined;
+    fs?.rmSync(path, { recursive: true, force: true });
+  } catch {
+    // Best effort: a test that cannot clean up still runs.
+  }
+  return path;
+}
+
+// deno-lint-ignore no-explicit-any
+function require_fs(): any {
+  // deno-lint-ignore no-explicit-any
+  const g = globalThis as any;
+  return g.process?.getBuiltinModule?.("node:fs");
 }
 
 console.log(`\n${ran - failures}/${ran} passed`);

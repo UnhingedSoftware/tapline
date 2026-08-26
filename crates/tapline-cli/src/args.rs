@@ -100,8 +100,9 @@ pub enum Command {
         flat: bool,
         /// Extensions to run on each file, by name.
         extensions: Vec<String>,
-        /// Extract while downloading, without writing the archive itself.
-        stream: bool,
+        /// Where to stream the archive, if streaming: "dir", "zip" or
+        /// "zip-stored". `None` downloads the archive normally.
+        stream: Option<String>,
         /// The app.
         app: AppId,
         /// The item.
@@ -321,6 +322,22 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
         .collect();
 
     let dir = || PathBuf::from(options.value("dir").unwrap_or("."));
+    // `--stream` alone means a directory; `--stream zip` picks a target. An
+    // unrecognised one is refused rather than quietly downloading normally,
+    // which would look like the flag did nothing.
+    let stream_target = |options: &Options| -> Result<Option<String>, ArgError> {
+        if !options.flag("stream") {
+            return Ok(None);
+        }
+        match options.value("stream") {
+            None | Some("dir") | Some("directory") => Ok(Some("dir".to_owned())),
+            Some("zip") => Ok(Some("zip".to_owned())),
+            Some("zip-stored") => Ok(Some("zip-stored".to_owned())),
+            Some(other) => Err(ArgError::new(format!(
+                "unknown --stream target {other:?}; known: dir, zip, zip-stored"
+            ))),
+        }
+    };
     // A bad number is refused rather than silently falling back to the default:
     // someone passing --concurrency wants that value, and quietly using another
     // one turns a typo into a mystery about why the download is slow.
@@ -374,7 +391,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 .ok_or_else(|| ArgError::new("an item id is required"))?;
             Ok(Command::WorkshopDownload {
                 flat: options.flag("flat"),
-                stream: options.flag("stream"),
+                stream: stream_target(&options)?,
                 extensions: options
                     .value("extensions")
                     .map(|list| {
