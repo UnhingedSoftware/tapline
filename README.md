@@ -331,6 +331,19 @@ nonsensical order is a compile error rather than a run-time one.
 Sinks tee: that example reads the download **once** and writes both. The
 extension pipeline could not, and read the finished archive twice.
 
+No session appears in that. One is taken from a process-wide pool and given
+back, so concurrent chains get different sessions and never wait on each other,
+while still sharing one chunk budget and one connection pool. `run_with(&mut
+session)` is there for anyone who wants to own it.
+
+A `Session` is `&mut` because one CM connection carries one request at a time:
+it allocates a job id, writes the frame, and reads until that reply arrives.
+That is what the code does, and it is not something a caller should have to
+think about — hence the pool. Measured: a second download in the same process
+takes 649 ms against the first's 1794 ms, because it skips the logon entirely.
+Idle sessions are heartbeated by a keeper task, since Steam drops a quiet
+session without saying so.
+
 The chain is sugar over a `Pipeline` value, which is what actually travels —
 the chain cannot cross a C ABI, so the bindings build the same value and send
 its text form:
@@ -394,7 +407,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 440 tests, no network
+cargo test --workspace                # 446 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

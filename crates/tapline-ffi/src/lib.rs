@@ -33,7 +33,9 @@ mod json;
 
 use std::ffi::{CStr, c_char};
 use std::sync::OnceLock;
-use tapline::{FileModes, InstallOptions, Os, PublishedFileId, Session, Shared, WorkshopLayout};
+use tapline::{
+    FileModes, InstallOptions, Os, PublishedFileId, Session, SessionPool, Shared, WorkshopLayout,
+};
 use tapline_ids::AppId;
 
 /// An event was written to the buffer.
@@ -124,14 +126,24 @@ fn runtime() -> Option<&'static tokio::runtime::Runtime> {
 static TOTAL_CONCURRENCY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn shared() -> Option<&'static std::sync::Arc<Shared>> {
-    static SHARED: OnceLock<std::sync::Arc<Shared>> = OnceLock::new();
-    Some(SHARED.get_or_init(|| {
+    pool().map(|pool| pool.budget())
+}
+
+/// The pool every job in this process draws sessions from.
+///
+/// One login is reused across jobs rather than paid per job, and concurrent
+/// jobs get different sessions so none waits on another. They still share one
+/// chunk budget, so pooling sessions does not multiply the load on the CDN.
+fn pool() -> Option<&'static std::sync::Arc<SessionPool>> {
+    static POOL: OnceLock<std::sync::Arc<SessionPool>> = OnceLock::new();
+    Some(POOL.get_or_init(|| {
         let configured = TOTAL_CONCURRENCY.load(std::sync::atomic::Ordering::Relaxed) as usize;
-        if configured == 0 {
+        let budget = if configured == 0 {
             Shared::new(InstallOptions::default().concurrency)
         } else {
             Shared::new(configured)
-        }
+        };
+        std::sync::Arc::new(SessionPool::with_shared(budget))
     }))
 }
 
@@ -341,14 +353,14 @@ pub unsafe extern "C" fn tapline_install(
         }
     };
 
-    let shared_handle = shared().cloned();
+    let pool_handle = pool().cloned();
     spawn_job(
         move |sender| async move {
-            let Some(shared_handle) = shared_handle else {
+            let Some(pool_handle) = pool_handle else {
                 send_error(&sender, "the tapline runtime could not be started");
                 return;
             };
-            match Session::anonymous_shared(shared_handle).await {
+            match pool_handle.acquire().await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => {
                     for extension in extensions {
@@ -404,14 +416,14 @@ pub unsafe extern "C" fn tapline_plan(
     };
     let install = unsafe { options.into_install_options(dir) };
 
-    let shared_handle = shared().cloned();
+    let pool_handle = pool().cloned();
     spawn_job(
         move |sender| async move {
-            let Some(shared_handle) = shared_handle else {
+            let Some(pool_handle) = pool_handle else {
                 send_error(&sender, "the tapline runtime could not be started");
                 return;
             };
-            match Session::anonymous_shared(shared_handle).await {
+            match pool_handle.acquire().await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => match session.plan(AppId(app_id), &install).await {
                     Ok(plan) => {
@@ -483,14 +495,14 @@ pub unsafe extern "C" fn tapline_workshop_download(
     };
     let _ = app_id;
 
-    let shared_handle = shared().cloned();
+    let pool_handle = pool().cloned();
     spawn_job(
         move |sender| async move {
-            let Some(shared_handle) = shared_handle else {
+            let Some(pool_handle) = pool_handle else {
                 send_error(&sender, "the tapline runtime could not be started");
                 return;
             };
-            match Session::anonymous_shared(shared_handle).await {
+            match pool_handle.acquire().await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => {
                     for extension in extensions {

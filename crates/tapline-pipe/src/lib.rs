@@ -2,7 +2,6 @@
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), tapline_pipe::PipeError> {
-//! # let mut session = tapline::Session::anonymous().await.unwrap();
 //! use tapline_pipe::workshop;
 //!
 //! workshop(4000, 104_691_717)
@@ -10,11 +9,16 @@
 //!     .only("lua/**")               // optional
 //!     .zip("/srv/out.zip")          // a sink
 //!     .dir("/srv/addons")           // and another, same pass
-//!     .run(&mut session)
+//!     .run()
 //!     .await?;
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! No session anywhere: one is taken from a pool and given back. Run several of
+//! these at once and they get different sessions, never waiting on each other,
+//! while still sharing one chunk budget. `run_with(&mut session)` is there for
+//! anyone who wants to own it.
 //!
 //! # Why the types change as you chain
 //!
@@ -237,7 +241,47 @@ impl Piped {
     }
 
     /// Runs it.
-    pub async fn run(self, session: &mut Session) -> Result<Outcome, PipeError> {
+    ///
+    /// Takes a session from the process-wide pool and gives it back
+    /// afterwards, so nothing here needs to know a session exists. Concurrent
+    /// calls get different sessions and never wait on each other, while still
+    /// sharing one chunk budget and one connection pool.
+    ///
+    /// Use [`Piped::run_with`] to supply your own.
+    pub async fn run(self) -> Result<Outcome, PipeError> {
+        self.run_observed(&mut |_| {}).await
+    }
+
+    /// Runs it, reporting progress, on a pooled session.
+    pub async fn run_observed(
+        self,
+        observe: &mut (dyn FnMut(tapline::Event) + Send),
+    ) -> Result<Outcome, PipeError> {
+        let mut guard = tapline::SessionPool::shared().acquire().await?;
+        let outcome = run_pipeline(
+            &mut guard,
+            self.source.app,
+            self.source.item,
+            self.source.window,
+            &self.pipeline,
+            observe,
+        )
+        .await;
+
+        // A session that failed mid-operation may have a dead connection, and
+        // the next caller inheriting it would fail for reasons that have
+        // nothing to do with them.
+        if outcome.is_err() {
+            guard.poison();
+        }
+        outcome
+    }
+
+    /// Runs it on a session you own.
+    ///
+    /// The manual path. Everything the pool does — creating, reusing,
+    /// heartbeating, discarding — becomes yours.
+    pub async fn run_with(self, session: &mut Session) -> Result<Outcome, PipeError> {
         run_pipeline(
             session,
             self.source.app,
@@ -249,8 +293,8 @@ impl Piped {
         .await
     }
 
-    /// Runs it, reporting progress.
-    pub async fn run_observed(
+    /// Runs it on a session you own, reporting progress.
+    pub async fn run_with_observed(
         self,
         session: &mut Session,
         observe: &mut (dyn FnMut(tapline::Event) + Send),

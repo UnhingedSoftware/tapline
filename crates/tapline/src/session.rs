@@ -196,6 +196,17 @@ impl Session {
         Ok(())
     }
 
+    /// Sends a heartbeat now, whether or not one is due.
+    ///
+    /// What keeps a pooled session alive while nobody is using it. Steam drops
+    /// a session that goes quiet and does not say so; the failure appears much
+    /// later as an unrelated request returning "disconnected".
+    pub async fn keep_alive(&mut self) -> Result<(), InstallError> {
+        self.cm.heartbeat().await?;
+        self.last_heartbeat = std::time::Instant::now();
+        Ok(())
+    }
+
     /// Sends a heartbeat if one is due.
     ///
     /// Called between chunks. A download is minutes of HTTP with no CM traffic,

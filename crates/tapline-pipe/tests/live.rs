@@ -47,12 +47,12 @@ async fn a_chain_writes_every_sink_from_one_download() {
     let unpacked = root.join("unpacked");
     let zip = root.join("out.zip");
 
-    let mut session = Session::anonymous().await.expect("session");
+    // No session: the pool provides one and takes it back.
     let outcome = tapline_pipe::workshop(APP, ITEM)
         .gma()
         .zip(zip.to_string_lossy())
         .dir(unpacked.to_string_lossy())
-        .run(&mut session)
+        .run()
         .await
         .expect("the chain must run");
 
@@ -96,12 +96,13 @@ async fn a_filter_selects_a_subset() {
     let _scratch = Scratch(root.clone());
     std::fs::create_dir_all(&root).expect("mkdir");
 
+    // The manual path, on a session the caller owns.
     let mut session = Session::anonymous().await.expect("session");
     let outcome = tapline_pipe::workshop(APP, ITEM)
         .gma()
         .only("lua/**")
         .dir(root.to_string_lossy())
-        .run(&mut session)
+        .run_with(&mut session)
         .await
         .expect("run");
 
@@ -121,4 +122,56 @@ async fn a_filter_selects_a_subset() {
     // The whole item is still downloaded: a filter selects what is written, not
     // what is fetched, because the archive is a single stream.
     assert!(outcome.bytes_streamed > 8_000_000, "the stream was short");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn concurrent_chains_do_not_wait_on_each_other() {
+    // The reason the pool exists. Three chains at once, none of them holding a
+    // session the others need, all sharing one chunk budget.
+    let roots: Vec<PathBuf> = (0..3).map(|i| scratch(&format!("concurrent{i}"))).collect();
+    let _guards: Vec<Scratch> = roots.iter().cloned().map(Scratch).collect();
+    for root in &roots {
+        std::fs::create_dir_all(root).expect("mkdir");
+    }
+
+    let started = std::time::Instant::now();
+    let runs = roots.iter().map(|root| {
+        tapline_pipe::workshop(APP, ITEM)
+            .gma()
+            .dir(root.to_string_lossy())
+            .run()
+    });
+    let outcomes = futures_lite_join(runs).await;
+    let elapsed = started.elapsed();
+
+    for outcome in &outcomes {
+        assert_eq!(
+            outcome.as_ref().map(|o| o.entries).unwrap_or(0),
+            348,
+            "a concurrent chain did not finish"
+        );
+    }
+
+    // And the pool kept the sessions rather than dropping them.
+    let idle = tapline::SessionPool::shared().idle_count();
+    println!(
+        "three chains in {:.2}s, {idle} sessions kept",
+        elapsed.as_secs_f64()
+    );
+    assert!(idle > 0, "no session was returned to the pool");
+}
+
+/// Joins futures without pulling in a futures crate for one test.
+async fn futures_lite_join<F, T>(futures: impl Iterator<Item = F>) -> Vec<T>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let handles: Vec<_> = futures.map(tokio::spawn).collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for handle in handles {
+        out.push(handle.await.expect("a chain task panicked"));
+    }
+    out
 }

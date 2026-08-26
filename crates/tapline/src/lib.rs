@@ -31,6 +31,7 @@
 mod delta;
 mod install;
 mod login;
+mod pool;
 mod session;
 mod shared;
 mod streaming;
@@ -40,6 +41,7 @@ mod workshop;
 pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
 pub use install::{FileModes, InstallError, InstallOptions, InstallReport, WorkshopLayout};
 pub use login::{LoginError, PendingLogin, PollOutcome};
+pub use pool::{SessionGuard, SessionPool};
 pub use session::Session;
 pub use shared::Shared;
 pub use streaming::{Consumer, Reorderer, StreamReport, Window};

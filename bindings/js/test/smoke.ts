@@ -281,9 +281,16 @@ if (process_env("TAPLINE_LIVE") === "1") {
     // The property, not the throughput: two downloads must draw from one pool
     // rather than taking a full one each. Two at 64 is measurably slower than
     // two splitting 64, because throughput turns over past 64.
-    const before = await concurrency();
+    // Waited for rather than asserted outright: a job cancelled by an earlier
+    // test can still hold a permit for a moment, and "at rest" means once
+    // everything before it has let go.
+    let before = await concurrency();
+    for (let i = 0; i < 100 && before.available < before.total; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        before = await concurrency();
+    }
     assert(before.total > 0, "no budget reported");
-    assertEquals(before.available, before.total, "budget not idle at rest");
+    assertEquals(before.available, before.total, "budget never returned to idle");
 
     let lowest = before.total;
     const watch = async () => {
