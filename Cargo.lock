@@ -1423,6 +1423,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-pipe"
+version = "0.1.0"
+dependencies = [
+ "tapline",
+ "tapline-ext",
+ "tapline-gmad",
+ "tapline-ids",
+ "tokio",
+]
+
+[[package]]
 name = "tapline-proto"
 version = "0.1.0"
 dependencies = [

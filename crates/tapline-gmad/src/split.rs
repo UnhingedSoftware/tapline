@@ -41,6 +41,18 @@ pub trait EntrySink {
 
     /// The current entry is complete.
     fn end(&mut self) -> Result<(), ExtensionError>;
+
+    /// The archive is complete; write anything held back.
+    ///
+    /// A ZIP's central directory is written here, and a ZIP without one is a
+    /// file most readers refuse. Defaulted because most sinks have nothing to
+    /// do — a sink writing loose files is finished when its last entry is.
+    ///
+    /// Takes `&mut self` rather than `self` so it can be called through a
+    /// `Box<dyn EntrySink>`, which is what fanning out to several sinks needs.
+    fn finish(&mut self) -> Result<(), ExtensionError> {
+        Ok(())
+    }
 }
 
 /// Feeds archive bytes to an [`EntrySink`].
@@ -215,6 +227,42 @@ impl<S: EntrySink> Splitter<S> {
             });
         }
         Ok(self.sink)
+    }
+}
+
+impl<S: EntrySink + ?Sized> EntrySink for &mut S {
+    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
+        (**self).index(addon)
+    }
+    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+        (**self).begin(entry, index)
+    }
+    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
+        (**self).data(bytes)
+    }
+    fn end(&mut self) -> Result<(), ExtensionError> {
+        (**self).end()
+    }
+    fn finish(&mut self) -> Result<(), ExtensionError> {
+        (**self).finish()
+    }
+}
+
+impl<S: EntrySink + ?Sized> EntrySink for Box<S> {
+    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
+        (**self).index(addon)
+    }
+    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+        (**self).begin(entry, index)
+    }
+    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
+        (**self).data(bytes)
+    }
+    fn end(&mut self) -> Result<(), ExtensionError> {
+        (**self).end()
+    }
+    fn finish(&mut self) -> Result<(), ExtensionError> {
+        (**self).finish()
     }
 }
 

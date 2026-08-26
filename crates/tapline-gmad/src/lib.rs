@@ -29,13 +29,15 @@
 #![forbid(unsafe_code)]
 
 mod format;
+mod glob;
 mod sink;
 mod split;
 mod stream;
 mod zip;
 
 pub use format::{Addon, Entry, MAGIC, parse, parse_index};
-pub use sink::{ToDirectory, ToZip as ZipSink};
+pub use glob::{Patterns, matches as glob_matches};
+pub use sink::{Fanout, Filtered, ToDirectory, ToZip as ZipSink};
 pub use split::{EntrySink, Splitter};
 pub use stream::StreamingExtractor;
 

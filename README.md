@@ -311,6 +311,41 @@ completed entries and deflating them together gets both.
 Adding a target means writing an `EntrySink` — the byte-boundary state machine
 is shared, and unpacking and zipping differ only in what they do with an entry.
 
+### The pipeline
+
+A typed chain, for when the download is the first step rather than the last:
+
+```rust
+tapline_pipe::workshop(4000, 104_691_717)
+    .gma()                       // bytes -> entries
+    .only("lua/**")              // optional
+    .zip("/srv/out.zip")         // a sink
+    .dir("/srv/addons")          // and another, same pass
+    .run(&mut session).await?;
+```
+
+The types change as you chain. A `Source` has no `.zip()`, because there is
+nothing to zip until the bytes have been interpreted — writing the steps in a
+nonsensical order is a compile error rather than a run-time one.
+
+Sinks tee: that example reads the download **once** and writes both. The
+extension pipeline could not, and read the finished archive twice.
+
+The chain is sugar over a `Pipeline` value, which is what actually travels —
+the chain cannot cross a C ABI, so the bindings build the same value and send
+its text form:
+
+```text
+decode gma
+only lua/**
+zip /srv/out.zip
+dir /srv/addons
+```
+
+Line-based rather than JSON because tapline writes JSON and does not parse it,
+and a parser here would be one more thing to get wrong on input from outside
+the process. A path runs to the end of its line, so there is no quoting.
+
 ## Shape
 
 Twelve crates. Everything above the leaves is IO-free and reaches the network
@@ -323,6 +358,7 @@ wire      protobuf codec          crypto   AES/RSA/SHA-1, Steam's compositions
 ids       SteamID, EResult        vdf      KeyValues and appmanifest files
 chunk     VZ, VSZ, ZIP           fs       path validation
 ext       the extension seam     gmad     Garry's Mod addons
+pipe      the typed chain
 io        the IO traits           event    progress vocabulary
 proto     404 generated messages  net      CM framing, batches, job correlation
 pics      depots and branches     manifest the manifest format
@@ -358,7 +394,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 409 tests, no network
+cargo test --workspace                # 440 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

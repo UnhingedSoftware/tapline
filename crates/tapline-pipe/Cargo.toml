@@ -1,0 +1,20 @@
+[package]
+name = "tapline-pipe"
+description = "A typed pipeline: download a Workshop item, decode it, filter it, write it somewhere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tapline = { workspace = true }
+tapline-ext = { workspace = true }
+tapline-gmad = { workspace = true }
+tapline-ids = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

@@ -18,6 +18,7 @@ members = [
     "crates/tapline-manifest",
     "crates/tapline-net",
     "crates/tapline-pics",
+    "crates/tapline-pipe",
     "crates/tapline-rt-tokio",
     "crates/tapline-state",
     "crates/tapline-vdf",
@@ -60,6 +61,7 @@ tapline-rt-tokio = { path = "crates/tapline-rt-tokio", version = "0.1.0" }
 tapline-ffi = { path = "crates/tapline-ffi", version = "0.1.0" }
 tapline-ext = { path = "crates/tapline-ext", version = "0.1.0" }
 tapline-gmad = { path = "crates/tapline-gmad", version = "0.1.0" }
+tapline-pipe = { path = "crates/tapline-pipe", version = "0.1.0" }
 
 # async + parallelism. `tokio` is a dependency of tapline-rt-tokio ALONE, so a
 # host application that already runs its own reactor never inherits ours.
