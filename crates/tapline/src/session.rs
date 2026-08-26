@@ -776,13 +776,20 @@ impl Session {
 
         let limit = Arc::new(tokio::sync::Semaphore::new(options.concurrency.max(1)));
         let next_host = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut tasks: tokio::task::JoinSet<Result<ChunkOutcome, InstallError>> =
+        let mut tasks: tokio::task::JoinSet<(usize, Result<ChunkOutcome, InstallError>)> =
             tokio::task::JoinSet::new();
 
         let mut files_written = 0_u64;
-        let mut pending_sinks: Vec<(Arc<FileSink>, std::path::PathBuf, bool)> = Vec::new();
+        // Files whose chunks are still in flight, by index. A file leaves this
+        // map — and closes its descriptor — as soon as its own last chunk
+        // lands, which is the whole point: holding every sink until the depot
+        // finished meant one open descriptor per file in the depot. Garry's Mod
+        // has 2,329 of them and the default limit is 1,024, so it failed with
+        // "Too many open files" on any machine that had not raised the limit.
+        let mut pending: std::collections::BTreeMap<usize, PendingFile> =
+            std::collections::BTreeMap::new();
 
-        for file in entry.manifest.regular_files() {
+        for (index, file) in entry.manifest.regular_files().enumerate() {
             self.maybe_heartbeat().await?;
 
             let safe = validate_path(&file.path).map_err(|reason| InstallError::UnsafePath {
@@ -837,83 +844,113 @@ impl Session {
                     // The permit is held for the life of the task, which is what
                     // bounds the concurrency.
                     let _permit = permit;
+                    let outcome = async move {
+                        if resuming
+                            && let Ok(bytes) =
+                                sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
+                            && tapline_crypto::sha1(&bytes) == chunk.id
+                        {
+                            // Already correct: a read instead of a transfer.
+                            return Ok(ChunkOutcome::reused());
+                        }
 
-                    if resuming
-                        && let Ok(bytes) =
-                            sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
-                        && tapline_crypto::sha1(&bytes) == chunk.id
-                    {
-                        // Already correct: a read instead of a transfer.
-                        return Ok(ChunkOutcome::reused());
-                    }
+                        let mut last_error = None;
+                        for attempt in 0..4_usize {
+                            // Round-robin rather than always the best host.
+                            // Concentrating a depot's requests on one host is what
+                            // triggers rate limiting.
+                            let index = next_host
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                .wrapping_add(attempt);
+                            let host = hosts.get(index % hosts.len()).cloned().unwrap_or_default();
 
-                    let mut last_error = None;
-                    for attempt in 0..4_usize {
-                        // Round-robin rather than always the best host.
-                        // Concentrating a depot's requests on one host is what
-                        // triggers rate limiting.
-                        let index = next_host
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            .wrapping_add(attempt);
-                        let host = hosts.get(index % hosts.len()).cloned().unwrap_or_default();
+                            // The fetch is IO; the decode is not. Decrypting,
+                            // decompressing and hashing a megabyte is real CPU
+                            // work, and leaving it on an async worker means one
+                            // chunk's LZMA stalls every other task sharing that
+                            // thread. 2,404 chunks of it is the difference between
+                            // saturating a link and saturating one core.
+                            match fetch_chunk_bytes(http.as_ref(), &host, depot, &chunk).await {
+                                Ok(stored) => {
+                                    let for_decode = chunk.clone();
+                                    let host_for_decode = host.clone();
+                                    let decoded = tokio::task::spawn_blocking(move || {
+                                        tapline_cdn::decode_chunk(
+                                            &stored,
+                                            &for_decode,
+                                            &key,
+                                            &host_for_decode,
+                                        )
+                                    })
+                                    .await
+                                    .map_err(|e| InstallError::Io(e.to_string()))?;
 
-                        // The fetch is IO; the decode is not. Decrypting,
-                        // decompressing and hashing a megabyte is real CPU
-                        // work, and leaving it on an async worker means one
-                        // chunk's LZMA stalls every other task sharing that
-                        // thread. 2,404 chunks of it is the difference between
-                        // saturating a link and saturating one core.
-                        match fetch_chunk_bytes(http.as_ref(), &host, depot, &chunk).await {
-                            Ok(stored) => {
-                                let for_decode = chunk.clone();
-                                let host_for_decode = host.clone();
-                                let decoded = tokio::task::spawn_blocking(move || {
-                                    tapline_cdn::decode_chunk(
-                                        &stored,
-                                        &for_decode,
-                                        &key,
-                                        &host_for_decode,
-                                    )
-                                })
-                                .await
-                                .map_err(|e| InstallError::Io(e.to_string()))?;
-
-                                match decoded {
-                                    Ok(plaintext) => {
-                                        sink.write_at(chunk.offset, &plaintext).await?;
-                                        return Ok(ChunkOutcome::fetched(
-                                            &host,
-                                            u64::from(chunk.compressed_size),
-                                            plaintext.len() as u64,
-                                        ));
+                                    match decoded {
+                                        Ok(plaintext) => {
+                                            sink.write_at(chunk.offset, &plaintext).await?;
+                                            return Ok(ChunkOutcome::fetched(
+                                                &host,
+                                                u64::from(chunk.compressed_size),
+                                                plaintext.len() as u64,
+                                            ));
+                                        }
+                                        Err(error) => last_error = Some((host, error)),
                                     }
-                                    Err(error) => last_error = Some((host, error)),
+                                }
+                                Err(error) => {
+                                    // A host that served a chunk failing its hash
+                                    // check is not one to ask again — that is the
+                                    // shape of a poisoned cache, and retrying it
+                                    // returns the same wrong bytes.
+                                    last_error = Some((host, error));
                                 }
                             }
-                            Err(error) => {
-                                // A host that served a chunk failing its hash
-                                // check is not one to ask again — that is the
-                                // shape of a poisoned cache, and retrying it
-                                // returns the same wrong bytes.
-                                last_error = Some((host, error));
-                            }
+                        }
+
+                        match last_error {
+                            Some((_, error)) => Err(error.into()),
+                            None => Err(InstallError::Pool(tapline_cdn::PoolError::AllDemoted)),
                         }
                     }
-
-                    match last_error {
-                        Some((_, error)) => Err(error.into()),
-                        None => Err(InstallError::Pool(tapline_cdn::PoolError::AllDemoted)),
-                    }
+                    .await;
+                    (index, outcome)
                 });
             }
 
-            pending_sinks.push((sink, target, file.flags.executable));
+            let outstanding = file.chunks.len();
+            let entry_pending = PendingFile {
+                sink,
+                target,
+                mode: options.file_modes.mode_for(file.flags.executable),
+                outstanding,
+            };
             files_written += 1;
 
-            // Drain finished tasks as we go, so results are folded back and the
-            // set does not grow without bound on a depot with many files.
+            if outstanding == 0 {
+                // A zero-length file has no chunks, so nothing will ever finish
+                // for it. Finalise it here or its descriptor is never released.
+                finalize_file(entry_pending).await?;
+            } else {
+                pending.insert(index, entry_pending);
+            }
+
+            // Drain finished tasks as we go, so results are folded back, the
+            // set does not grow without bound, and finished files release their
+            // descriptors.
             while let Some(joined) = tasks.try_join_next() {
-                apply_outcome(joined, report, &mut self.pool)?;
+                apply_outcome(joined, report, &mut self.pool, &mut pending).await?;
+            }
+
+            // A hard ceiling on open descriptors, independent of how a depot
+            // happens to distribute chunks across files. The chunk semaphore
+            // already bounds this in practice; this is the guarantee rather
+            // than the expectation.
+            while pending.len() >= MAX_OPEN_FILES {
+                let Some(joined) = tasks.join_next().await else {
+                    break;
+                };
+                apply_outcome(joined, report, &mut self.pool, &mut pending).await?;
+                self.maybe_heartbeat().await?;
             }
         }
 
@@ -922,13 +959,19 @@ impl Session {
         // the connection goes quiet for as long as the tail takes. That is how
         // this failed the first time it ran — a broken pipe 101 seconds in.
         while let Some(joined) = tasks.join_next().await {
-            apply_outcome(joined, report, &mut self.pool)?;
+            apply_outcome(joined, report, &mut self.pool, &mut pending).await?;
             self.maybe_heartbeat().await?;
         }
 
-        for (sink, target, executable) in pending_sinks {
-            sink.sync().await?;
-            set_permissions(&target, options.file_modes.mode_for(executable))?;
+        // Nothing should be left: every file's chunks have been accounted for.
+        // Anything still here would be a file silently left unsynced, so it is
+        // an error rather than a cleanup step.
+        if let Some((_, leftover)) = pending.pop_first() {
+            return Err(InstallError::Io(format!(
+                "{} still had {} chunks outstanding after every task finished",
+                leftover.target.display(),
+                leftover.outstanding
+            )));
         }
         report.files += files_written;
 
@@ -1003,13 +1046,56 @@ impl ChunkOutcome {
 }
 
 /// Folds a finished chunk task back into the report and the pool's health.
-fn apply_outcome(
-    joined: Result<Result<ChunkOutcome, InstallError>, tokio::task::JoinError>,
+/// A file whose chunks are still being fetched.
+struct PendingFile {
+    /// The open descriptor being written through.
+    sink: Arc<FileSink>,
+    /// Where it lands.
+    target: std::path::PathBuf,
+    /// The mode to apply once it is complete.
+    mode: u32,
+    /// How many of its chunks have not finished yet.
+    outstanding: usize,
+}
+
+/// The most files that may be open at once during a depot.
+///
+/// Well under the usual 1,024 soft limit, because a process that linked tapline
+/// has its own descriptors and this budget is not the whole of it.
+const MAX_OPEN_FILES: usize = 64;
+
+/// Syncs a finished file, applies its mode, and closes it.
+async fn finalize_file(file: PendingFile) -> Result<(), InstallError> {
+    file.sink.sync().await?;
+    set_permissions(&file.target, file.mode)?;
+    // Explicit, because the descriptor closing here is the point.
+    drop(file.sink);
+    Ok(())
+}
+
+async fn apply_outcome(
+    joined: Result<(usize, Result<ChunkOutcome, InstallError>), tokio::task::JoinError>,
     report: &mut InstallReport,
     pool: &mut HostPool,
+    pending: &mut std::collections::BTreeMap<usize, PendingFile>,
 ) -> Result<(), InstallError> {
-    let outcome =
-        joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))??;
+    let (index, outcome) =
+        joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))?;
+
+    // The file is finished either way: a failed chunk fails the install, and a
+    // successful one is one fewer outstanding. Decrement before the `?` so a
+    // failure does not leave a stale entry behind.
+    let finished = match pending.get_mut(&index) {
+        Some(file) => {
+            file.outstanding = file.outstanding.saturating_sub(1);
+            file.outstanding == 0
+        }
+        None => false,
+    };
+    let outcome = outcome?;
+    if finished && let Some(file) = pending.remove(&index) {
+        finalize_file(file).await?;
+    }
 
     if outcome.reused {
         report.chunks_reused += 1;
