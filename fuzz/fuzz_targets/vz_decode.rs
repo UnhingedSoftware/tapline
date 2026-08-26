@@ -10,7 +10,7 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    match tapline_lzma::decode(data) {
+    match tapline_chunk::decode(data) {
         Err(_) => {}
         Ok(plaintext) => {
             // If it decoded, the container's CRC must have matched — that is
@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             assert!(
-                plaintext.len() <= tapline_lzma::MAX_CHUNK,
+                plaintext.len() <= tapline_chunk::MAX_CHUNK,
                 "decode exceeded its own size cap"
             );
         }

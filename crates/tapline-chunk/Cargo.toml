@@ -1,6 +1,6 @@
 [package]
-name = "tapline-lzma"
-description = "The VZ chunk container: Steam's LZMA wrapper around depot content"
+name = "tapline-chunk"
+description = "Steam's chunk containers: VZ (LZMA) and VSZ (zstd)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 crc32fast = { workspace = true }
 lzma-rs = { workspace = true }
+ruzstd = { workspace = true }
 
 [lints]
 workspace = true

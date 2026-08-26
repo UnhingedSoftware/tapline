@@ -1,13 +1,14 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/tapline",
     "crates/tapline-cdn",
     "crates/tapline-crypto",
     "crates/tapline-event",
     "crates/tapline-ids",
     "crates/tapline-proto",
     "crates/tapline-io",
-    "crates/tapline-lzma",
+    "crates/tapline-chunk",
     "crates/tapline-fs",
     "crates/tapline-manifest",
     "crates/tapline-net",
@@ -35,10 +36,11 @@ rust-version = "1.85"
 tapline-wire = { path = "crates/tapline-wire" }
 tapline-ids = { path = "crates/tapline-ids" }
 tapline-proto = { path = "crates/tapline-proto" }
+tapline = { path = "crates/tapline" }
 tapline-cdn = { path = "crates/tapline-cdn" }
 tapline-crypto = { path = "crates/tapline-crypto" }
 tapline-vdf = { path = "crates/tapline-vdf" }
-tapline-lzma = { path = "crates/tapline-lzma" }
+tapline-chunk = { path = "crates/tapline-chunk" }
 tapline-event = { path = "crates/tapline-event" }
 tapline-io = { path = "crates/tapline-io" }
 tapline-fs = { path = "crates/tapline-fs" }
@@ -82,12 +84,11 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 # container formats. miniz_oxide is pure Rust with no C build, and is needed
 # because Steam gzips the payload of a CMsgMulti when it batches messages.
 #
-# `ruzstd` is deliberately absent. Steam's schema implies a VSZ (zstd) chunk
-# container, but probing Team Fortress 2 DS, Counter-Strike 2 DS and Valheim DS
-# on 2026-08-26 returned VZ for every chunk. A decoder for a container nothing
-# serves would be untested by construction; tapline-lzma names an unrecognised
-# magic instead, so if VSZ appears the error says so.
+# Steam serves chunks in two containers and both are needed. VZ wraps LZMA and
+# VSZ wraps zstd; sampling three chunks of one small depot showed only VZ, but a
+# full Valheim install is 32 VSZ to every 8 VZ. Both decoders are pure Rust.
 lzma-rs = "0.3"
+ruzstd = "0.9"
 miniz_oxide = "0.8"
 
 # filesystem + observability

@@ -154,7 +154,7 @@ pub fn decode_chunk(
         tapline_crypto::decrypt_content(depot_key, stored).map_err(|_| CdnError::Decrypt)?;
 
     let plaintext =
-        tapline_lzma::decode(&container).map_err(|e| CdnError::Container(e.to_string()))?;
+        tapline_chunk::decode(&container).map_err(|e| CdnError::Container(e.to_string()))?;
 
     // The check the whole pipeline exists to reach.
     let digest = tapline_crypto::sha1(&plaintext);

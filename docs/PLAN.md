@@ -333,8 +333,11 @@ tapline login --qr | tapline logout | tapline whoami
 The gate column is the milestone's test, written in the same commits as the code.
 No milestone closes on "it ran once by hand".
 
-Status as of 2026-08-26: **M0–M5 done**, each verified against live Steam where
-the gate says so. 181 offline tests; the live tests are `#[ignore]`d.
+Status as of 2026-08-26: **M0–M6 done**, each verified against live Steam where
+the gate says so. 237 offline tests; the live tests are `#[ignore]`d.
+
+M6's differential passed: a 1.7 GB Valheim Dedicated Server install is
+**byte-identical to steamcmd's**, 793 files, no differences of any kind.
 
 | # | milestone | gate |
 |---|---|---|
@@ -344,7 +347,7 @@ the gate says so. 181 offline tests; the live tests are `#[ignore]`d.
 | M3 ✅ | `tapline-rt-tokio` + `tapline-net`: CM handshake (TCP + WS), mux, anon logon | `tapline whoami` on a real CM; captured-session vectors pass against an in-memory `Stream` with no network |
 | M4 ✅ | `tapline-pics` → `app info 232250 --json` | depots/branches match SteamDB |
 | M5 ✅ | depot keys + `tapline-manifest` → `app plan` | our manifest parse is byte-identical to steamcmd's `depotcache/*.manifest` |
-| M6 | `tapline-cdn` + `tapline-fs`: first full install | `diff -r` vs a steamcmd install of 232250 is empty |
+| M6 ✅ | `tapline-cdn` + `tapline-fs`: first full install | `diff -r` vs a steamcmd install of 232250 is empty |
 | M7 | `tapline-state`, delta update, resume, `validate`/repair | update across two builds touches only changed files |
 | M8 | Workshop: SteamPipe UGC + legacy UFS | `diff -r` vs steamcmd `workshop_download_item` |
 | M9 | credentialed login (password/QR/Guard), token store, owned-app download | login once, re-login from stored token |
@@ -404,6 +407,16 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
   * `tapline-crypto`'s message encryption is still needed, but for depot content:
     manifest filename decryption and chunk decryption, not the channel.
   * We owe a WebSocket client (RFC 6455 framing) instead of the CM handshake.
+
+- **The zstd chunk container is real, and an early probe said it was not.**
+  Three chunks from Team Fortress 2's smallest depot all came back `VZ`, which
+  was a correct measurement of an unrepresentative sample; the inference —
+  "nothing serves the zstd container" — was wrong. A full Valheim install then
+  failed on a `VS` magic, and sampling that depot properly gives 32 `VSZ` to
+  every 8 `VZ`. What made it a five-second diagnosis rather than an afternoon
+  was the error naming the bytes it found instead of saying "malformed chunk".
+  The two crates became one, `tapline-chunk`, since the choice is per chunk and
+  the dispatch has to live somewhere.
 
 - **`tapline-lzma` and `tapline-zstd` moved from M1 to M6.** They were planned as
   leaves to build early, but the `VZ` and `VSZ` container headers around the

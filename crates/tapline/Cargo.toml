@@ -1,27 +1,28 @@
 [package]
-name = "tapline-cdn"
-description = "The SteamPipe CDN: host pool, chunk fetch, decrypt, decompress and verify"
+name = "tapline"
+description = "Install Steam apps and Workshop content: the library other Rust projects link"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# No socket: fetching happens through the Fetch trait.
 [dependencies]
-tapline-crypto = { workspace = true }
+tapline-cdn = { workspace = true }
+tapline-event = { workspace = true }
+tapline-fs = { workspace = true }
 tapline-ids = { workspace = true }
 tapline-io = { workspace = true }
 tapline-chunk = { workspace = true }
 tapline-manifest = { workspace = true }
-
-[dev-dependencies]
-tapline-fs = { workspace = true }
 tapline-net = { workspace = true }
 tapline-pics = { workspace = true }
 tapline-proto = { workspace = true }
 tapline-rt-tokio = { workspace = true }
 tapline-wire = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

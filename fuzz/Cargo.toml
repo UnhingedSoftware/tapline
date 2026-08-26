@@ -15,7 +15,7 @@ cargo-fuzz = true
 crc32fast = "1"
 libfuzzer-sys = "0.4"
 tapline-fs = { path = "../crates/tapline-fs" }
-tapline-lzma = { path = "../crates/tapline-lzma" }
+tapline-chunk = { path = "../crates/tapline-chunk" }
 tapline-vdf = { path = "../crates/tapline-vdf" }
 tapline-wire = { path = "../crates/tapline-wire" }
 
