@@ -359,7 +359,7 @@ impl Session {
         &mut self,
         app: AppId,
         options: &InstallOptions,
-        observe: &mut dyn FnMut(Event),
+        observe: &mut (dyn FnMut(Event) + Send),
     ) -> Result<InstallReport, InstallError> {
         let resolved = self.resolve(app, options).await?;
 
@@ -692,7 +692,7 @@ impl Session {
         &mut self,
         item: &crate::WorkshopItem,
         options: &InstallOptions,
-        observe: &mut dyn FnMut(Event),
+        observe: &mut (dyn FnMut(Event) + Send),
     ) -> Result<InstallReport, InstallError> {
         let target = crate::options_for(options, item.app, item.id);
         std::fs::create_dir_all(&target.install_dir)?;
@@ -743,8 +743,29 @@ impl Session {
                 };
                 report.depots.push(*depot);
                 let bytes_total = entry.manifest.total_size;
+
+                // Same contract as an app install: Planned first, so a consumer
+                // has the denominator before the numerator moves. A Workshop
+                // item used to emit nothing until its first file landed, which
+                // meant the same progress code could not drive both.
+                let (chunks, download_bytes) = entry.manifest.distinct_chunks();
+                observe(Event::Planned {
+                    plan: Plan {
+                        download_bytes,
+                        reused_bytes: 0,
+                        total_bytes: bytes_total,
+                        file_count: entry.manifest.regular_files().count() as u64,
+                        chunk_count: chunks.len() as u64,
+                    },
+                });
+                observe(Event::DepotStarted {
+                    depot: *depot,
+                    manifest: *manifest,
+                    bytes: bytes_total,
+                });
                 self.install_depot(&entry, &target, &mut report, observe, bytes_total)
                     .await?;
+                observe(Event::DepotCompleted { depot: *depot });
             }
 
             crate::WorkshopContent::Legacy { url, filename } => {
@@ -838,7 +859,7 @@ impl Session {
         entry: &ResolvedDepot,
         options: &InstallOptions,
         report: &mut InstallReport,
-        observe: &mut dyn FnMut(Event),
+        observe: &mut (dyn FnMut(Event) + Send),
         bytes_total: u64,
     ) -> Result<(), InstallError> {
         // Directories first, so a file never races the directory it lives in.
@@ -1223,7 +1244,7 @@ fn finalize_file(file: PendingFile) -> Result<(String, u64), InstallError> {
 /// Unwraps a finished finalisation and reports the file it completed.
 fn collect_finalize(
     joined: Result<Result<(String, u64), InstallError>, tokio::task::JoinError>,
-    observe: &mut dyn FnMut(Event),
+    observe: &mut (dyn FnMut(Event) + Send),
 ) -> Result<(), InstallError> {
     let (path, bytes) = joined
         .map_err(|error| InstallError::Io(format!("a file could not be finalised: {error}")))??;
