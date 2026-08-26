@@ -1,0 +1,23 @@
+[package]
+name = "tapline-cli"
+description = "The tapline binary: a steamcmd-compatible command line, plus a modern one"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tapline"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tapline = { workspace = true }
+tapline-auth = { workspace = true }
+tapline-ids = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

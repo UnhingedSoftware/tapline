@@ -69,7 +69,7 @@ impl Drop for Scratch {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_real_depot_downloads_and_lands_on_disk() {
     let scratch = Scratch::new("install-232257");

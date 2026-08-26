@@ -42,7 +42,7 @@ fn target() -> (AppId, Option<u32>) {
     (AppId(app), depot)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn fetch_a_real_chunk_and_dump_its_container() {
     let servers = cm_list(0).await.expect("directory");

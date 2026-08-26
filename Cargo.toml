@@ -4,6 +4,7 @@ members = [
     "crates/tapline",
     "crates/tapline-auth",
     "crates/tapline-cdn",
+    "crates/tapline-cli",
     "crates/tapline-crypto",
     "crates/tapline-event",
     "crates/tapline-ids",
@@ -41,6 +42,7 @@ tapline-proto = { path = "crates/tapline-proto" }
 tapline = { path = "crates/tapline" }
 tapline-auth = { path = "crates/tapline-auth" }
 tapline-cdn = { path = "crates/tapline-cdn" }
+tapline-cli = { path = "crates/tapline-cli" }
 tapline-crypto = { path = "crates/tapline-crypto" }
 tapline-state = { path = "crates/tapline-state" }
 tapline-vdf = { path = "crates/tapline-vdf" }

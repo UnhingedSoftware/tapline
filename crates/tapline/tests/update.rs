@@ -42,7 +42,7 @@ fn scratch(name: &str) -> PathBuf {
 /// Valheim: 1.7 GB, two depots, and the app the differential already uses.
 const VALHEIM: AppId = AppId(896_660);
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam and downloads 1.7 GB"]
 async fn a_second_install_downloads_nothing() {
     let root = scratch("update-valheim");
@@ -119,7 +119,7 @@ async fn a_second_install_downloads_nothing() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_record_survives_a_round_trip_through_our_own_reader() {
     // A smaller check that does not need a gigabyte: install one depot's worth
@@ -150,7 +150,7 @@ async fn the_record_survives_a_round_trip_through_our_own_reader() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam and downloads 1.7 GB"]
 async fn a_deleted_file_comes_back_with_force() {
     let root = scratch("repair-valheim");

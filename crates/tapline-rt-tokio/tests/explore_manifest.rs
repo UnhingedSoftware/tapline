@@ -28,7 +28,7 @@ use tapline_wire::Message;
 const APP: u32 = 232_250;
 const DEPOT: u32 = 232_257;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn fetch_a_real_manifest_and_dump_it() {
     let servers = cm_list(0).await.expect("directory");

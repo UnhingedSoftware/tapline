@@ -41,6 +41,48 @@ jobs:
         with:
           command: check all
 
+  # The shipped binary has a size budget, and a budget nobody checks is a wish.
+  # Also proves the static musl build works, which needs a musl-targeting C
+  # compiler because rustls's `ring` backend compiles C for the target.
+  binary-size:
+    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build the release binary
+        run: cargo build --release --target x86_64-unknown-linux-musl -p tapline-cli
+
+      - name: Check the size budget
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/tapline
+          SIZE=$(stat -c%s "$BIN")
+          LIMIT=$((4 * 1024 * 1024))
+          echo "tapline is $SIZE bytes (budget $LIMIT)"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "::error::the binary is $SIZE bytes, over the $LIMIT budget"
+            exit 1
+          fi
+
+      - name: It must actually be static
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/tapline
+          file "$BIN"
+          if ldd "$BIN" 2>&1 | grep -qv "not a dynamic executable"; then
+            echo "::error::the musl binary is not static"
+            ldd "$BIN" || true
+            exit 1
+          fi
+
+      - name: And it must run
+        run: target/x86_64-unknown-linux-musl/release/tapline --version
+
   # The metadata build is what a webapp links: it must not drag in rayon, cap-std,
   # clap or serde. Asserted against the dependency graph rather than hoped for.
   minimal-graph:

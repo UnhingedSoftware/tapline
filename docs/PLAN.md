@@ -81,7 +81,7 @@ the HTTP surface (`ISteamDirectory` bootstrap, `ISteamRemoteStorage` legacy blob
 fetch) is an optional accelerator that must always have a CM fallback. Anything
 that can only work over WebAPI is treated as a partial mode, never the default.
 
-### Dependency floor (target: ~15 direct, pure-Rust, no C toolchain)
+### Dependency floor (target: ~15 direct, one C dependency)
 
 `tokio` (net/rt/io-util/sync/time/fs only) · `rayon` · `bytes` · `rustls` +
 `webpki-roots` · RustCrypto (`rsa`, `aes`, `cbc`, `sha1`, `sha2`, `hmac`) ·
@@ -89,7 +89,24 @@ that can only work over WebAPI is treated as a partial mode, never the default.
 `keyring`, `serde`/`serde_json` (CLI + JSON output), `clap` (CLI). `cargo-deny`
 enforces the ceiling in CI, so adding a dependency is a visible decision.
 
-Notably absent: reqwest, hyper, prost, protoc, openssl, any C build.
+Notably absent: reqwest, hyper, prost, protoc, openssl.
+
+**Correction, 2026-08-26.** This section said "no C toolchain" and that was
+wrong. `rustls` uses `ring` for its cryptography, and `ring` has C and assembly
+with a `cc` build script — `deny.toml` allowlisted `cc` for exactly that crate
+while the prose above claimed otherwise. The consequences, stated plainly:
+
+* **Building for glibc needs no extra toolchain**, and the resulting binary
+  links only `libc`, `libm` and `libgcc_s`. It is portable across glibc Linux
+  and has no OpenSSL, no Steam runtime and no 32-bit libraries — which is the
+  practical sense in which it is standalone, against steamcmd's ~250 MB tree.
+* **Building for static musl needs a musl-targeting C compiler** (`musl-tools`,
+  or `x86_64-linux-musl-gcc`) because `ring` compiles C for the target. CI
+  installs it; a developer building only for glibc never needs it.
+* The alternative — swapping `ring` for a pure-Rust provider — was considered
+  and rejected. It would trade a build-time convenience for a less-exercised
+  TLS implementation, which is the wrong direction for the one dependency where
+  a subtle bug is a security bug.
 
 ## Architecture — wide DAG for parallel compile
 
@@ -333,7 +350,7 @@ tapline login --qr | tapline logout | tapline whoami
 The gate column is the milestone's test, written in the same commits as the code.
 No milestone closes on "it ran once by hand".
 
-Status as of 2026-08-26: **M0–M9 done**, each verified against live Steam where
+Status as of 2026-08-26: **M0–M10 done**, each verified against live Steam where
 the gate says so. 237 offline tests; the live tests are `#[ignore]`d.
 
 M6's differential passed: a 1.7 GB Valheim Dedicated Server install is
@@ -345,6 +362,12 @@ against one steamcmd wrote.
 
 M8's gate passed: a Garry's Mod Workshop item is byte-identical to what
 `steamcmd +workshop_download_item` produces, in the same directory layout.
+
+M10's numbers, measured on the same machine and link, both cold: steamcmd
+installs Valheim Dedicated Server in 19.0 s, tapline in 11.7 s. That is 1.47 GB
+at ~125 MB/s, close enough to a gigabit ceiling that both are probably
+network-bound. The number that moved was 238 s to 11.7 s, and most of it was
+not the network — see the README.
 
 M9 is done with one deliberate limit: the QR flow, the RSA key exchange and
 the token store are all verified against live Steam, but **no test completes a
@@ -365,7 +388,7 @@ account existing.
 | M7 ✅ | `tapline-state`, delta update, resume, `validate`/repair | update across two builds touches only changed files |
 | M8 ✅ | Workshop: SteamPipe UGC + legacy UFS | `diff -r` vs steamcmd `workshop_download_item` |
 | M9 ✅ | credentialed login (password/QR/Guard), token store, owned-app download | login once, re-login from stored token |
-| M10 | perf pass, steamcmd grammar, musl release, size budgets in CI, docs, publish | benchmark + size table in README; `cargo tree` test on the metadata build |
+| M10 ✅ | perf pass, steamcmd grammar, musl release, size budgets in CI, docs, publish | benchmark + size table in README; `cargo tree` test on the metadata build |
 
 ## Testing as you go, and disk hygiene
 

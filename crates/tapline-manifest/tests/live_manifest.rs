@@ -30,7 +30,7 @@ const APP: AppId = AppId(232_250);
 /// The smallest depot in the app: 9,989 bytes installed.
 const SMALL_DEPOT: u32 = 232_257;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_real_manifest_decrypts_into_real_paths() {
     let servers = cm_list(0).await.expect("directory");

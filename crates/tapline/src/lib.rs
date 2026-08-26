@@ -45,4 +45,4 @@ pub use workshop::{WorkshopContent, WorkshopError, WorkshopItem, classify, item_
 pub use tapline_auth::{GuardType, StoredToken, TokenStore};
 pub use tapline_event::{Event, Plan, RetryReason};
 pub use tapline_ids::{AppId, DepotId, ManifestId, PublishedFileId};
-pub use tapline_pics::Os;
+pub use tapline_pics::{AppInfo, Branch, Depot, DepotFilter, Os};

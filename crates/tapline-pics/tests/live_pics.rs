@@ -36,7 +36,7 @@ async fn anonymous_session() -> Session<CmTransport> {
     session
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn tf2_dedicated_server_resolves_to_real_depots() {
     // The M4 gate. These numbers come from Steam, and the assertions below are
@@ -104,7 +104,7 @@ async fn tf2_dedicated_server_resolves_to_real_depots() {
     session.close().await.expect("close");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_windows_and_linux_filters_select_different_depots() {
     // The clearest possible statement that the filter does something: the two
@@ -138,7 +138,7 @@ async fn the_windows_and_linux_filters_select_different_depots() {
     session.close().await.expect("close");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn other_dedicated_servers_resolve_too() {
     // One app resolving could be luck with its particular document shape.
@@ -172,7 +172,7 @@ async fn other_dedicated_servers_resolve_too() {
     session.close().await.expect("close");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn an_unknown_app_is_reported_as_unknown() {
     let mut session = anonymous_session().await;

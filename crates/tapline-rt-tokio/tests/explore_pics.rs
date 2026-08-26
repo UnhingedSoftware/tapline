@@ -21,7 +21,7 @@ use tapline_wire::Message;
 /// Team Fortress 2 Dedicated Server: anonymous-accessible, and small.
 const APP: u32 = 232_250;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn dump_a_real_pics_product_info_response() {
     let servers = cm_list(0).await.expect("directory");

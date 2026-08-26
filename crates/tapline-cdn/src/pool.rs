@@ -126,6 +126,19 @@ impl HostPool {
         }
     }
 
+    /// The hostnames still worth using, best first.
+    ///
+    /// Taken once before a download and handed to the fetch tasks, so they need
+    /// no lock on the pool to pick a host. Health is folded back afterwards.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<String> {
+        self.hosts
+            .iter()
+            .filter(|host| !self.is_demoted(&host.host))
+            .map(|host| host.host.clone())
+            .collect()
+    }
+
     /// Whether a host has been retired.
     #[must_use]
     pub fn is_demoted(&self, host: &str) -> bool {

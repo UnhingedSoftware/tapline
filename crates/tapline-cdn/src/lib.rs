@@ -106,12 +106,31 @@ impl std::error::Error for CdnError {}
 ///
 /// The `Result` is the contract: bytes come back only when they hash to the id
 /// the manifest named.
+///
+/// Convenient, and does the decode inline. A downloader running many of these
+/// at once should use [`fetch_chunk_bytes`] and schedule [`decode_chunk`] as
+/// blocking work instead — decrypting, decompressing and hashing a megabyte is
+/// CPU, and doing it on an async worker stalls every task sharing that thread.
 pub async fn fetch_chunk<F: Fetch>(
     fetcher: &F,
     host: &str,
     depot: DepotId,
     chunk: &Chunk,
     depot_key: &[u8; 32],
+) -> Result<Vec<u8>, CdnError> {
+    let stored = fetch_chunk_bytes(fetcher, host, depot, chunk).await?;
+    decode_chunk(&stored, chunk, depot_key, host)
+}
+
+/// Fetches a chunk's stored bytes, without decoding them.
+///
+/// The IO half. Still checks the length against the manifest, so an over-long
+/// response is cut off rather than followed.
+pub async fn fetch_chunk_bytes<F: Fetch>(
+    fetcher: &F,
+    host: &str,
+    depot: DepotId,
+    chunk: &Chunk,
 ) -> Result<Vec<u8>, CdnError> {
     let id = chunk.id_hex();
     let url = format!("https://{host}/depot/{depot}/chunk/{id}");
@@ -137,7 +156,7 @@ pub async fn fetch_chunk<F: Fetch>(
         });
     }
 
-    decode_chunk(&response.body, chunk, depot_key, host)
+    Ok(response.body)
 }
 
 /// Decrypts, decompresses and verifies a chunk's stored bytes.

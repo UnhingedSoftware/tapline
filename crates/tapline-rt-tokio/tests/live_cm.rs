@@ -14,7 +14,7 @@
 use tapline_net::Session;
 use tapline_rt_tokio::{CmTransport, cm_list};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_directory_returns_usable_cms() {
     let servers = cm_list(0).await.expect("the directory must answer");
@@ -44,7 +44,7 @@ async fn the_directory_returns_usable_cms() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn an_anonymous_logon_succeeds_against_a_real_cm() {
     // The M3 gate. Everything from the WebSocket handshake through message
@@ -97,7 +97,7 @@ async fn an_anonymous_logon_succeeds_against_a_real_cm() {
     session.close().await.expect("close must succeed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_session_survives_the_traffic_steam_pushes_unasked() {
     // Steam pushes a license list and other messages right after logon, batched

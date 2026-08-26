@@ -37,7 +37,7 @@ const APPS: &[(u32, &str)] = &[
     (730, "Counter-Strike 2"),
 ];
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn which_delivery_path_do_real_items_use() {
     let servers = cm_list(0).await.expect("directory");

@@ -24,7 +24,7 @@
 
 use tapline::{PollOutcome, Session};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_qr_login_starts_and_polls() {
     // No password anywhere in this test.
@@ -91,7 +91,7 @@ async fn a_qr_login_starts_and_polls() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn steam_issues_a_real_rsa_key_for_an_account_name() {
     // This needs an account *name*, not a secret — Steam hands the public key
@@ -131,7 +131,7 @@ async fn steam_issues_a_real_rsa_key_for_an_account_name() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn an_unknown_account_still_gets_a_key_rather_than_leaking_existence() {
     // Steam issues a key for names that do not exist too, which is the correct

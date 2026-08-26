@@ -63,7 +63,7 @@ async fn some_real_items(session: &mut Session, app: AppId, count: u32) -> Vec<P
         .collect()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
     let root = scratch("workshop-gmod");
@@ -171,7 +171,7 @@ async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_nonexistent_item_is_reported_rather_than_silently_dropped() {
     // Asking for five items and getting three back is worse than being told
@@ -202,7 +202,7 @@ async fn a_nonexistent_item_is_reported_rather_than_silently_dropped() {
 /// the same thing — and this one is small.
 const DIFFERENTIAL_ITEM: PublishedFileId = PublishedFileId(3_790_437_566);
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam and needs a steamcmd workshop download to compare against"]
 async fn tapline_downloads_what_steamcmd_downloads() {
     // Produce the reference with:

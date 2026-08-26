@@ -4,7 +4,7 @@ use crate::{InstallError, InstallOptions, InstallReport};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tapline_cdn::{Host, HostPool, fetch_chunk, fetch_manifest};
+use tapline_cdn::{Host, HostPool, fetch_chunk_bytes, fetch_manifest};
 use tapline_event::Plan;
 use tapline_fs::validate_path;
 use tapline_ids::{AppId, DepotId, PublishedFileId};
@@ -94,10 +94,12 @@ impl Session {
             pool: HostPool::new(Vec::new()),
             cell_id: outcome.cell_id,
             keys: HashMap::new(),
-            // Steam asks for 9 seconds; the margin keeps a slow chunk from
-            // pushing us past the deadline.
+            // Steam asks for 9 seconds. Halved, because the heartbeat is sent
+            // between chunk fetches rather than by a timer: whatever is in
+            // flight when the deadline passes delays it, and the margin is what
+            // absorbs that.
             heartbeat_interval: std::time::Duration::from_secs(
-                u64::from(outcome.heartbeat_seconds).clamp(1, 60),
+                (u64::from(outcome.heartbeat_seconds).clamp(2, 60)) / 2,
             ),
             last_heartbeat: std::time::Instant::now(),
             app_name: None,
@@ -534,6 +536,11 @@ impl Session {
         Ok(self.cm.call(request).await?)
     }
 
+    /// Fetches an app's PICS document.
+    pub async fn app_info(&mut self, app: AppId) -> Result<tapline_pics::AppInfo, InstallError> {
+        Ok(tapline_pics::product_info(&mut self.cm, app).await?)
+    }
+
     /// Describes Workshop items.
     ///
     /// Items Steam refuses, or describes with nothing fetchable, come back as
@@ -732,6 +739,16 @@ impl Session {
     }
 
     /// Downloads one depot's files.
+    ///
+    /// Chunks are fetched concurrently across the host pool. Sequentially, a
+    /// 1.47 GB Valheim install took 238 seconds — one request at a time, each
+    /// waiting a full round trip before the next began, which leaves the link
+    /// idle for most of the download.
+    ///
+    /// The concurrency is bounded and the bound is not decoration: Steam rate
+    /// limits per host, and a download that opens fifty connections to one
+    /// cache is a download that gets throttled. Work is spread across the pool
+    /// rather than piled onto the least-loaded host for the same reason.
     async fn install_depot(
         &mut self,
         entry: &ResolvedDepot,
@@ -750,6 +767,21 @@ impl Session {
             std::fs::create_dir_all(safe.resolve(&options.install_dir))?;
         }
 
+        // A snapshot of the pool, so the fetch tasks need no lock on it. Health
+        // is tracked per task and folded back afterwards.
+        let hosts: Vec<String> = self.pool.snapshot();
+        if hosts.is_empty() {
+            return Err(InstallError::Pool(tapline_cdn::PoolError::Empty));
+        }
+
+        let limit = Arc::new(tokio::sync::Semaphore::new(options.concurrency.max(1)));
+        let next_host = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tasks: tokio::task::JoinSet<Result<ChunkOutcome, InstallError>> =
+            tokio::task::JoinSet::new();
+
+        let mut files_written = 0_u64;
+        let mut pending_sinks: Vec<(Arc<FileSink>, std::path::PathBuf, bool)> = Vec::new();
+
         for file in entry.manifest.regular_files() {
             self.maybe_heartbeat().await?;
 
@@ -761,9 +793,8 @@ impl Session {
 
             // A file already the right length may be a resumed download or a
             // partially-correct one. Reading a chunk back and hashing it
-            // answers "is this byte range already right?" directly, without
-            // trusting any record of what happened last time — and a chunk that
-            // is already correct costs a read instead of a download.
+            // answers "is this range already right?" directly, without trusting
+            // any record of what happened last time.
             let existing = if options.resume {
                 std::fs::metadata(&target)
                     .ok()
@@ -772,69 +803,134 @@ impl Session {
             } else {
                 None
             };
-
             let resuming = existing.is_some();
-            let sink = match existing {
+
+            let sink = Arc::new(match existing {
                 Some(sink) => sink,
                 None => {
                     let sink = FileSink::create(&target)?;
                     sink.allocate(file.size).await?;
                     sink
                 }
-            };
+            });
 
             for chunk in &file.chunks {
+                // Before the permit, not after: acquiring blocks once the
+                // window is full, and a file with many chunks would otherwise
+                // sit here past the deadline without touching the CM.
                 self.maybe_heartbeat().await?;
 
-                if resuming
-                    && let Ok(bytes) = sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
-                    && tapline_crypto::sha1(&bytes) == chunk.id
-                {
-                    // Already correct. This is what makes a resume cheap and a
-                    // repair surgical.
-                    report.chunks_reused += 1;
-                    continue;
-                }
-
-                let mut attempts = 0_u32;
-                let plaintext = loop {
-                    let host = self.pool.acquire()?;
-                    match fetch_chunk(
-                        self.http.as_ref(),
-                        &host.host,
-                        entry.depot.id,
-                        chunk,
-                        &entry.key,
-                    )
+                let permit = Arc::clone(&limit)
+                    .acquire_owned()
                     .await
+                    .map_err(|e| InstallError::Io(e.to_string()))?;
+
+                let sink = Arc::clone(&sink);
+                let http = Arc::clone(&self.http);
+                let hosts = hosts.clone();
+                let next_host = Arc::clone(&next_host);
+                let chunk = chunk.clone();
+                let key = entry.key;
+                let depot = entry.depot.id;
+
+                tasks.spawn(async move {
+                    // The permit is held for the life of the task, which is what
+                    // bounds the concurrency.
+                    let _permit = permit;
+
+                    if resuming
+                        && let Ok(bytes) =
+                            sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
+                        && tapline_crypto::sha1(&bytes) == chunk.id
                     {
-                        Ok(bytes) => {
-                            self.pool.succeed(&host.host);
-                            break bytes;
-                        }
-                        Err(error) => {
-                            // A host that served a chunk failing its hash check
-                            // is not a host to ask again — that is the shape of
-                            // a poisoned cache, and retrying it returns the same
-                            // wrong bytes.
-                            self.pool.demote(&host.host);
-                            attempts += 1;
-                            if attempts >= 4 {
-                                return Err(error.into());
+                        // Already correct: a read instead of a transfer.
+                        return Ok(ChunkOutcome::reused());
+                    }
+
+                    let mut last_error = None;
+                    for attempt in 0..4_usize {
+                        // Round-robin rather than always the best host.
+                        // Concentrating a depot's requests on one host is what
+                        // triggers rate limiting.
+                        let index = next_host
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            .wrapping_add(attempt);
+                        let host = hosts.get(index % hosts.len()).cloned().unwrap_or_default();
+
+                        // The fetch is IO; the decode is not. Decrypting,
+                        // decompressing and hashing a megabyte is real CPU
+                        // work, and leaving it on an async worker means one
+                        // chunk's LZMA stalls every other task sharing that
+                        // thread. 2,404 chunks of it is the difference between
+                        // saturating a link and saturating one core.
+                        match fetch_chunk_bytes(http.as_ref(), &host, depot, &chunk).await {
+                            Ok(stored) => {
+                                let for_decode = chunk.clone();
+                                let host_for_decode = host.clone();
+                                let decoded = tokio::task::spawn_blocking(move || {
+                                    tapline_cdn::decode_chunk(
+                                        &stored,
+                                        &for_decode,
+                                        &key,
+                                        &host_for_decode,
+                                    )
+                                })
+                                .await
+                                .map_err(|e| InstallError::Io(e.to_string()))?;
+
+                                match decoded {
+                                    Ok(plaintext) => {
+                                        sink.write_at(chunk.offset, &plaintext).await?;
+                                        return Ok(ChunkOutcome::fetched(
+                                            &host,
+                                            u64::from(chunk.compressed_size),
+                                            plaintext.len() as u64,
+                                        ));
+                                    }
+                                    Err(error) => last_error = Some((host, error)),
+                                }
+                            }
+                            Err(error) => {
+                                // A host that served a chunk failing its hash
+                                // check is not one to ask again — that is the
+                                // shape of a poisoned cache, and retrying it
+                                // returns the same wrong bytes.
+                                last_error = Some((host, error));
                             }
                         }
                     }
-                };
 
-                report.bytes_downloaded += u64::from(chunk.compressed_size);
-                sink.write_at(chunk.offset, &plaintext).await?;
-                report.bytes_written += plaintext.len() as u64;
+                    match last_error {
+                        Some((_, error)) => Err(error.into()),
+                        None => Err(InstallError::Pool(tapline_cdn::PoolError::AllDemoted)),
+                    }
+                });
             }
 
-            sink.sync().await?;
-            set_permissions(&target, file.flags.executable)?;
-            report.files += 1;
+            pending_sinks.push((sink, target, file.flags.executable));
+            files_written += 1;
+
+            // Drain finished tasks as we go, so results are folded back and the
+            // set does not grow without bound on a depot with many files.
+            while let Some(joined) = tasks.try_join_next() {
+                apply_outcome(joined, report, &mut self.pool)?;
+            }
         }
+
+        // Everything still in flight. The heartbeat matters most here: every
+        // file has been queued, so this loop is pure waiting, and without it
+        // the connection goes quiet for as long as the tail takes. That is how
+        // this failed the first time it ran — a broken pipe 101 seconds in.
+        while let Some(joined) = tasks.join_next().await {
+            apply_outcome(joined, report, &mut self.pool)?;
+            self.maybe_heartbeat().await?;
+        }
+
+        for (sink, target, executable) in pending_sinks {
+            sink.sync().await?;
+            set_permissions(&target, executable)?;
+        }
+        report.files += files_written;
 
         // Symlinks last: their targets must exist, and their validation is
         // separate because a link is the indirect form of a traversal.
@@ -872,6 +968,59 @@ impl Session {
 
         Ok(())
     }
+}
+
+/// What one chunk task did.
+struct ChunkOutcome {
+    /// The host that served it, when one did.
+    host: Option<String>,
+    /// Bytes fetched from the CDN.
+    downloaded: u64,
+    /// Bytes written to disk.
+    written: u64,
+    /// Whether the chunk was already correct.
+    reused: bool,
+}
+
+impl ChunkOutcome {
+    const fn reused() -> Self {
+        Self {
+            host: None,
+            downloaded: 0,
+            written: 0,
+            reused: true,
+        }
+    }
+
+    fn fetched(host: &str, downloaded: u64, written: u64) -> Self {
+        Self {
+            host: Some(host.to_owned()),
+            downloaded,
+            written,
+            reused: false,
+        }
+    }
+}
+
+/// Folds a finished chunk task back into the report and the pool's health.
+fn apply_outcome(
+    joined: Result<Result<ChunkOutcome, InstallError>, tokio::task::JoinError>,
+    report: &mut InstallReport,
+    pool: &mut HostPool,
+) -> Result<(), InstallError> {
+    let outcome =
+        joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))??;
+
+    if outcome.reused {
+        report.chunks_reused += 1;
+        return Ok(());
+    }
+    if let Some(host) = &outcome.host {
+        pool.succeed(host);
+    }
+    report.bytes_downloaded += outcome.downloaded;
+    report.bytes_written += outcome.written;
+    Ok(())
 }
 
 /// Applies the executable bit the manifest asked for.

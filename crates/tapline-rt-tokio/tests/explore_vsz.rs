@@ -34,7 +34,7 @@ use tapline_wire::Message;
 /// Valheim Dedicated Server, whose install turned one up.
 const APP: AppId = AppId(896_660);
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn find_a_vsz_chunk() {
     let servers = cm_list(0).await.expect("directory");

@@ -23,7 +23,7 @@ tapline-proto = { workspace = true }
 tapline-rt-tokio = { workspace = true }
 tapline-state = { workspace = true }
 tapline-wire = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
 
 [dev-dependencies]
 tapline-auth = { workspace = true }

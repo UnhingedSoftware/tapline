@@ -81,7 +81,7 @@ fn walk(root: &Path) -> BTreeMap<String, u64> {
     out
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam and needs a steamcmd install to compare against"]
 async fn tapline_installs_what_steamcmd_installs() {
     let Ok(reference) = std::env::var("TAPLINE_STEAMCMD_DIR") else {
