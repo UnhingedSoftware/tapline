@@ -406,6 +406,53 @@ impl Session {
         })
     }
 
+    /// Opens a Workshop item for reading without downloading it.
+    ///
+    /// The returned [`RemoteFile`] fetches only the chunks a read crosses, so a
+    /// caller can read a container's index — wherever it lives — and then only
+    /// the entries it wants.
+    ///
+    /// That is what makes formats other than GMAD possible. A ZIP keeps its
+    /// central directory at the end, which no sequential reader can reach
+    /// early; here it is a read like any other. It is also what lets a filter
+    /// stop paying for what it discards.
+    ///
+    /// [`RemoteFile`]: crate::RemoteFile
+    pub async fn open_workshop_item(
+        &mut self,
+        item: &crate::WorkshopItem,
+    ) -> Result<crate::RemoteFile, InstallError> {
+        let crate::WorkshopContent::SteamPipe { depot, manifest } = &item.content else {
+            return Err(InstallError::Io(
+                "only SteamPipe Workshop items can be read by range; this one is a legacy UFS blob"
+                    .to_owned(),
+            ));
+        };
+
+        let entry = self.resolve_workshop(item.app, *depot, *manifest).await?;
+        let files: Vec<_> = entry.manifest.regular_files().collect();
+        let [file] = files.as_slice() else {
+            return Err(InstallError::Io(format!(
+                "reading by range needs a single-file item; this one has {}",
+                files.len()
+            )));
+        };
+
+        let hosts = self.pool.snapshot();
+        if hosts.is_empty() {
+            return Err(InstallError::Pool(tapline_cdn::PoolError::Empty));
+        }
+
+        Ok(crate::RemoteFile::new(
+            file.chunks.clone(),
+            *depot,
+            entry.key,
+            hosts,
+            Arc::clone(&self.shared.http),
+            Arc::clone(&self.shared.limit),
+        ))
+    }
+
     /// Downloads a Workshop item and feeds its bytes to `consumer`, in order,
     /// without writing the item itself to disk.
     ///
@@ -1594,6 +1641,53 @@ fn finalize_file(file: PendingFile) -> Result<Finished, InstallError> {
         bytes: file.size,
         extended,
     })
+}
+
+/// Fetches one chunk and decodes it, trying other hosts on failure.
+///
+/// Shared by the streaming download and ranged reads, which want the same
+/// thing: bytes for a chunk, verified, from whichever host will serve them.
+pub(crate) async fn fetch_and_decode(
+    http: &Arc<tapline_rt_tokio::HttpClient>,
+    hosts: &[String],
+    depot: DepotId,
+    chunk: &tapline_manifest::Chunk,
+    key: &[u8; 32],
+    rotation: usize,
+) -> Result<Vec<u8>, InstallError> {
+    if hosts.is_empty() {
+        return Err(InstallError::Pool(tapline_cdn::PoolError::Empty));
+    }
+    let mut last_error = None;
+    for attempt in 0..4_usize {
+        // Rotated per caller so concurrent reads spread across hosts rather
+        // than all starting on the same one.
+        let host = hosts
+            .get((rotation + attempt) % hosts.len())
+            .cloned()
+            .unwrap_or_default();
+        match fetch_chunk_bytes(http.as_ref(), &host, depot, chunk).await {
+            Ok(stored) => {
+                let for_decode = chunk.clone();
+                let key = *key;
+                let host_for_decode = host.clone();
+                let decoded = tokio::task::spawn_blocking(move || {
+                    tapline_cdn::decode_chunk(&stored, &for_decode, &key, &host_for_decode)
+                })
+                .await
+                .map_err(|error| InstallError::Io(error.to_string()))?;
+                match decoded {
+                    Ok(plaintext) => return Ok(plaintext),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.map_or(
+        InstallError::Pool(tapline_cdn::PoolError::AllDemoted),
+        Into::into,
+    ))
 }
 
 /// One streamed chunk: its plaintext, what it cost to fetch, and from where.
