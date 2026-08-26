@@ -17,7 +17,7 @@ tapline +login anonymous +force_install_dir /srv/valheim +app_update 896660 +qui
 
 # or the native one, with machine-readable output
 tapline app plan 896660 --dir /srv/valheim --json
-tapline app download 896660 --dir /srv/valheim --concurrency 32
+tapline app download 896660 --dir /srv/valheim --concurrency 64
 tapline workshop download 4000 3790437566 --dir /srv/gmod
 ```
 
@@ -63,8 +63,8 @@ Same machine, same link, both starting cold:
 
 | app | downloaded | steamcmd | tapline |
 |---|---|---|---|
-| Valheim DS (896660) | 1.47 GB | 19.0 s | **9.3 s** |
-| Garry's Mod DS (4020) | 3.54 GB | 29.5 s | **21.1 s** |
+| Valheim DS (896660) | 1.47 GB | 19.0 s | **8.3 s** |
+| Garry's Mod DS (4020) | 3.54 GB | 29.5 s | **18.3 s** |
 
 GMod is the more interesting measurement because tapline lost it first, at
 41.3 s against 29.5 s. Instrumenting the stages, aggregated across the sixteen
@@ -88,15 +88,43 @@ says otherwise:
 | concurrency | wall clock | throughput |
 |---|---|---|
 | 16 | 29.5 s | 120 MB/s |
-| **32** | **21.1 s** | 168 MB/s |
-| 64 | 19.5 s | 181 MB/s |
+| 32 | 21.1 s | 168 MB/s |
+| **64** | **18.3 s** | 184 MB/s |
+| 128 | 20.7 s | 163 MB/s |
+| 256 | 21.5 s | 157 MB/s |
 
-There was no link ceiling at 120 MB/s; 16 was leaving 40% of the throughput
+There was no link ceiling at 120 MB/s; 16 was leaving a third of the throughput
 unused, and the sentence explaining that it could not go faster was reasoning
-from two coincidentally similar numbers. The default is now 32. 64 is left on
-the table on purpose: it buys 1.5 s for twice the request rate against Steam's
-CDN, and a throttled account costs more than a slow download. `--concurrency N`
-is there for anyone who has measured their own link.
+from two coincidentally similar numbers. The default is 64, where the curve
+turns over.
+
+## Where the ceiling actually is
+
+Around **184 MB/s**, and it does not appear to be ours. Everything below was
+measured on a 2.5 Gb link behind a 3 Gb connection, with a disk that writes at
+1.9 GB/s — none of which is the constraint at 184 MB/s.
+
+| change | result |
+|---|---|
+| more concurrency (128, 256) | slower: 163, 157 MB/s |
+| more CDN hosts (40, 60) | much slower: 60, 59 MB/s |
+| fewer CDN hosts (4, 8, 12) | no change within noise |
+| sticky host affinity per slot | **40–55% slower** |
+
+The sticky experiment is the informative failure. Chunks round-robin across the
+host list, so a host's pooled connection can go cold between visits and pay a
+fresh TLS handshake; pinning each in-flight slot to one host should have kept
+every socket warm. It lost every single run, at 20 hosts and at 64. The reason
+is the thing round-robin was quietly doing all along: hosts are not equally
+fast, and dynamic assignment lets the quick ones absorb more work while a
+pinned slot waits on whichever host it drew. That also explains the wide-host
+result without any appeal to handshakes — Steam returns hosts best-first, so
+asking for 40 or 60 means spending an equal share of requests on the worst ones.
+
+What is left is what Steam serves one client from one cell. Pulling ~100 GB
+inside an hour got that number cut roughly in half for a while, which is a
+volume limit rather than a connection-count one, and is worth knowing before
+reading any benchmark taken on a hot cache.
 
 An update that finds nothing changed re-checks 6.8 GB across 2,329 files in
 **2.1 s** and downloads 0 bytes.

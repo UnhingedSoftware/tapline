@@ -35,23 +35,30 @@ pub struct InstallOptions {
     pub force: bool,
     /// How many chunks to fetch at once.
     ///
-    /// 32 by default, which is where the measurements stop paying. Installing
-    /// Garry's Mod (3.54 GB) on the same machine and link:
+    /// 64 by default. Garry's Mod (3.54 GB), same machine and link:
     ///
     /// | concurrency | wall clock | throughput |
     /// |---|---|---|
     /// | 16 | 29.5 s | 120 MB/s |
     /// | 32 | 21.1 s | 168 MB/s |
-    /// | 64 | 19.5 s | 181 MB/s |
+    /// | 64 | 18.3 s | 184 MB/s |
+    /// | 128 | 20.7 s | 163 MB/s |
+    /// | 256 | 21.5 s | 157 MB/s |
     ///
-    /// Going from 32 to 64 buys 1.5 seconds for twice the request rate against
-    /// Steam's CDN, and a throttled account costs more than a slow download.
-    /// Raise it if you have measured your own link and want the tail.
+    /// It is not monotonic: past 64 the extra requests cost more than they
+    /// carry. 64 also won all four paired Valheim runs (mean 8.3 s against
+    /// 9.4 s at 32), which is why the default moved off 32 — the first pass
+    /// read the 32-to-64 step as noise, and repeating it showed it was not.
     ///
-    /// The earlier default of 16 was picked as "deliberately modest" without a
-    /// measurement behind it, and the note explaining that choice described a
-    /// link ceiling that turned out not to exist: 16 was leaving 40% of the
-    /// available throughput unused.
+    /// This has now been wrong twice in opposite directions. It was 16, chosen
+    /// as "deliberately modest" with no measurement, then 32, chosen from a
+    /// single sweep. Both times the number was defended with a story about
+    /// where the bottleneck must be rather than a measurement of where it was.
+    ///
+    /// Around 184 MB/s the ceiling stops being ours: more concurrency, more CDN
+    /// hosts and fewer CDN hosts were each measured and none of them move it,
+    /// on a 2.5 Gb link with a 1.9 GB/s disk. It appears to be what Steam serves
+    /// one client from one cell.
     pub concurrency: usize,
     /// What permissions to give installed files.
     pub file_modes: FileModes,
@@ -104,7 +111,7 @@ impl Default for InstallOptions {
             include_dlc: false,
             resume: true,
             force: false,
-            concurrency: 32,
+            concurrency: 64,
             file_modes: FileModes::default(),
         }
     }
@@ -278,12 +285,20 @@ mod tests {
 
     #[test]
     fn concurrency_defaults_to_something_a_cdn_will_tolerate() {
-        // Not a round number chosen for looks: Steam rate-limits per host, and
-        // a download that opens fifty connections gets throttled.
+        // The upper bound is measured, not assumed. This test used to cap the
+        // default at 32 on the reasoning that "a download that opens fifty
+        // connections gets throttled" — and 64 turned out to be both the
+        // fastest setting and entirely untroubled, with no 429 or 403 in any
+        // run. The throttling actually observed came from pulling ~100 GB in an
+        // hour, which is a volume limit and not a connection-count one.
+        //
+        // 128 and 256 were measured too and are slower than 64, so the bound
+        // stays: it exists to catch someone raising the default on a hunch, in
+        // either direction.
         let concurrency = InstallOptions::default().concurrency;
         assert!(
-            (1..=32).contains(&concurrency),
-            "default concurrency {concurrency} is outside what a CDN tolerates"
+            (1..=64).contains(&concurrency),
+            "default concurrency {concurrency} is outside the measured range"
         );
     }
 
