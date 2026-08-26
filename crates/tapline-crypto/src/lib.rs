@@ -15,7 +15,9 @@
 
 mod symmetric;
 
-pub use symmetric::{CryptoError, SessionKey, decrypt_message, encrypt_message};
+pub use symmetric::{
+    CryptoError, SessionKey, decrypt_content, decrypt_message, encrypt_content, encrypt_message,
+};
 
 use hmac::{Hmac, Mac};
 use sha1::{Digest, Sha1};

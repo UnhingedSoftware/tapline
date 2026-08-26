@@ -576,6 +576,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-manifest"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+ "tapline-crypto",
+ "tapline-ids",
+ "tapline-io",
+ "tapline-net",
+ "tapline-pics",
+ "tapline-proto",
+ "tapline-rt-tokio",
+ "tapline-wire",
+ "tokio",
+]
+
+[[package]]
 name = "tapline-net"
 version = "0.1.0"
 dependencies = [

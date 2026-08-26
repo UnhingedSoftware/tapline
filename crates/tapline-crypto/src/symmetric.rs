@@ -240,12 +240,108 @@ pub fn decrypt_message(key: &SessionKey, ciphertext: &[u8]) -> Result<Vec<u8>, C
     Ok(plaintext)
 }
 
+/// Decrypts content encrypted with a plain, non-authenticating IV.
+///
+/// Depot content — manifest filenames and the chunks themselves — uses the same
+/// `ECB(iv) || CBC(iv, plaintext)` layering as the CM channel, but the IV is
+/// random rather than derived from an HMAC. There is no tag to check, which is
+/// fine here for a reason worth stating: a chunk's integrity comes from its
+/// SHA-1 matching the id the manifest named, and the manifest came over an
+/// authenticated session. The cipher is providing confidentiality, and something
+/// else is providing integrity.
+///
+/// Using [`decrypt_message`] for this would fail every time, since there is no
+/// HMAC in the IV to match.
+pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let wrapped = SessionKey::from_bytes(*key);
+
+    let encrypted_iv: [u8; BLOCK] = ciphertext
+        .get(..BLOCK)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(CryptoError::MalformedCiphertext)?;
+    let body = ciphertext
+        .get(BLOCK..)
+        .ok_or(CryptoError::MalformedCiphertext)?;
+    if body.is_empty() || body.len() % BLOCK != 0 {
+        return Err(CryptoError::MalformedCiphertext);
+    }
+
+    let iv = ecb_decrypt_block(&wrapped, encrypted_iv);
+
+    let cipher = Aes256CbcDec::new(GenericArray::from_slice(key), GenericArray::from_slice(&iv));
+    let mut buf = body.to_vec();
+    Ok(cipher
+        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .map_err(|_| CryptoError::DecryptionFailed)?
+        .to_vec())
+}
+
+/// Encrypts content with a plain IV, mirroring [`decrypt_content`].
+///
+/// Only used to build test fixtures: tapline never uploads to Steam.
+pub fn encrypt_content(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let wrapped = SessionKey::from_bytes(*key);
+    let iv = crate::random_bytes::<BLOCK>();
+    let encrypted_iv = ecb_encrypt_block(&wrapped, iv);
+
+    let cipher = Aes256CbcEnc::new(GenericArray::from_slice(key), GenericArray::from_slice(&iv));
+
+    let padded_len = plaintext.len() + BLOCK - (plaintext.len() % BLOCK);
+    let mut out = vec![0_u8; BLOCK + padded_len];
+
+    let iv_slot = out.get_mut(..BLOCK).ok_or(CryptoError::DecryptionFailed)?;
+    iv_slot.copy_from_slice(&encrypted_iv);
+
+    let body = out.get_mut(BLOCK..).ok_or(CryptoError::DecryptionFailed)?;
+    cipher
+        .encrypt_padded_b2b_mut::<Pkcs7>(plaintext, body)
+        .map_err(|_| CryptoError::DecryptionFailed)?;
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn test_key() -> SessionKey {
         SessionKey::from_bytes([0x42; 32])
+    }
+
+    #[test]
+    fn content_encryption_round_trips_with_a_plain_iv() {
+        let key = [0x37; 32];
+        for plaintext in [b"".as_slice(), b"models/player/heavy.mdl", &[0xAB; 1024]] {
+            let ciphertext = encrypt_content(&key, plaintext).expect("must encrypt");
+            assert_eq!(
+                decrypt_content(&key, &ciphertext).expect("must decrypt"),
+                plaintext
+            );
+        }
+    }
+
+    #[test]
+    fn content_decryption_does_not_expect_an_hmac_iv() {
+        // The two schemes share their layering and differ in how the IV is
+        // built. Using the channel's decryptor on content fails every time,
+        // which is exactly the bug this separate function prevents.
+        let key = [0x37; 32];
+        let ciphertext = encrypt_content(&key, b"models/player/heavy.mdl").expect("encrypt");
+        assert_eq!(
+            decrypt_message(&SessionKey::from_bytes(key), &ciphertext),
+            Err(CryptoError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn the_wrong_depot_key_does_not_yield_a_filename() {
+        let ciphertext = encrypt_content(&[0x37; 32], b"bin/srcds_linux").expect("encrypt");
+        // Padding will almost always fail; when it does not, the plaintext is
+        // still wrong. Either way it must not be the filename.
+        match decrypt_content(&[0x38; 32], &ciphertext) {
+            Err(_) => {}
+            Ok(plaintext) => assert_ne!(plaintext, b"bin/srcds_linux"),
+        }
     }
 
     #[test]

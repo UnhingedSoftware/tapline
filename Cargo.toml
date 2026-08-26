@@ -6,6 +6,7 @@ members = [
     "crates/tapline-ids",
     "crates/tapline-proto",
     "crates/tapline-io",
+    "crates/tapline-manifest",
     "crates/tapline-net",
     "crates/tapline-pics",
     "crates/tapline-rt-tokio",
@@ -37,6 +38,7 @@ tapline-lzma = { path = "crates/tapline-lzma" }
 tapline-zstd = { path = "crates/tapline-zstd" }
 tapline-event = { path = "crates/tapline-event" }
 tapline-io = { path = "crates/tapline-io" }
+tapline-manifest = { path = "crates/tapline-manifest" }
 tapline-net = { path = "crates/tapline-net" }
 tapline-pics = { path = "crates/tapline-pics" }
 tapline-rt-tokio = { path = "crates/tapline-rt-tokio" }

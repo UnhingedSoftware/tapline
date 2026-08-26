@@ -1,0 +1,27 @@
+[package]
+name = "tapline-manifest"
+description = "Depot manifests: the ZIP container, the protobuf blocks inside it, and the chunk index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# No IO. A manifest arrives as bytes and is parsed here.
+[dependencies]
+crc32fast = { workspace = true }
+miniz_oxide = { workspace = true }
+tapline-crypto = { workspace = true }
+tapline-ids = { workspace = true }
+tapline-proto = { workspace = true }
+tapline-wire = { workspace = true }
+
+[dev-dependencies]
+tapline-io = { workspace = true }
+tapline-net = { workspace = true }
+tapline-pics = { workspace = true }
+tapline-rt-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
