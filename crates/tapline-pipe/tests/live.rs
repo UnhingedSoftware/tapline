@@ -39,19 +39,17 @@ impl Drop for Scratch {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
-async fn a_chain_writes_every_sink_from_one_download() {
+async fn a_chain_streams_into_a_zip_without_the_archive() {
     let root = scratch("tee");
     let _scratch = Scratch(root.clone());
     std::fs::create_dir_all(&root).expect("mkdir");
 
-    let unpacked = root.join("unpacked");
     let zip = root.join("out.zip");
 
     // No session: the pool provides one and takes it back.
     let outcome = tapline_pipe::workshop(APP, ITEM)
         .gma()
         .zip(zip.to_string_lossy())
-        .dir(unpacked.to_string_lossy())
         .run()
         .await
         .expect("the chain must run");
@@ -64,10 +62,6 @@ async fn a_chain_writes_every_sink_from_one_download() {
     assert_eq!(outcome.entries, 348, "wrong entry count");
 
     assert!(zip.is_file(), "the zip was not written");
-    assert!(
-        unpacked.join("lua/pac3/extra/client/init.lua").is_file(),
-        "the directory was not written"
-    );
 
     // The archive itself never existed: that is the point of streaming.
     let stray: Vec<_> = std::fs::read_dir(&root)

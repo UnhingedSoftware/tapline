@@ -7,21 +7,19 @@
 //!
 //! [`Splitter`]: crate::Splitter
 
-use crate::format::{Addon, Entry};
-use crate::split::EntrySink;
 use crate::zip;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tapline_ext::ExtensionError;
+use tapline_ext::{ArchiveEntry, EntrySink};
 
 /// Validates every path in an index, up front.
 ///
 /// Before a single byte is written, always. A Workshop item is published by
 /// anyone, and an archive that gets half its files onto disk before the one
 /// escaping the root is noticed has already done the damage.
-fn validate(addon: &Addon, root: &Path) -> Result<Vec<PathBuf>, ExtensionError> {
-    addon
-        .entries
+fn validate(entries: &[ArchiveEntry], root: &Path) -> Result<Vec<PathBuf>, ExtensionError> {
+    entries
         .iter()
         .map(|entry| {
             tapline_fs::validate_path(&entry.path)
@@ -72,17 +70,13 @@ impl ToDirectory {
 }
 
 impl EntrySink for ToDirectory {
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
-        self.targets = validate(addon, &self.dest)?;
-        self.names = addon
-            .entries
-            .iter()
-            .map(|entry| entry.path.clone())
-            .collect();
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
+        self.targets = validate(entries, &self.dest)?;
+        self.names = entries.iter().map(|entry| entry.path.clone()).collect();
         Ok(())
     }
 
-    fn begin(&mut self, _entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+    fn begin(&mut self, _entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
         self.at = index;
         let Some(target) = self.targets.get(index) else {
             return Ok(());
@@ -213,19 +207,19 @@ impl ToZip {
 }
 
 impl EntrySink for ToZip {
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
         // Validated against a notional root: the names go inside a ZIP rather
         // than onto the filesystem, but an archive carrying `..` into whatever
         // unpacks it next is the same problem one step removed.
         let root = Path::new("");
-        self.names = validate(addon, root)?
+        self.names = validate(entries, root)?
             .iter()
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .collect();
         Ok(())
     }
 
-    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+    fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
         self.at = index;
         self.buffer.clear();
         // The size is known from the index, so the buffer is allocated once
@@ -466,15 +460,15 @@ impl<S: EntrySink> Filtered<S> {
 }
 
 impl<S: EntrySink> EntrySink for Filtered<S> {
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
         // The index is passed through whole. A sink validating paths must see
         // every one of them, including the ones about to be filtered out: an
         // archive containing an escaping path is hostile whether or not this
         // run happened to select it.
-        self.inner.index(addon)
+        self.inner.index(entries)
     }
 
-    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+    fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
         self.passing = self.patterns.selects(&entry.path);
         if self.passing {
             self.inner.begin(entry, index)?;
@@ -541,14 +535,14 @@ impl Fanout {
 }
 
 impl EntrySink for Fanout {
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
         for sink in &mut self.sinks {
-            sink.index(addon)?;
+            sink.index(entries)?;
         }
         Ok(())
     }
 
-    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+    fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
         for sink in &mut self.sinks {
             sink.begin(entry, index)?;
         }

@@ -9,51 +9,12 @@
 //! do something with each — differing only in what "something" is, and neither
 //! wants its own copy of a byte-boundary state machine.
 
-use crate::format::{Addon, Entry, parse_index};
+use crate::format::{Addon, parse_index};
 use tapline_ext::ExtensionError;
+use tapline_ext::{ArchiveEntry, Decoder, EntrySink};
 
 /// The largest header this will buffer before refusing.
 const HEADER_LIMIT: usize = 1 << 26;
-
-/// What a splitter reports to.
-///
-/// Called in order: [`index`] once, then [`begin`], [`data`] any number of
-/// times, [`end`], repeating for each entry.
-///
-/// [`index`]: EntrySink::index
-/// [`begin`]: EntrySink::begin
-/// [`data`]: EntrySink::data
-/// [`end`]: EntrySink::end
-pub trait EntrySink {
-    /// The index has been read; every entry's name and size is now known.
-    ///
-    /// The place to validate paths, because it happens before any entry's bytes
-    /// are handed over — a hostile archive must not get half its files written
-    /// before the escaping one is noticed.
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError>;
-
-    /// An entry's bytes are about to arrive.
-    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError>;
-
-    /// Part of the current entry. May be called many times, or not at all for
-    /// an empty entry.
-    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError>;
-
-    /// The current entry is complete.
-    fn end(&mut self) -> Result<(), ExtensionError>;
-
-    /// The archive is complete; write anything held back.
-    ///
-    /// A ZIP's central directory is written here, and a ZIP without one is a
-    /// file most readers refuse. Defaulted because most sinks have nothing to
-    /// do — a sink writing loose files is finished when its last entry is.
-    ///
-    /// Takes `&mut self` rather than `self` so it can be called through a
-    /// `Box<dyn EntrySink>`, which is what fanning out to several sinks needs.
-    fn finish(&mut self) -> Result<(), ExtensionError> {
-        Ok(())
-    }
-}
 
 /// Feeds archive bytes to an [`EntrySink`].
 pub struct Splitter<S: EntrySink> {
@@ -62,6 +23,8 @@ pub struct Splitter<S: EntrySink> {
     header: Vec<u8>,
     /// The index, once known.
     addon: Option<Addon>,
+    /// The same index in the format-neutral vocabulary the sinks speak.
+    entries: Vec<ArchiveEntry>,
     /// Which entry is being fed.
     at: usize,
     /// How much of it is still to come.
@@ -77,6 +40,7 @@ impl<S: EntrySink> Splitter<S> {
             sink,
             header: Vec::new(),
             addon: None,
+            entries: Vec::new(),
             at: 0,
             remaining: 0,
             seen: 0,
@@ -111,7 +75,15 @@ impl<S: EntrySink> Splitter<S> {
                         .entries
                         .first()
                         .map_or(self.header.len(), |entry| entry.offset);
-                    self.sink.index(&addon)?;
+                    self.entries = addon
+                        .entries
+                        .iter()
+                        .map(|entry| ArchiveEntry {
+                            path: entry.path.clone(),
+                            size: entry.size,
+                        })
+                        .collect();
+                    self.sink.index(&self.entries)?;
                     self.addon = Some(addon);
                     self.at = 0;
                     self.remaining = self
@@ -139,14 +111,11 @@ impl<S: EntrySink> Splitter<S> {
 
     /// Announces the current entry, if there is one.
     fn open(&mut self) -> Result<(), ExtensionError> {
-        let Some(addon) = self.addon.as_ref() else {
+        let Some(entry) = self.entries.get(self.at) else {
             return Ok(());
         };
-        let Some(entry) = addon.entries.get(self.at) else {
-            return Ok(());
-        };
-        // Cloned so the sink call does not hold a borrow of `self.addon` while
-        // `self.sink` is borrowed mutably.
+        // Cloned so the sink call does not hold a borrow of `self.entries`
+        // while `self.sink` is borrowed mutably.
         let entry = entry.clone();
         self.sink.begin(&entry, self.at)
     }
@@ -160,9 +129,7 @@ impl<S: EntrySink> Splitter<S> {
     }
 
     fn has_current(&self) -> bool {
-        self.addon
-            .as_ref()
-            .is_some_and(|addon| self.at < addon.entries.len())
+        self.at < self.entries.len()
     }
 
     /// Ends the current entry and opens the next.
@@ -201,7 +168,14 @@ impl<S: EntrySink> Splitter<S> {
     ///
     /// A stream that ended early is an error: telling a caller the archive was
     /// processed when the last entry is short would be false.
-    pub fn finish(self) -> Result<S, ExtensionError> {
+    /// Ends the archive without consuming the splitter.
+    fn finish_in_place(&mut self) -> Result<(), ExtensionError> {
+        self.check_complete()?;
+        self.sink.finish()
+    }
+
+    /// Whether every entry was fed.
+    fn check_complete(&self) -> Result<(), ExtensionError> {
         let Some(addon) = &self.addon else {
             return Err(ExtensionError::Malformed {
                 extension: "gmad",
@@ -226,43 +200,30 @@ impl<S: EntrySink> Splitter<S> {
                 ),
             });
         }
+        Ok(())
+    }
+
+    /// Finishes, returning the sink.
+    ///
+    /// A stream that ended early is an error: telling a caller the archive was
+    /// processed when the last entry is short would be false.
+    pub fn finish(mut self) -> Result<S, ExtensionError> {
+        self.finish_in_place()?;
         Ok(self.sink)
     }
 }
 
-impl<S: EntrySink + ?Sized> EntrySink for &mut S {
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
-        (**self).index(addon)
+impl<S: EntrySink> Decoder for Splitter<S> {
+    fn format(&self) -> &'static str {
+        "gma"
     }
-    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
-        (**self).begin(entry, index)
-    }
-    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
-        (**self).data(bytes)
-    }
-    fn end(&mut self) -> Result<(), ExtensionError> {
-        (**self).end()
-    }
-    fn finish(&mut self) -> Result<(), ExtensionError> {
-        (**self).finish()
-    }
-}
 
-impl<S: EntrySink + ?Sized> EntrySink for Box<S> {
-    fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
-        (**self).index(addon)
+    fn push(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
+        Self::push(self, bytes)
     }
-    fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
-        (**self).begin(entry, index)
-    }
-    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
-        (**self).data(bytes)
-    }
-    fn end(&mut self) -> Result<(), ExtensionError> {
-        (**self).end()
-    }
+
     fn finish(&mut self) -> Result<(), ExtensionError> {
-        (**self).finish()
+        self.finish_in_place()
     }
 }
 
@@ -290,12 +251,12 @@ mod tests {
     }
 
     impl EntrySink for Recorder {
-        fn index(&mut self, addon: &Addon) -> Result<(), ExtensionError> {
-            self.events.push(format!("index:{}", addon.entries.len()));
+        fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
+            self.events.push(format!("index:{}", entries.len()));
             Ok(())
         }
 
-        fn begin(&mut self, entry: &Entry, index: usize) -> Result<(), ExtensionError> {
+        fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
             self.events.push(format!("begin:{index}:{}", entry.path));
             self.current.clear();
             Ok(())
@@ -401,13 +362,17 @@ mod tests {
         // entry bytes reaching it.
         struct Refuses;
         impl EntrySink for Refuses {
-            fn index(&mut self, _addon: &Addon) -> Result<(), ExtensionError> {
+            fn index(&mut self, _entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
                 Err(ExtensionError::UnsafePath {
                     path: "../x".to_owned(),
                     reason: "escapes".to_owned(),
                 })
             }
-            fn begin(&mut self, _entry: &Entry, _index: usize) -> Result<(), ExtensionError> {
+            fn begin(
+                &mut self,
+                _entry: &ArchiveEntry,
+                _index: usize,
+            ) -> Result<(), ExtensionError> {
                 panic!("begin must not be reached after index refused");
             }
             fn data(&mut self, _bytes: &[u8]) -> Result<(), ExtensionError> {

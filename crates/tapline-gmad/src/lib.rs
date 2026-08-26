@@ -38,8 +38,9 @@ mod zip;
 pub use format::{Addon, Entry, MAGIC, parse, parse_index};
 pub use glob::{Patterns, matches as glob_matches};
 pub use sink::{Fanout, Filtered, ToDirectory, ToZip as ZipSink};
-pub use split::{EntrySink, Splitter};
+pub use split::Splitter;
 pub use stream::StreamingExtractor;
+pub use tapline_ext::{ArchiveEntry, Decoder, EntrySink};
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;

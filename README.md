@@ -319,17 +319,25 @@ A typed chain, for when the download is the first step rather than the last:
 tapline_pipe::workshop(4000, 104_691_717)
     .gma()                       // bytes -> entries
     .only("lua/**")              // optional
-    .zip("/srv/out.zip")         // a sink
-    .dir("/srv/addons")          // and another, same pass
-    .run(&mut session).await?;
+    .zip("/srv/out.zip")         // where it goes; ends the chain
+    .run().await?;
 ```
 
-The types change as you chain. A `Source` has no `.zip()`, because there is
-nothing to zip until the bytes have been interpreted — writing the steps in a
-nonsensical order is a compile error rather than a run-time one.
+The types change as you chain, and both mistakes are compile errors rather than
+run-time ones. A `Source` has no `.zip()`, because there is nothing to zip until
+the bytes have been interpreted. And choosing a destination **ends** the chain —
+there is no `.zip(..).dir(..)`.
 
-Sinks tee: that example reads the download **once** and writes both. The
-extension pipeline could not, and read the finished archive twice.
+That is deliberate. A stream has a direction; writing one download to two places
+is a fan-out, which is a different thing with different costs — a second sink
+that buffers multiplies what the first holds. `tapline_gmad::Fanout` is there
+for anyone who wants that explicitly, rather than by accident.
+
+`.gma()` is one `Decoder`. The sinks, the filter and the pipeline are written
+against `ArchiveEntry` rather than any container, so a second format is a
+decoder and nothing else changes. Whether a format can be streamed at all is a
+property of the format: GMAD works because its index comes first and its
+contents follow in index order.
 
 No session appears in that. One is taken from a process-wide pool and given
 back, so concurrent chains get different sessions and never wait on each other,
@@ -352,7 +360,6 @@ its text form:
 decode gma
 only lua/**
 zip /srv/out.zip
-dir /srv/addons
 ```
 
 Line-based rather than JSON because tapline writes JSON and does not parse it,
@@ -407,7 +414,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 446 tests, no network
+cargo test --workspace                # 447 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

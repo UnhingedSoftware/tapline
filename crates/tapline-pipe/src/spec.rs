@@ -102,8 +102,14 @@ pub struct Pipeline {
     pub format: String,
     /// Globs selecting entries. Empty selects everything.
     pub filters: Vec<String>,
-    /// Where to write. At least one is required to run.
-    pub sinks: Vec<Sink>,
+    /// Where to write. Exactly one.
+    ///
+    /// One destination, not a list. A stream has a direction: writing it to two
+    /// places at once is a fan-out, and a fan-out is a different thing with
+    /// different costs — a second sink that buffers would multiply what the
+    /// first one holds. `Fanout` is still there for anyone who wants that
+    /// explicitly; the chain does not offer it by accident.
+    pub sink: Option<Sink>,
 }
 
 impl Pipeline {
@@ -113,7 +119,7 @@ impl Pipeline {
         Self {
             format: "gma".to_owned(),
             filters: Vec::new(),
-            sinks: Vec::new(),
+            sink: None,
         }
     }
 
@@ -122,7 +128,7 @@ impl Pipeline {
         if self.format != "gma" {
             return Err(SpecError::UnknownFormat(self.format.clone()));
         }
-        if self.sinks.is_empty() {
+        if self.sink.is_none() {
             return Err(SpecError::NoSinks);
         }
         Ok(())
@@ -135,7 +141,7 @@ impl Pipeline {
         for filter in &self.filters {
             out.push_str(&format!("only {filter}\n"));
         }
-        for sink in &self.sinks {
+        for sink in self.sink.iter() {
             match sink {
                 Sink::Directory(path) => out.push_str(&format!("dir {path}\n")),
                 Sink::Zip {
@@ -156,7 +162,7 @@ impl Pipeline {
         let mut pipeline = Self {
             format: "gma".to_owned(),
             filters: Vec::new(),
-            sinks: Vec::new(),
+            sink: None,
         };
 
         for (index, raw) in text.lines().enumerate() {
@@ -184,15 +190,22 @@ impl Pipeline {
             match directive {
                 "decode" => pipeline.format = need(value)?,
                 "only" => pipeline.filters.push(need(value)?),
-                "dir" => pipeline.sinks.push(Sink::Directory(need(value)?)),
-                "zip" => pipeline.sinks.push(Sink::Zip {
-                    path: need(value)?,
-                    compress: true,
-                }),
-                "zip-stored" => pipeline.sinks.push(Sink::Zip {
-                    path: need(value)?,
-                    compress: false,
-                }),
+                // Last one wins rather than accumulating: the pipeline has one
+                // destination, and silently writing to two because a line was
+                // repeated is not something a caller asked for.
+                "dir" => pipeline.sink = Some(Sink::Directory(need(value)?)),
+                "zip" => {
+                    pipeline.sink = Some(Sink::Zip {
+                        path: need(value)?,
+                        compress: true,
+                    });
+                }
+                "zip-stored" => {
+                    pipeline.sink = Some(Sink::Zip {
+                        path: need(value)?,
+                        compress: false,
+                    });
+                }
                 other => {
                     return Err(SpecError::UnknownDirective {
                         directive: other.to_owned(),
@@ -215,19 +228,26 @@ mod tests {
         let original = Pipeline {
             format: "gma".to_owned(),
             filters: vec!["lua/**".to_owned(), "*.txt".to_owned()],
-            sinks: vec![
-                Sink::Directory("/srv/addons".to_owned()),
-                Sink::Zip {
-                    path: "/srv/out.zip".to_owned(),
-                    compress: true,
-                },
-                Sink::Zip {
-                    path: "/srv/fast.zip".to_owned(),
-                    compress: false,
-                },
-            ],
+            sink: Some(Sink::Zip {
+                path: "/srv/out.zip".to_owned(),
+                compress: true,
+            }),
         };
         assert_eq!(Pipeline::parse(&original.to_text()), Ok(original));
+    }
+
+    #[test]
+    fn a_second_destination_replaces_the_first() {
+        // One stream, one direction. Accumulating would make a repeated line
+        // silently write to two places.
+        let pipeline = Pipeline::parse("decode gma\ndir /a\nzip /b.zip\n").expect("parse");
+        assert_eq!(
+            pipeline.sink,
+            Some(Sink::Zip {
+                path: "/b.zip".to_owned(),
+                compress: true
+            })
+        );
     }
 
     #[test]
@@ -235,8 +255,8 @@ mod tests {
         // The reason the value is the rest of the line rather than a token.
         let pipeline = Pipeline::parse("decode gma\ndir /srv/my addons/here\n").expect("parse");
         assert_eq!(
-            pipeline.sinks,
-            vec![Sink::Directory("/srv/my addons/here".to_owned())]
+            pipeline.sink,
+            Some(Sink::Directory("/srv/my addons/here".to_owned()))
         );
     }
 
@@ -246,7 +266,7 @@ mod tests {
             Pipeline::parse("# what to do\n\ndecode gma\n\n  # a filter\n  only lua/**\ndir /x\n")
                 .expect("parse");
         assert_eq!(pipeline.filters, vec!["lua/**".to_owned()]);
-        assert_eq!(pipeline.sinks.len(), 1);
+        assert!(pipeline.sink.is_some());
     }
 
     #[test]
@@ -289,14 +309,16 @@ mod tests {
     }
 
     #[test]
-    fn sink_order_is_preserved() {
-        // The order sinks were added is the order they are written, which is
-        // what a caller asked for even if it does not matter to the result.
-        let text = "decode gma\nzip /a.zip\ndir /b\nzip /c.zip\n";
+    fn a_stored_zip_survives_the_round_trip() {
+        let text = "decode gma\nzip-stored /fast.zip\n";
         let pipeline = Pipeline::parse(text).expect("parse");
-        assert!(matches!(pipeline.sinks.first(), Some(Sink::Zip { .. })));
-        assert!(matches!(pipeline.sinks.get(1), Some(Sink::Directory(_))));
-        assert!(matches!(pipeline.sinks.get(2), Some(Sink::Zip { .. })));
+        assert_eq!(
+            pipeline.sink,
+            Some(Sink::Zip {
+                path: "/fast.zip".to_owned(),
+                compress: false
+            })
+        );
         assert_eq!(pipeline.to_text(), text);
     }
 }

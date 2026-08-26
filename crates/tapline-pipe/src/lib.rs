@@ -7,8 +7,7 @@
 //! workshop(4000, 104_691_717)
 //!     .gma()                        // bytes -> entries
 //!     .only("lua/**")               // optional
-//!     .zip("/srv/out.zip")          // a sink
-//!     .dir("/srv/addons")           // and another, same pass
+//!     .zip("/srv/out.zip")          // where it goes; ends the chain
 //!     .run()
 //!     .await?;
 //! # Ok(())
@@ -27,11 +26,36 @@
 //! stream of entries, and only then do the sinks appear. Writing the steps in a
 //! nonsensical order is a compile error rather than a run-time one.
 //!
-//! # One pass
+//! # One way
 //!
-//! Sinks tee. Asking for a directory and a zip reads the download once and
-//! writes both, which is the thing the extension pipeline could not do — there,
-//! `gmad,gmad-zip` read the finished archive twice.
+//! A stream has a direction, and choosing a destination ends the chain: there
+//! is no `.zip(..).dir(..)`. Writing one download to two places is a fan-out,
+//! which is a different thing with different costs — a second sink that buffers
+//! multiplies what the first one holds — and `tapline_gmad::Fanout` is there
+//! for anyone who wants it explicitly rather than by accident.
+//!
+//! # Modular by format
+//!
+//! `.gma()` is one [`tapline_ext::Decoder`]. The sinks, the filter and the
+//! pipeline are written against [`tapline_ext::ArchiveEntry`] rather than
+//! against any container, so a second format is a decoder and nothing else.
+//!
+//! Whether a format can be streamed at all is a property of the format: GMAD
+//! works because its index comes first and its contents follow in index order.
+//!
+//! # The one-way rule is enforced, not just documented
+//!
+//! ```compile_fail
+//! # use tapline_pipe::workshop;
+//! // `Ready` has no sink methods, so this does not compile.
+//! workshop(4000, 1).gma().zip("/out.zip").dir("/addons");
+//! ```
+//!
+//! ```compile_fail
+//! # use tapline_pipe::workshop;
+//! // Nor does choosing a destination before saying what the bytes are.
+//! workshop(4000, 1).zip("/out.zip");
+//! ```
 //!
 //! # The wire form
 //!
@@ -159,100 +183,76 @@ impl Decoded {
         self
     }
 
-    /// Unpacks into a directory.
+    /// Unpacks into a directory. Terminal.
     #[must_use]
-    pub fn dir(mut self, path: impl Into<String>) -> Piped {
-        self.pipeline.sinks.push(Sink::Directory(path.into()));
-        Piped {
+    pub fn dir(mut self, path: impl Into<String>) -> Ready {
+        self.pipeline.sink = Some(Sink::Directory(path.into()));
+        Ready {
             source: self.source,
             pipeline: self.pipeline,
         }
     }
 
-    /// Writes a ZIP, deflating what gets smaller for it.
+    /// Writes a ZIP, deflating what gets smaller for it. Terminal.
     #[must_use]
-    pub fn zip(mut self, path: impl Into<String>) -> Piped {
-        self.pipeline.sinks.push(Sink::Zip {
+    pub fn zip(mut self, path: impl Into<String>) -> Ready {
+        self.pipeline.sink = Some(Sink::Zip {
             path: path.into(),
             compress: true,
         });
-        Piped {
+        Ready {
             source: self.source,
             pipeline: self.pipeline,
         }
     }
 
-    /// Writes a ZIP without deflating: roughly four times faster.
+    /// Writes a ZIP without deflating: roughly four times faster. Terminal.
     #[must_use]
-    pub fn zip_stored(mut self, path: impl Into<String>) -> Piped {
-        self.pipeline.sinks.push(Sink::Zip {
+    pub fn zip_stored(mut self, path: impl Into<String>) -> Ready {
+        self.pipeline.sink = Some(Sink::Zip {
             path: path.into(),
             compress: false,
         });
-        Piped {
+        Ready {
             source: self.source,
             pipeline: self.pipeline,
         }
     }
 }
 
-/// A pipeline with at least one sink, ready to run.
+/// A pipeline with its destination chosen, ready to run.
+///
+/// There is no second sink method here, and that is the point. A stream has a
+/// direction: choosing where it goes ends the chain. Writing the same download
+/// to two places is a fan-out, which has different costs — a second sink that
+/// buffers would multiply what the first holds — and `tapline_gmad::Fanout` is
+/// there for anyone who wants it explicitly.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Piped {
+pub struct Ready {
     source: Source,
     pipeline: Pipeline,
 }
 
-impl Piped {
-    /// Adds another directory. Written in the same pass as the others.
-    #[must_use]
-    pub fn dir(mut self, path: impl Into<String>) -> Self {
-        self.pipeline.sinks.push(Sink::Directory(path.into()));
-        self
-    }
-
-    /// Adds another ZIP. Written in the same pass as the others.
-    #[must_use]
-    pub fn zip(mut self, path: impl Into<String>) -> Self {
-        self.pipeline.sinks.push(Sink::Zip {
-            path: path.into(),
-            compress: true,
-        });
-        self
-    }
-
-    /// Adds a stored ZIP. Written in the same pass as the others.
-    #[must_use]
-    pub fn zip_stored(mut self, path: impl Into<String>) -> Self {
-        self.pipeline.sinks.push(Sink::Zip {
-            path: path.into(),
-            compress: false,
-        });
-        self
-    }
-
+impl Ready {
     /// The value this chain describes.
     ///
     /// What crosses a C ABI or an HTTP request; the chain is only how it is
     /// written in Rust.
     #[must_use]
-    pub fn pipeline(&self) -> &Pipeline {
+    pub const fn pipeline(&self) -> &Pipeline {
         &self.pipeline
     }
 
-    /// Runs it.
+    /// Runs it on a pooled session.
     ///
-    /// Takes a session from the process-wide pool and gives it back
-    /// afterwards, so nothing here needs to know a session exists. Concurrent
-    /// calls get different sessions and never wait on each other, while still
-    /// sharing one chunk budget and one connection pool.
-    ///
-    /// Use [`Piped::run_with`] to supply your own.
+    /// Nothing here needs to know a session exists. Concurrent runs get
+    /// different sessions and never wait on each other, while sharing one chunk
+    /// budget and one connection pool.
     pub async fn run(self) -> Result<Outcome, PipeError> {
         self.run_observed(&mut |_| {}).await
     }
 
-    /// Runs it, reporting progress, on a pooled session.
+    /// Runs it on a pooled session, reporting progress.
     pub async fn run_observed(
         self,
         observe: &mut (dyn FnMut(tapline::Event) + Send),
@@ -282,15 +282,7 @@ impl Piped {
     /// The manual path. Everything the pool does — creating, reusing,
     /// heartbeating, discarding — becomes yours.
     pub async fn run_with(self, session: &mut Session) -> Result<Outcome, PipeError> {
-        run_pipeline(
-            session,
-            self.source.app,
-            self.source.item,
-            self.source.window,
-            &self.pipeline,
-            &mut |_| {},
-        )
-        .await
+        self.run_with_observed(session, &mut |_| {}).await
     }
 
     /// Runs it on a session you own, reporting progress.
@@ -335,18 +327,15 @@ pub async fn run_pipeline(
         .map_err(|error| PipeError::Download(InstallError::Io(error.to_string())))?;
     let _ = app;
 
-    // Every sink, fed from one pass over the download.
-    let mut fanout = tapline_gmad::Fanout::new();
-    for sink in &pipeline.sinks {
-        fanout = fanout.with(sink.build()?);
-    }
+    pipeline.validate()?;
+    let sink = pipeline.sink.as_ref().ok_or(SpecError::NoSinks)?.build()?;
 
     let mut patterns = tapline_gmad::Patterns::all();
     for filter in &pipeline.filters {
         patterns = patterns.with(filter.clone());
     }
 
-    let filtered = tapline_gmad::Filtered::new(fanout, patterns);
+    let filtered = tapline_gmad::Filtered::new(sink, patterns);
     let mut splitter = tapline_gmad::Splitter::new(filtered);
 
     let report = session
@@ -381,20 +370,17 @@ mod tests {
 
     #[test]
     fn a_chain_builds_the_value_it_describes() {
-        let piped = workshop(4000, 104_691_717)
+        let ready = workshop(4000, 104_691_717)
             .gma()
             .only("lua/**")
-            .zip("/srv/out.zip")
-            .dir("/srv/addons");
+            .zip("/srv/out.zip");
 
-        let pipeline = piped.pipeline();
+        let pipeline = ready.pipeline();
         assert_eq!(pipeline.filters, vec!["lua/**".to_owned()]);
-        assert_eq!(pipeline.sinks.len(), 2, "both sinks should be recorded");
         assert!(matches!(
-            pipeline.sinks.first(),
+            pipeline.sink,
             Some(Sink::Zip { compress: true, .. })
         ));
-        assert!(matches!(pipeline.sinks.get(1), Some(Sink::Directory(_))));
     }
 
     #[test]
@@ -412,11 +398,11 @@ mod tests {
         let deflated = workshop(4000, 1).gma().zip("/a.zip");
         let stored = workshop(4000, 1).gma().zip_stored("/b.zip");
         assert!(matches!(
-            deflated.pipeline().sinks.first(),
+            deflated.pipeline().sink,
             Some(Sink::Zip { compress: true, .. })
         ));
         assert!(matches!(
-            stored.pipeline().sinks.first(),
+            stored.pipeline().sink,
             Some(Sink::Zip {
                 compress: false,
                 ..
@@ -426,21 +412,17 @@ mod tests {
 
     #[test]
     fn the_window_is_carried_through() {
-        let piped = workshop(4000, 1).window(4).gma().dir("/x");
-        assert_eq!(piped.source.window.size, 4);
+        let ready = workshop(4000, 1).window(4).gma().dir("/x");
+        assert_eq!(ready.source.window.size, 4);
     }
 
     #[test]
     fn the_chain_round_trips_through_its_text_form() {
         // The property the C ABI depends on: what the chain built and what the
         // bindings send must be the same pipeline.
-        let piped = workshop(4000, 1)
-            .gma()
-            .only("lua/**")
-            .zip("/srv/out.zip")
-            .dir("/srv/addons");
-        let text = piped.pipeline().to_text();
+        let ready = workshop(4000, 1).gma().only("lua/**").zip("/srv/out.zip");
+        let text = ready.pipeline().to_text();
         let parsed = Pipeline::parse(&text).expect("must parse");
-        assert_eq!(&parsed, piped.pipeline());
+        assert_eq!(&parsed, ready.pipeline());
     }
 }

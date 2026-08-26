@@ -133,6 +133,117 @@ impl From<std::io::Error> for ExtensionError {
     }
 }
 
+/// One file inside an archive, whatever the archive's format.
+///
+/// Deliberately not GMAD's `Entry`: a sink writing files or building a ZIP does
+/// not care which container the bytes came out of, and a vocabulary that named
+/// one format would mean every future format producing that format's types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveEntry {
+    /// The path inside the archive, as the archive spells it. Untrusted: it is
+    /// chosen by whoever published the thing.
+    pub path: String,
+    /// The entry's size in bytes.
+    pub size: u64,
+}
+
+/// What a decoder reports to as it reads an archive.
+///
+/// Called in order: [`index`] once, then [`begin`], [`data`] any number of
+/// times, [`end`], repeating per entry, and [`finish`] at the end.
+///
+/// [`index`]: EntrySink::index
+/// [`begin`]: EntrySink::begin
+/// [`data`]: EntrySink::data
+/// [`end`]: EntrySink::end
+/// [`finish`]: EntrySink::finish
+pub trait EntrySink {
+    /// Every entry's name and size is now known.
+    ///
+    /// The place to validate paths, because it happens before any entry's bytes
+    /// are handed over — an archive must not get half its files written before
+    /// the one escaping the root is noticed.
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError>;
+
+    /// An entry's bytes are about to arrive.
+    fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError>;
+
+    /// Part of the current entry. May be called many times, or not at all.
+    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError>;
+
+    /// The current entry is complete.
+    fn end(&mut self) -> Result<(), ExtensionError>;
+
+    /// The archive is complete; write anything held back.
+    ///
+    /// A ZIP's central directory is written here. Defaulted because most sinks
+    /// have nothing to do — one writing loose files is finished when its last
+    /// entry is.
+    fn finish(&mut self) -> Result<(), ExtensionError> {
+        Ok(())
+    }
+}
+
+impl<S: EntrySink + ?Sized> EntrySink for &mut S {
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
+        (**self).index(entries)
+    }
+    fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
+        (**self).begin(entry, index)
+    }
+    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
+        (**self).data(bytes)
+    }
+    fn end(&mut self) -> Result<(), ExtensionError> {
+        (**self).end()
+    }
+    fn finish(&mut self) -> Result<(), ExtensionError> {
+        (**self).finish()
+    }
+}
+
+impl<S: EntrySink + ?Sized> EntrySink for Box<S> {
+    fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
+        (**self).index(entries)
+    }
+    fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
+        (**self).begin(entry, index)
+    }
+    fn data(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
+        (**self).data(bytes)
+    }
+    fn end(&mut self) -> Result<(), ExtensionError> {
+        (**self).end()
+    }
+    fn finish(&mut self) -> Result<(), ExtensionError> {
+        (**self).finish()
+    }
+}
+
+/// Reads an archive as its bytes arrive, driving an [`EntrySink`].
+///
+/// The seam a second format plugs into. GMAD implements it; a `tar` or a
+/// nested ZIP would be another implementation and nothing else would change —
+/// the sinks, the filter and the pipeline are all written against
+/// [`ArchiveEntry`], not against any container.
+///
+/// Bytes must arrive **in order**, from the start of the archive. Whether that
+/// is possible at all is a property of the format: it works for GMAD because
+/// the index comes first and contents follow in index order.
+pub trait Decoder {
+    /// The format's name, as a pipeline names it.
+    fn format(&self) -> &'static str;
+
+    /// Feeds the next bytes of the archive.
+    fn push(&mut self, bytes: &[u8]) -> Result<(), ExtensionError>;
+
+    /// Ends the archive, closing the sink.
+    ///
+    /// A stream that stopped early is an error: telling a caller the archive
+    /// was processed when the last entry is short would be false.
+    fn finish(&mut self) -> Result<(), ExtensionError>;
+}
+
 /// Where an extension should write, given the file it was handed.
 ///
 /// Beside the archive, in a directory named after it without its extension —
