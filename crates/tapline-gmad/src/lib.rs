@@ -29,9 +29,11 @@
 #![forbid(unsafe_code)]
 
 mod format;
+mod stream;
 mod zip;
 
-pub use format::{Addon, Entry, MAGIC, parse};
+pub use format::{Addon, Entry, MAGIC, parse, parse_index};
+pub use stream::StreamingExtractor;
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;

@@ -27,6 +27,7 @@ export interface Ffi {
     validate: number,
     includeDlc: number,
     fileModes: number,
+    extensions: string | null,
   ): bigint;
   plan(
     app: number,
@@ -42,6 +43,7 @@ export interface Ffi {
     concurrency: number,
     flat: number,
     extensions: string | null,
+    stream: number,
   ): bigint;
   /** Waits for the next event. Resolves to null when the job is over. */
   next(job: bigint, timeoutMs: number): Promise<string | null>;
@@ -225,7 +227,9 @@ async function loadDeno(path: string): Promise<Ffi> {
   const Deno = (globalThis as any).Deno;
   const lib = Deno.dlopen(path, {
     tapline_install: {
-      parameters: ["u32", "buffer", "buffer", "u32", "u8", "u8", "u8", "u8", "buffer"],
+      parameters: [
+        "u32", "buffer", "buffer", "u32", "u8", "u8", "u8", "u8", "buffer", "buffer",
+      ],
       result: "i32",
     },
     tapline_plan: {
@@ -233,7 +237,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       result: "i32",
     },
     tapline_workshop_download: {
-      parameters: ["u32", "u64", "buffer", "u32", "u8", "buffer", "buffer"],
+      parameters: ["u32", "u64", "buffer", "u32", "u8", "buffer", "u8", "buffer"],
       result: "i32",
     },
     tapline_job_next: {
@@ -270,7 +274,7 @@ async function loadDeno(path: string): Promise<Ffi> {
   return {
     nativeAsync: true,
     lastError,
-    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, extensions) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_install(
         app,
@@ -281,6 +285,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         validate,
         includeDlc,
         fileModes,
+        extensions === null ? null : cstring(extensions),
         new Uint8Array(out.buffer),
       );
       return readJobPointer(out, code, "install", lastError);
@@ -297,7 +302,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "plan", lastError);
     },
-    workshop(app, item, dir, concurrency, flat, extensions) {
+    workshop(app, item, dir, concurrency, flat, extensions, stream) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_workshop_download(
         app,
@@ -306,6 +311,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         concurrency,
         flat,
         extensions === null ? null : cstring(extensions),
+        stream,
         new Uint8Array(out.buffer),
       );
       return readJobPointer(out, code, "workshop download", lastError);
@@ -356,7 +362,7 @@ async function loadBun(path: string): Promise<Ffi> {
     tapline_install: {
       args: [
         FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32,
-        FFIType.u8, FFIType.u8, FFIType.u8, FFIType.u8, FFIType.ptr,
+        FFIType.u8, FFIType.u8, FFIType.u8, FFIType.u8, FFIType.ptr, FFIType.ptr,
       ],
       returns: FFIType.i32,
     },
@@ -367,7 +373,7 @@ async function loadBun(path: string): Promise<Ffi> {
     tapline_workshop_download: {
       args: [
         FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32,
-        FFIType.u8, FFIType.ptr, FFIType.ptr,
+        FFIType.u8, FFIType.ptr, FFIType.u8, FFIType.ptr,
       ],
       returns: FFIType.i32,
     },
@@ -411,11 +417,12 @@ async function loadBun(path: string): Promise<Ffi> {
   return {
     nativeAsync: false,
     lastError,
-    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, extensions) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_install(
         app, ptr(cstring(dir)), branch === null ? null : ptr(cstring(branch)),
-        concurrency, os, validate, includeDlc, fileModes, ptr(out),
+        concurrency, os, validate, includeDlc, fileModes,
+        extensions === null ? null : ptr(cstring(extensions)), ptr(out),
       );
       return readJobPointer(out, code, "install", lastError);
     },
@@ -427,11 +434,11 @@ async function loadBun(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "plan", lastError);
     },
-    workshop(app, item, dir, concurrency, flat, extensions) {
+    workshop(app, item, dir, concurrency, flat, extensions, stream) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_workshop_download(
         app, item, ptr(cstring(dir)), concurrency, flat,
-        extensions === null ? null : ptr(cstring(extensions)), ptr(out),
+        extensions === null ? null : ptr(cstring(extensions)), stream, ptr(out),
       );
       return readJobPointer(out, code, "workshop download", lastError);
     },
@@ -487,13 +494,13 @@ async function loadNode(path: string): Promise<Ffi> {
 
   const lib = koffi.load(path);
   const install = lib.func(
-    "int tapline_install(uint32_t, const char*, const char*, uint32_t, uint8_t, uint8_t, uint8_t, uint8_t, _Out_ void**)",
+    "int tapline_install(uint32_t, const char*, const char*, uint32_t, uint8_t, uint8_t, uint8_t, uint8_t, const char*, _Out_ void**)",
   );
   const planFn = lib.func(
     "int tapline_plan(uint32_t, const char*, const char*, uint8_t, uint8_t, _Out_ void**)",
   );
   const workshop = lib.func(
-    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, _Out_ void**)",
+    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, uint8_t, _Out_ void**)",
   );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
@@ -524,9 +531,11 @@ async function loadNode(path: string): Promise<Ffi> {
   return {
     nativeAsync: true,
     lastError,
-    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes) {
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, extensions) {
       const out: unknown[] = [null];
-      const code = install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, out);
+      const code = install(
+        app, dir, branch, concurrency, os, validate, includeDlc, fileModes, extensions, out,
+      );
       if (code !== OK) throw new Error(`install: ${lastError() || `code ${code}`}`);
       return asPointer(out);
     },
@@ -536,9 +545,9 @@ async function loadNode(path: string): Promise<Ffi> {
       if (code !== OK) throw new Error(`plan: ${lastError() || `code ${code}`}`);
       return asPointer(out);
     },
-    workshop(app, item, dir, concurrency, flat, extensions) {
+    workshop(app, item, dir, concurrency, flat, extensions, stream) {
       const out: unknown[] = [null];
-      const code = workshop(app, item, dir, concurrency, flat, extensions, out);
+      const code = workshop(app, item, dir, concurrency, flat, extensions, stream, out);
       if (code !== OK) {
         throw new Error(`workshop download: ${lastError() || `code ${code}`}`);
       }

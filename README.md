@@ -261,6 +261,21 @@ to a deflated zip 39 ms. Deflate runs across every core — it was 175 ms on one
 for byte-identical output — and the result is checked against `unzip -t`,
 because an archive only this crate can read is not a zip.
 
+### Streaming
+
+A format whose contents arrive in a knowable order can be consumed as it
+downloads, without the archive touching the disk at all. GMAD is one:
+
+```sh
+tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons --stream
+```
+
+Chunks are still fetched in parallel — that is where the throughput is — and
+reordered through a bounded window, so peak memory is the window rather than the
+file. Measured on PAC3: 8.3 MB on disk instead of 16.6 MB, 0.01 MB read back
+instead of 13.3 MB, and slightly *more* resident memory (30.9 MB against 26.8),
+because the window is a fixed cost the archive size is not.
+
 ## Shape
 
 Twelve crates. Everything above the leaves is IO-free and reaches the network
@@ -308,7 +323,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 384 tests, no network
+cargo test --workspace                # 398 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

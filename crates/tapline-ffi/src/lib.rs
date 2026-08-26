@@ -296,6 +296,9 @@ fn send_error(sender: &tokio::sync::mpsc::UnboundedSender<String>, message: &str
 /// Writes an opaque job to `out`. Events arrive through [`tapline_job_next`],
 /// ending with one of `finished`, `error` or `cancelled`.
 ///
+/// `extensions` is a comma-separated list of built-in extension names, or null
+/// for none. See [`build_extensions`].
+///
 /// # Safety
 ///
 /// `dir` must be a valid C string, `options` a valid pointer or null, and `out`
@@ -311,6 +314,7 @@ pub unsafe extern "C" fn tapline_install(
     validate: u8,
     include_dlc: u8,
     file_modes: u8,
+    extensions: *const c_char,
     out: *mut *mut TaplineJob,
 ) -> i32 {
     let Some(dir) = (unsafe { read_str(dir) }) else {
@@ -327,6 +331,16 @@ pub unsafe extern "C" fn tapline_install(
     };
     let install = unsafe { options.into_install_options(dir) };
 
+    // Resolved before the job starts, so a typo is reported now rather than
+    // after a download has already run.
+    let extensions = match build_extensions(unsafe { read_str(extensions) }) {
+        Ok(extensions) => extensions,
+        Err(message) => {
+            set_error(message);
+            return TAPLINE_BAD_ARGUMENT;
+        }
+    };
+
     let shared_handle = shared().cloned();
     spawn_job(
         move |sender| async move {
@@ -337,6 +351,9 @@ pub unsafe extern "C" fn tapline_install(
             match Session::anonymous_shared(shared_handle).await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => {
+                    for extension in extensions {
+                        session.register(extension);
+                    }
                     let forward = sender.clone();
                     let result = session
                         .install_observed(AppId(app_id), &install, &mut |event| {
@@ -416,6 +433,10 @@ pub unsafe extern "C" fn tapline_plan(
 /// `extensions` is a comma-separated list of built-in extension names, or null
 /// for none. See [`build_extensions`] for what is known.
 ///
+/// `stream` non-zero unpacks a Garry's Mod addon as it downloads, without ever
+/// writing the `.gma`. It implies the flat layout and ignores `extensions`,
+/// because the archive those would act on never exists.
+///
 /// # Safety
 ///
 /// Same as [`tapline_install`].
@@ -428,6 +449,7 @@ pub unsafe extern "C" fn tapline_workshop_download(
     concurrency: u32,
     flat: u8,
     extensions: *const c_char,
+    stream: u8,
     out: *mut *mut TaplineJob,
 ) -> i32 {
     let Some(dir) = (unsafe { read_str(dir) }) else {
@@ -491,6 +513,11 @@ pub unsafe extern "C" fn tapline_workshop_download(
                             return;
                         }
                     };
+                    if stream != 0 {
+                        stream_addon(&mut session, &details, &install, &sender).await;
+                        return;
+                    }
+
                     let forward = sender.clone();
                     let result = session
                         .download_workshop_item_observed(&details, &install, &mut |event| {
@@ -508,6 +535,57 @@ pub unsafe extern "C" fn tapline_workshop_download(
         },
         out,
     )
+}
+
+/// Streams a Workshop item into a Garry's Mod extractor.
+///
+/// Kept out of the job body because the borrow of the extractor by the consumer
+/// closure has to end before the extractor can be finished.
+async fn stream_addon(
+    session: &mut Session,
+    details: &tapline::WorkshopItem,
+    options: &InstallOptions,
+    sender: &tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    if let Err(error) = std::fs::create_dir_all(&options.install_dir) {
+        send_error(sender, &error.to_string());
+        return;
+    }
+    let mut extractor = tapline_gmad::StreamingExtractor::new(&options.install_dir);
+
+    let forward = sender.clone();
+    let result = session
+        .stream_workshop_item(
+            details,
+            tapline::Window::default(),
+            &mut |bytes| {
+                extractor
+                    .push(bytes)
+                    .map_err(|error| tapline::InstallError::Io(error.to_string()))
+            },
+            &mut |event| {
+                let _ = forward.send(event::encode(&event));
+            },
+        )
+        .await;
+
+    match result {
+        Err(error) => send_error(sender, &error.to_string()),
+        Ok(report) => match extractor.finish() {
+            Err(error) => send_error(sender, &error.to_string()),
+            Ok(files) => {
+                let mut out = String::from("{");
+                json::push_str_field(&mut out, "kind", "streamed");
+                json::push_u64(&mut out, "files", files.len() as u64);
+                json::push_u64(&mut out, "bytesDownloaded", report.bytes_downloaded);
+                json::push_u64(&mut out, "bytesStreamed", report.bytes_streamed);
+                json::push_u64(&mut out, "chunks", report.chunks);
+                json::push_u64(&mut out, "peakBufferedChunks", report.peak_buffered as u64);
+                out.push('}');
+                let _ = sender.send(out);
+            }
+        },
+    }
 }
 
 /// The options used when a caller passes null.
@@ -732,6 +810,7 @@ mod tests {
                 0,
                 0,
                 0,
+                std::ptr::null(),
                 &raw mut job,
             )
         };
@@ -752,6 +831,7 @@ mod tests {
                 0,
                 0,
                 0,
+                std::ptr::null(),
                 std::ptr::null_mut(),
             )
         };

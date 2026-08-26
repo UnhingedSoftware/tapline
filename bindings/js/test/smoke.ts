@@ -204,6 +204,32 @@ if (process_env("TAPLINE_LIVE") === "1") {
     assertEquals(head, "PK", "the zip has no PK signature");
   });
 
+  await test("an addon can be unpacked without ever writing the .gma", async () => {
+    const dir = scratch("stream");
+    const report = await downloadWorkshopItem({
+      app: 4000,
+      item: 104691717n,
+      dir,
+      stream: true,
+    });
+
+    assertEquals(report.files, 348, "wrong file count");
+    assert(report.bytesStreamed > 8_000_000, "streamed too little");
+    // The whole point: the archive is never written.
+    const fs = await import("node:fs");
+    assert(
+      !fs.existsSync(`${dir}/104691717.gma`),
+      "the .gma was written after all",
+    );
+    assert(fs.existsSync(`${dir}/lua`), "the addon was not unpacked");
+    // And the reorder buffer stayed inside its window, which is the memory
+    // bound the design rests on.
+    assert(
+      report.peakBufferedChunks <= 16,
+      `buffered ${report.peakBufferedChunks} chunks, past the window`,
+    );
+  });
+
   await test("an unknown extension is refused rather than ignored", async () => {
     let message = "";
     try {

@@ -27,6 +27,7 @@ tapline-wire = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
 
 [dev-dependencies]
+tapline-gmad = { workspace = true }
 tapline-auth = { workspace = true }
 tapline-state = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

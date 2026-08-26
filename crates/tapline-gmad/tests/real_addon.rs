@@ -152,6 +152,43 @@ fn a_real_addon_converts_to_a_zip_other_tools_can_open() {
 }
 
 #[test]
+#[ignore = "needs a real addon downloaded first"]
+fn streaming_a_real_addon_matches_extracting_it() {
+    let path = addon_path();
+    if !path.is_file() {
+        println!("SKIPPED: no addon at {}", path.display());
+        return;
+    }
+    let raw = std::fs::read(&path).expect("read");
+
+    let streamed = path.with_file_name("streamed-test");
+    let seeking = path.with_file_name("seeking-test");
+    let _a = Scratch(streamed.clone());
+    let _b = Scratch(seeking.clone());
+    let _ = std::fs::remove_dir_all(&streamed);
+    let _ = std::fs::remove_dir_all(&seeking);
+
+    // 1 MiB pieces, which is the chunk size a real download delivers.
+    let mut extractor = tapline_gmad::StreamingExtractor::new(&streamed);
+    for piece in raw.chunks(1 << 20) {
+        extractor.push(piece).expect("push");
+    }
+    let from_stream = extractor.finish().expect("stream must finish");
+    let from_seek = tapline_gmad::extract(&path, &seeking).expect("seek");
+
+    assert_eq!(
+        from_stream, from_seek,
+        "the two extractors disagree about which files exist"
+    );
+    for name in &from_stream {
+        let a = std::fs::read(streamed.join(name)).expect("streamed");
+        let b = std::fs::read(seeking.join(name)).expect("seeking");
+        assert_eq!(a, b, "{name} differs between streaming and seeking");
+    }
+    println!("{} files identical via both paths", from_stream.len());
+}
+
+#[test]
 #[ignore = "a benchmark, not a gate"]
 fn how_long_the_work_actually_takes() {
     let path = addon_path();

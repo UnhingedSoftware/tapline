@@ -32,6 +32,7 @@ fn expected() -> Vec<(&'static str, usize)> {
         u8,
         u8,
         u8,
+        *const c_char,
         *mut *mut TaplineJob,
     ) -> i32 = tapline_ffi::tapline_install;
 
@@ -51,6 +52,7 @@ fn expected() -> Vec<(&'static str, usize)> {
         u32,
         u8,
         *const c_char,
+        u8,
         *mut *mut TaplineJob,
     ) -> i32 = tapline_ffi::tapline_workshop_download;
 
@@ -74,9 +76,9 @@ fn expected() -> Vec<(&'static str, usize)> {
     );
 
     vec![
-        ("tapline_install", 9),
+        ("tapline_install", 10),
         ("tapline_plan", 6),
-        ("tapline_workshop_download", 7),
+        ("tapline_workshop_download", 8),
         ("tapline_job_next", 5),
         ("tapline_job_cancel", 1),
         ("tapline_job_free", 1),

@@ -349,6 +349,241 @@ impl Session {
         Ok(plan)
     }
 
+    /// Resolves a SteamPipe Workshop item to its depot, manifest and key.
+    async fn resolve_workshop(
+        &mut self,
+        app: AppId,
+        depot: DepotId,
+        manifest: tapline_ids::ManifestId,
+    ) -> Result<ResolvedDepot, InstallError> {
+        let key = self.depot_key(app, depot).await?;
+
+        let code = self
+            .cm
+            .call(&CContentServerDirectory_GetManifestRequestCode_Request {
+                app_id: Some(app.get()),
+                depot_id: Some(depot.get()),
+                manifest_id: Some(manifest.get()),
+                app_branch: Some("public".to_owned()),
+                branch_password_hash: None,
+            })
+            .await?
+            .manifest_request_code
+            .unwrap_or(0);
+
+        let host = self.pool.acquire()?;
+        let content = fetch_manifest(
+            self.shared.http.as_ref(),
+            &host.host,
+            depot,
+            manifest.get(),
+            code,
+            Some(&key),
+        )
+        .await?;
+
+        Ok(ResolvedDepot {
+            depot: tapline_pics::Depot {
+                id: depot,
+                manifest,
+                size: content.total_size,
+                download_size: 0,
+                owner: app,
+            },
+            manifest: content,
+            key,
+        })
+    }
+
+    /// Downloads a Workshop item and feeds its bytes to `consumer`, in order,
+    /// without writing the item itself to disk.
+    ///
+    /// For formats that can be read as they arrive. A Garry's Mod addon is one:
+    /// GMAD's header and index come first and its file contents follow in index
+    /// order, so an extractor can write each file as its bytes land and the
+    /// `.gma` never needs to exist. Measured on a real addon that is 8.4 MB
+    /// neither written nor read back.
+    ///
+    /// Chunks are still fetched in parallel — that is where the throughput is —
+    /// and reordered through a bounded window, so peak memory is the window
+    /// rather than the file. See [`Window`].
+    ///
+    /// Only single-file items are accepted. A multi-file item has no meaningful
+    /// byte order to stream, and guessing one would hand the consumer a
+    /// concatenation nothing can parse.
+    ///
+    /// [`Window`]: crate::Window
+    pub async fn stream_workshop_item(
+        &mut self,
+        item: &crate::WorkshopItem,
+        window: crate::Window,
+        consumer: crate::Consumer<'_>,
+        observe: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<crate::StreamReport, InstallError> {
+        let crate::WorkshopContent::SteamPipe { depot, manifest } = &item.content else {
+            return Err(InstallError::Io(
+                "only SteamPipe Workshop items can be streamed; this one is a legacy UFS blob"
+                    .to_owned(),
+            ));
+        };
+
+        let entry = self.resolve_workshop(item.app, *depot, *manifest).await?;
+        let files: Vec<_> = entry.manifest.regular_files().collect();
+        let [file] = files.as_slice() else {
+            return Err(InstallError::Io(format!(
+                "streaming needs a single-file item; this one has {}",
+                files.len()
+            )));
+        };
+
+        observe(Event::Planned {
+            plan: Plan {
+                download_bytes: entry.manifest.distinct_chunks().1,
+                reused_bytes: 0,
+                total_bytes: entry.manifest.total_size,
+                file_count: 1,
+                chunk_count: file.chunks.len() as u64,
+            },
+        });
+
+        // Offset order is the order the consumer must see. The manifest does
+        // not promise the index is sorted, so this does not assume it is.
+        let mut chunks = file.chunks.clone();
+        chunks.sort_by_key(|chunk| chunk.offset);
+
+        let hosts: Vec<String> = self.pool.snapshot();
+        if hosts.is_empty() {
+            return Err(InstallError::Pool(tapline_cdn::PoolError::Empty));
+        }
+
+        let mut report = crate::StreamReport::default();
+        let mut reorderer = crate::Reorderer::new();
+        let mut tasks: StreamTasks = tokio::task::JoinSet::new();
+        let mut next_to_fetch = 0_usize;
+
+        // Only ever `window.size` in flight, and only ever started in order, so
+        // the reorder buffer can never hold more than the window.
+        while next_to_fetch < chunks.len() && tasks.len() < window.size {
+            self.spawn_stream_chunk(
+                &chunks,
+                next_to_fetch,
+                &hosts,
+                entry.key,
+                *depot,
+                &mut tasks,
+            );
+            next_to_fetch += 1;
+        }
+
+        while let Some(joined) = tasks.join_next().await {
+            let (index, outcome) = joined
+                .map_err(|error| InstallError::Io(format!("a stream task failed: {error}")))?;
+            let (bytes, downloaded, host) = outcome?;
+            self.pool.succeed(&host);
+
+            report.chunks += 1;
+            report.bytes_downloaded += downloaded;
+
+            for ready in reorderer.accept(index, bytes) {
+                report.bytes_streamed += ready.len() as u64;
+                consumer(&ready)?;
+                observe(Event::Progress {
+                    bytes_done: report.bytes_streamed,
+                    bytes_total: entry.manifest.total_size,
+                });
+            }
+            report.peak_buffered = report.peak_buffered.max(reorderer.buffered());
+
+            if next_to_fetch < chunks.len() {
+                self.spawn_stream_chunk(
+                    &chunks,
+                    next_to_fetch,
+                    &hosts,
+                    entry.key,
+                    *depot,
+                    &mut tasks,
+                );
+                next_to_fetch += 1;
+            }
+            self.maybe_heartbeat().await?;
+        }
+
+        if !reorderer.is_empty() || reorderer.delivered() != chunks.len() {
+            return Err(InstallError::Io(format!(
+                "the stream ended with {} of {} chunks delivered",
+                reorderer.delivered(),
+                chunks.len()
+            )));
+        }
+        Ok(report)
+    }
+
+    /// Spawns one chunk fetch for a streamed download.
+    fn spawn_stream_chunk(
+        &self,
+        chunks: &[tapline_manifest::Chunk],
+        index: usize,
+        hosts: &[String],
+        key: [u8; 32],
+        depot: DepotId,
+        tasks: &mut StreamTasks,
+    ) {
+        let Some(chunk) = chunks.get(index).cloned() else {
+            return;
+        };
+        let http = Arc::clone(&self.shared.http);
+        let hosts = hosts.to_vec();
+        let shared_limit = Arc::clone(&self.shared.limit);
+
+        tasks.spawn(async move {
+            let outcome = async move {
+                // The same process-wide budget an ordinary download draws on,
+                // so a streamed item and a normal install do not each take one.
+                let _permit = shared_limit
+                    .acquire_owned()
+                    .await
+                    .map_err(|error| InstallError::Io(error.to_string()))?;
+
+                let mut last_error = None;
+                for attempt in 0..4_usize {
+                    let host = hosts
+                        .get((index + attempt) % hosts.len())
+                        .cloned()
+                        .unwrap_or_default();
+                    match fetch_chunk_bytes(http.as_ref(), &host, depot, &chunk).await {
+                        Ok(stored) => {
+                            let for_decode = chunk.clone();
+                            let host_for_decode = host.clone();
+                            let decoded = tokio::task::spawn_blocking(move || {
+                                tapline_cdn::decode_chunk(
+                                    &stored,
+                                    &for_decode,
+                                    &key,
+                                    &host_for_decode,
+                                )
+                            })
+                            .await
+                            .map_err(|error| InstallError::Io(error.to_string()))?;
+                            match decoded {
+                                Ok(plaintext) => {
+                                    return Ok((plaintext, u64::from(chunk.compressed_size), host));
+                                }
+                                Err(error) => last_error = Some(error),
+                            }
+                        }
+                        Err(error) => last_error = Some(error),
+                    }
+                }
+                Err(last_error.map_or(
+                    InstallError::Pool(tapline_cdn::PoolError::AllDemoted),
+                    Into::into,
+                ))
+            }
+            .await;
+            (index, outcome)
+        });
+    }
+
     /// Adds an extension, which runs against every file this session writes.
     ///
     /// Extensions are code the operator chose and compiled in. Nothing in a
@@ -1349,6 +1584,12 @@ fn finalize_file(file: PendingFile) -> Result<Finished, InstallError> {
         extended,
     })
 }
+
+/// One streamed chunk: its plaintext, what it cost to fetch, and from where.
+type StreamedChunk = (Vec<u8>, u64, String);
+
+/// The tasks fetching a streamed file, tagged with each chunk's index.
+type StreamTasks = tokio::task::JoinSet<(usize, Result<StreamedChunk, InstallError>)>;
 
 /// What finalising a file produced.
 struct Finished {

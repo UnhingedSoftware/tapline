@@ -32,6 +32,7 @@ Native:
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]
                             --flat writes into DIR itself, for e.g. garrysmod/addons
                             --extensions gmad,gmad-zip unpacks/converts .gma as it lands
+                            --stream unpacks while downloading, never writing the .gma
       One Workshop item.
   tapline login [--qr | --account NAME]
       Sign in. Only needed for apps an account owns; dedicated servers do not.

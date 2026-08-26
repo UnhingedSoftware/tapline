@@ -34,6 +34,7 @@ import type {
   InstallReport,
   PlanOptions,
   PlanReport,
+  StreamReport,
   TaplineEvent,
   TargetOs,
   WorkshopOptions,
@@ -298,6 +299,7 @@ export function install(options: InstallOptions): Job<InstallReport> {
         options.validate ? 1 : 0,
         options.includeDlc ? 1 : 0,
         options.fileModes === "manifest" ? 1 : 0,
+        options.extensions?.length ? options.extensions.join(",") : null,
       ),
     (events) => {
       const { kind: _kind, ...report } = lastOfKind(events, "finished");
@@ -449,19 +451,33 @@ export class Batch implements PromiseLike<InstallReport[]> {
 
 /** Downloads one Workshop item. */
 export function downloadWorkshopItem(
+  options: WorkshopOptions & { stream: true },
+): Job<StreamReport>;
+export function downloadWorkshopItem(
   options: WorkshopOptions,
-): Job<InstallReport> {
-  return new Job<InstallReport>(
+): Job<InstallReport>;
+export function downloadWorkshopItem(
+  options: WorkshopOptions,
+): Job<InstallReport | StreamReport> {
+  const streaming = options.stream === true;
+  return new Job<InstallReport | StreamReport>(
     (ffi) =>
       ffi.workshop(
         options.app,
         BigInt(options.item),
         options.dir,
         options.concurrency ?? 0,
-        options.layout === "flat" ? 1 : 0,
+        // Streaming writes into the directory given; there is no archive to
+        // build a steamcmd path around.
+        streaming || options.layout === "flat" ? 1 : 0,
         options.extensions?.length ? options.extensions.join(",") : null,
+        streaming ? 1 : 0,
       ),
     (events) => {
+      if (streaming) {
+        const { kind: _kind, ...report } = lastOfKind(events, "streamed");
+        return report;
+      }
       const { kind: _kind, ...report } = lastOfKind(events, "finished");
       return report;
     },

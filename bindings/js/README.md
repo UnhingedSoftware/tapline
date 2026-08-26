@@ -161,6 +161,38 @@ tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons \
   --flat --extensions gmad,gmad-zip
 ```
 
+### Unpacking as it downloads
+
+The `.gma` does not have to exist. GMAD puts its header and index first and its
+file contents follow in index order, so every file can be written the moment its
+bytes land:
+
+```ts
+const report = await downloadWorkshopItem({
+  app: 4000,
+  item: 104691717n,
+  dir: "/srv/gmod/garrysmod/addons/pac3",
+  stream: true,
+});
+// { files: 348, bytesStreamed: 8707053, chunks: 9, peakBufferedChunks: 5 }
+```
+
+Measured on PAC3:
+
+| | wall | read back | on disk |
+|---|---|---|---|
+| download, then unpack | 2.00 s | 13.3 MB | 16.6 MB |
+| `stream: true` | **1.78 s** | **0.01 MB** | **8.3 MB** |
+
+The archive is neither written nor read back. What it does *not* save is memory:
+streaming measured 30.9 MB resident against 26.8 MB, because chunks are still
+fetched in parallel and reordered through a fixed window. That window is the
+bound — a 400 MB addon costs the same buffer as an 8 MB one, while the disk
+saving scales with the addon.
+
+`stream: true` implies the flat layout and ignores `extensions`, since the
+archive those act on never exists. From the CLI it is `--stream`.
+
 ## Installing
 
 ```sh

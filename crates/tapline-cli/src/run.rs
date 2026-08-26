@@ -26,11 +26,12 @@ pub async fn execute(command: Command) -> Result<(), String> {
         Command::WorkshopDownload {
             flat,
             extensions,
+            stream,
             app,
             item,
             dir,
             json,
-        } => workshop(app, item, dir, flat, extensions, json).await,
+        } => workshop(app, item, dir, flat, extensions, stream, json).await,
         Command::Login { qr, account } => login(qr, account).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
@@ -271,14 +272,19 @@ async fn print_info(session: &mut Session, app: AppId, json: bool) -> Result<(),
 }
 
 /// `workshop download`
+#[allow(clippy::too_many_arguments)]
 async fn workshop(
     app: AppId,
     item: PublishedFileId,
     dir: PathBuf,
     flat: bool,
     extensions: Vec<String>,
+    stream: bool,
     json: bool,
 ) -> Result<(), String> {
+    if stream {
+        return stream_workshop(app, item, dir, json).await;
+    }
     // Resolved before connecting. A typo should cost a message, not a login and
     // a round trip to Steam first.
     let resolved: Vec<_> = extensions
@@ -301,6 +307,74 @@ async fn workshop(
         }));
     } else {
         println!("downloaded item {item} to {}", target.display());
+    }
+    Ok(())
+}
+
+/// `workshop download --stream`
+///
+/// Unpacks the addon as it downloads. The `.gma` is never written: GMAD's
+/// header and index come first and its contents follow in index order, so each
+/// file can be written the moment its bytes land.
+async fn stream_workshop(
+    app: AppId,
+    item: PublishedFileId,
+    dir: PathBuf,
+    json: bool,
+) -> Result<(), String> {
+    let _ = app;
+    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let details = session
+        .workshop_details(&[item])
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("Steam said nothing about item {item}"))?
+        .map_err(|error| error.to_string())?;
+
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let mut extractor = tapline_gmad::StreamingExtractor::new(&dir);
+
+    let started = std::time::Instant::now();
+    let report = session
+        .stream_workshop_item(
+            &details,
+            tapline::Window::default(),
+            &mut |bytes| {
+                extractor
+                    .push(bytes)
+                    .map_err(|error| tapline::InstallError::Io(error.to_string()))
+            },
+            &mut |_event| {},
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let files = extractor.finish().map_err(|error| error.to_string())?;
+    let elapsed = started.elapsed();
+
+    if json {
+        emit(&serde_json::json!({
+            "event": "streamed",
+            "item": item.get(),
+            "path": dir.display().to_string(),
+            "files": files.len(),
+            "bytes_downloaded": report.bytes_downloaded,
+            "bytes_streamed": report.bytes_streamed,
+            "peak_buffered_chunks": report.peak_buffered,
+            "seconds": elapsed.as_secs_f64(),
+        }));
+    } else {
+        println!(
+            "streamed item {item} into {}: {} files, {} bytes, {} chunks, peak {} buffered, {:.2}s",
+            dir.display(),
+            files.len(),
+            report.bytes_streamed,
+            report.chunks,
+            report.peak_buffered,
+            elapsed.as_secs_f64()
+        );
     }
     Ok(())
 }

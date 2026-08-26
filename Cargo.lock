@@ -1247,6 +1247,7 @@ dependencies = [
  "tapline-event",
  "tapline-ext",
  "tapline-fs",
+ "tapline-gmad",
  "tapline-ids",
  "tapline-io",
  "tapline-manifest",

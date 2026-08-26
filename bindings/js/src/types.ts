@@ -57,6 +57,11 @@ export interface VerifyingEvent {
   path: string;
 }
 
+/** The last event of a successful streamed download. */
+export interface StreamedEvent extends StreamReport {
+  kind: "streamed";
+}
+
 /** An extension acted on a file it claimed. */
 export interface ExtendedEvent {
   kind: "extended";
@@ -111,6 +116,7 @@ export type TaplineEvent =
   | VerifyingEvent
   | CompletedEvent
   | ExtendedEvent
+  | StreamedEvent
   | FinishedEvent
   | ErrorEvent
   | UnknownEvent;
@@ -145,6 +151,11 @@ export interface InstallOptions {
   validate?: boolean;
   includeDlc?: boolean;
   fileModes?: FileModes;
+  /**
+   * Post-processing to run on each file as it lands. Names, not functions —
+   * see {@link WorkshopOptions.extensions}.
+   */
+  extensions?: string[];
   /** Called for every event, including progress. */
   onEvent?: (event: TaplineEvent) => void;
   /** Called for progress only, with a `percent` worked out for you. */
@@ -197,10 +208,36 @@ export interface WorkshopOptions {
    * error rather than a silent no-op.
    */
   extensions?: string[];
+  /**
+   * Unpack a Garry's Mod addon while it downloads, never writing the `.gma`.
+   *
+   * GMAD's header and index come first and its file contents follow in index
+   * order, so each file can be written the moment its bytes land. Measured on
+   * PAC3: 8.3 MB on disk instead of 16.6 MB, and nothing read back.
+   *
+   * Implies `layout: "flat"` and ignores `extensions` — the archive they would
+   * act on never exists. Resolves to a {@link StreamReport} rather than an
+   * install report.
+   */
+  stream?: boolean;
   onEvent?: (event: TaplineEvent) => void;
   onProgress?: (progress: {
     bytesDone: number;
     bytesTotal: number;
     percent: number;
   }) => void;
+}
+
+/** What a streamed download produced. */
+export interface StreamReport {
+  /** Files written. */
+  files: number;
+  /** Bytes fetched from the CDN. */
+  bytesDownloaded: number;
+  /** Bytes handed to the extractor. */
+  bytesStreamed: number;
+  /** Chunks fetched. */
+  chunks: number;
+  /** The most chunks held back at once, waiting on an earlier one. */
+  peakBufferedChunks: number;
 }

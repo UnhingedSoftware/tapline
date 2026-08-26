@@ -100,6 +100,8 @@ pub enum Command {
         flat: bool,
         /// Extensions to run on each file, by name.
         extensions: Vec<String>,
+        /// Extract while downloading, without writing the archive itself.
+        stream: bool,
         /// The app.
         app: AppId,
         /// The item.
@@ -372,6 +374,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 .ok_or_else(|| ArgError::new("an item id is required"))?;
             Ok(Command::WorkshopDownload {
                 flat: options.flag("flat"),
+                stream: options.flag("stream"),
                 extensions: options
                     .value("extensions")
                     .map(|list| {

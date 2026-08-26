@@ -50,6 +50,7 @@ typedef struct TaplineJob TaplineJob;
  * validate    non-zero re-downloads even if the record says it is current
  * include_dlc non-zero installs DLC depots too
  * file_modes  0 matches steamcmd (0755 on everything), 1 uses the manifest's
+ * extensions  comma-separated built-in names, or NULL; see below
  *
  * Returns TAPLINE_OK and writes a job to *out, or a negative code.
  */
@@ -61,6 +62,7 @@ int32_t tapline_install(uint32_t app_id,
                         uint8_t validate,
                         uint8_t include_dlc,
                         uint8_t file_modes,
+                        const char *extensions,
                         TaplineJob **out);
 
 /* Works out what an install would cost without fetching any content.
@@ -82,13 +84,18 @@ int32_t tapline_plan(uint32_t app_id,
  * "gmad" unpacks a .gma beside itself, "gmad-zip" converts it to a .zip,
  * "gmad-zip-stored" does so without deflating, and a trailing "!" on either
  * gmad name deletes the original once it has been processed. An unknown name
- * is an error rather than a no-op. */
+ * is an error rather than a no-op.
+ *
+ * stream non-zero unpacks a Garry's Mod addon as it downloads, without ever
+ * writing the .gma. It implies the flat layout and ignores extensions, because
+ * the archive those would act on never exists. */
 int32_t tapline_workshop_download(uint32_t app_id,
                                   uint64_t item_id,
                                   const char *dir,
                                   uint32_t concurrency,
                                   uint8_t flat,
                                   const char *extensions,
+                                  uint8_t stream,
                                   TaplineJob **out);
 
 /* Waits for the next event and writes it to buf as UTF-8 JSON.

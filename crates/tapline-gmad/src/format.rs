@@ -149,10 +149,48 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Parses an addon's header and index.
+/// Parses an addon's header and index, and checks the contents are all there.
 ///
 /// Does not copy any file contents; [`Entry::offset`] points into `bytes`.
 pub fn parse(bytes: &[u8]) -> Result<Addon, ExtensionError> {
+    let addon = parse_index(bytes)?;
+
+    // Every entry must lie inside the archive. This is the check that stops a
+    // 40-byte file claiming to hold four gigabytes, and it is why the seeking
+    // reader can allocate an entry's size without further thought.
+    let total = bytes.len() as u64;
+    for entry in &addon.entries {
+        let end = (entry.offset as u64)
+            .checked_add(entry.size)
+            .ok_or_else(|| ExtensionError::Malformed {
+                extension: "gmad",
+                reason: format!("{:?} has a size that overflows the archive", entry.path),
+            })?;
+        if end > total {
+            return Err(ExtensionError::Malformed {
+                extension: "gmad",
+                reason: format!(
+                    "{:?} claims {} bytes at offset {}, past the archive's {total}",
+                    entry.path, entry.size, entry.offset
+                ),
+            });
+        }
+    }
+    Ok(addon)
+}
+
+/// Parses the header and index alone, without requiring the contents.
+///
+/// What a stream needs. The index is complete long before the files are — that
+/// is the whole reason the format can be extracted as it arrives — so the
+/// bounds check [`parse`] performs cannot apply here, and would reject a
+/// perfectly good prefix.
+///
+/// Skipping it is safe for a streaming consumer precisely because it never
+/// allocates an entry's size: it writes bytes as they arrive, and a size that
+/// lied simply means the stream ends early, which is an error the consumer
+/// raises when it runs out.
+pub fn parse_index(bytes: &[u8]) -> Result<Addon, ExtensionError> {
     let mut reader = Reader::new(bytes);
 
     let magic = reader.take(4, "magic")?;
@@ -216,10 +254,10 @@ pub fn parse(bytes: &[u8]) -> Result<Addon, ExtensionError> {
         index.push((path, size as u64, crc));
     }
 
-    // Now place them. A size that runs past the end of the archive is the
-    // check that matters — it is how a small file claims to be a large one.
+    // Place them. The offsets are not stored anywhere: they are implied by the
+    // index order and the sizes, which is also what makes the format
+    // streamable.
     let mut offset = reader.at;
-    let total: u64 = bytes.len() as u64;
     let mut entries = Vec::with_capacity(index.len());
     for (path, size, crc) in index {
         let end = (offset as u64)
@@ -228,21 +266,19 @@ pub fn parse(bytes: &[u8]) -> Result<Addon, ExtensionError> {
                 extension: "gmad",
                 reason: format!("{path:?} has a size that overflows the archive"),
             })?;
-        if end > total {
-            return Err(ExtensionError::Malformed {
-                extension: "gmad",
-                reason: format!(
-                    "{path:?} claims {size} bytes at offset {offset}, past the archive's {total}"
-                ),
-            });
-        }
         entries.push(Entry {
             path,
             size,
             crc,
             offset,
         });
-        offset = end as usize;
+        offset = usize::try_from(end).map_err(|_| ExtensionError::Malformed {
+            extension: "gmad",
+            reason: format!(
+                "{:?} places the next entry past addressable memory",
+                entries.last().map(|e| &e.path)
+            ),
+        })?;
     }
 
     Ok(Addon {
