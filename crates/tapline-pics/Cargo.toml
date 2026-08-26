@@ -1,0 +1,26 @@
+[package]
+name = "tapline-pics"
+description = "PICS: app metadata, depot lists, branches and the manifest ids an install resolves to"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# No socket. The PICS exchange runs over a tapline-net Session, which runs over
+# the Transport trait, so the resolution logic is testable against a captured
+# response.
+[dependencies]
+tapline-ids = { workspace = true }
+tapline-io = { workspace = true }
+tapline-net = { workspace = true }
+tapline-proto = { workspace = true }
+tapline-vdf = { workspace = true }
+tapline-wire = { workspace = true }
+
+[dev-dependencies]
+tapline-rt-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

@@ -587,6 +587,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-pics"
+version = "0.1.0"
+dependencies = [
+ "tapline-ids",
+ "tapline-io",
+ "tapline-net",
+ "tapline-proto",
+ "tapline-rt-tokio",
+ "tapline-vdf",
+ "tapline-wire",
+ "tokio",
+]
+
+[[package]]
 name = "tapline-proto"
 version = "0.1.0"
 dependencies = [
@@ -601,6 +615,8 @@ dependencies = [
  "tapline-crypto",
  "tapline-io",
  "tapline-net",
+ "tapline-proto",
+ "tapline-wire",
  "tokio",
  "tokio-rustls",
  "webpki-roots",

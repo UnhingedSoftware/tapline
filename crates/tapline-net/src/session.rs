@@ -100,7 +100,11 @@ impl<T: Transport> Session<T> {
     }
 
     /// A fresh job id.
-    fn allocate_job_id(&mut self) -> u64 {
+    ///
+    /// Public because callers outside this crate — PICS, the CDN directory —
+    /// build their own request frames and need an id the session will recognise
+    /// when the reply comes back.
+    pub fn next_job_id(&mut self) -> u64 {
         let id = self.next_job_id;
         // Wrapping keeps this total. u64::MAX is the "no job" sentinel and must
         // never be handed out as a real id.
@@ -193,7 +197,7 @@ impl<T: Transport> Session<T> {
         self.hello().await?;
 
         self.steam_id = ANONYMOUS_STEAMID;
-        let job_id = self.allocate_job_id();
+        let job_id = self.next_job_id();
 
         let logon = CMsgClientLogon {
             protocol_version: Some(PROTOCOL_VERSION),
@@ -269,7 +273,7 @@ impl<T: Transport> Session<T> {
     /// The request type names its own target and response type through
     /// [`Rpc`], so a caller cannot pair a request with another method's reply.
     pub async fn call<R: Rpc>(&mut self, request: &R) -> Result<R::Response, NetError> {
-        let job_id = self.allocate_job_id();
+        let job_id = self.next_job_id();
 
         let mut header = self.header(Some(job_id));
         // Steam's unified messages are versioned; `#1` is what every current
@@ -448,7 +452,7 @@ mod tests {
         session.next_job_id = u64::MAX - 1;
 
         for _ in 0..4 {
-            let id = session.allocate_job_id();
+            let id = session.next_job_id();
             assert_ne!(id, crate::NO_JOB, "handed out the no-job sentinel");
             assert_ne!(id, 0);
         }

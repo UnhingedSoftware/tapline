@@ -1,0 +1,583 @@
+//! Reading an app's PICS document.
+
+use tapline_ids::{AppId, DepotId, ManifestId};
+use tapline_vdf::{Object, Value};
+
+/// The platform an install is for.
+///
+/// A depot's `config/oslist` decides whether it belongs in the install, and
+/// getting this wrong is not subtle: installing the Windows depot of a
+/// dedicated server on Linux downloads a few hundred megabytes of `.dll` files
+/// the server cannot use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Os {
+    /// Linux, which is what a game-server node runs.
+    Linux,
+    /// Windows.
+    Windows,
+    /// macOS. Valve spells it `macos`.
+    MacOs,
+}
+
+impl Os {
+    /// The token Valve writes in an `oslist`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+            Self::MacOs => "macos",
+        }
+    }
+
+    /// The OS this build is running on, as a default for the CLI.
+    #[must_use]
+    pub const fn host() -> Self {
+        if cfg!(target_os = "windows") {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+/// Which depots an install should take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepotFilter {
+    /// The target platform.
+    pub os: Os,
+    /// The branch, `public` unless a beta was asked for.
+    pub branch: String,
+    /// Whether to include depots belonging to DLC.
+    ///
+    /// Off by default: a dedicated server never wants them, and they can be a
+    /// large fraction of an app's size.
+    pub include_dlc: bool,
+}
+
+impl Default for DepotFilter {
+    fn default() -> Self {
+        Self {
+            os: Os::host(),
+            branch: "public".to_owned(),
+            include_dlc: false,
+        }
+    }
+}
+
+/// One depot an install will download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Depot {
+    /// The depot's id.
+    pub id: DepotId,
+    /// The exact build to install.
+    pub manifest: ManifestId,
+    /// Installed size in bytes, as PICS reports it.
+    pub size: u64,
+    /// Download size in bytes — smaller than `size`, since content is stored
+    /// compressed.
+    pub download_size: u64,
+    /// The app that actually owns the depot.
+    ///
+    /// Usually the app being installed, but a shared runtime depot belongs to
+    /// another app, and its key must be requested against *that* app.
+    pub owner: AppId,
+}
+
+/// A branch, as PICS lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branch {
+    /// Its name — `public`, or whatever the developer called the beta.
+    pub name: String,
+    /// The build id, when given.
+    pub build_id: Option<u64>,
+    /// Whether a password is needed. Password-protected branches carry their
+    /// manifest ids encrypted, which is a separate problem from listing them.
+    pub password_required: bool,
+}
+
+/// An app's PICS document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppInfo {
+    app_id: AppId,
+    root: Object,
+}
+
+/// Keys under `depots` that do not name a depot.
+///
+/// PICS puts these alongside the numeric depot ids, so a reader that takes every
+/// child as a depot ends up trying to download one called `branches`.
+const NON_DEPOT_KEYS: &[&str] = &[
+    "branches",
+    "baselanguages",
+    "overridescddb",
+    "hasdepotsindlc",
+    "privatebranches",
+    "partitions",
+];
+
+impl AppInfo {
+    /// Parses a PICS buffer.
+    ///
+    /// The buffer is NUL-terminated text KeyValues; the terminator is stripped
+    /// because the parser would otherwise read it as a bare token.
+    pub fn parse(app_id: AppId, buffer: &[u8]) -> Result<Self, tapline_vdf::VdfError> {
+        let trimmed = buffer.strip_suffix(&[0]).unwrap_or(buffer);
+        let text = String::from_utf8_lossy(trimmed);
+        let document = tapline_vdf::parse(&text)?;
+
+        // Valve wraps everything in a single "appinfo" block. Tolerating its
+        // absence costs nothing and means a caller can hand us either shape.
+        let root = document.get_object("appinfo").cloned().unwrap_or(document);
+
+        Ok(Self { app_id, root })
+    }
+
+    /// The app this describes.
+    #[must_use]
+    pub const fn app_id(&self) -> AppId {
+        self.app_id
+    }
+
+    /// The app's display name.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.root.get_object("common")?.get_str("name")
+    }
+
+    /// The app's type — `Game`, `Tool`, `Application`, `Config`.
+    ///
+    /// Dedicated servers are usually `Tool`, which is why filtering on `Game`
+    /// would hide exactly the apps this project exists to install.
+    #[must_use]
+    pub fn app_type(&self) -> Option<&str> {
+        self.root.get_object("common")?.get_str("type")
+    }
+
+    /// The raw document, for anything this type does not model.
+    #[must_use]
+    pub const fn raw(&self) -> &Object {
+        &self.root
+    }
+
+    /// Every branch the app publishes.
+    #[must_use]
+    pub fn branches(&self) -> Vec<Branch> {
+        let Some(branches) = self
+            .root
+            .get_object("depots")
+            .and_then(|d| d.get_object("branches"))
+        else {
+            return Vec::new();
+        };
+
+        branches
+            .iter()
+            .filter_map(|(name, value)| {
+                let entry = value.as_object()?;
+                Some(Branch {
+                    name: name.to_owned(),
+                    build_id: entry.get_u64("buildid"),
+                    // Valve writes "1"; anything else, including absence, means
+                    // no password.
+                    password_required: entry.get_str("pwdrequired") == Some("1"),
+                })
+            })
+            .collect()
+    }
+
+    /// The build id for a branch.
+    #[must_use]
+    pub fn build_id(&self, branch: &str) -> Option<u64> {
+        self.root
+            .get_object("depots")?
+            .get_object("branches")?
+            .get_object(branch)?
+            .get_u64("buildid")
+    }
+
+    /// The depots an install should download, in id order.
+    ///
+    /// Returns an empty list rather than an error when the branch does not
+    /// exist, so a caller can tell "no such branch" apart from "this branch has
+    /// nothing for your platform" by checking [`AppInfo::branches`].
+    #[must_use]
+    pub fn depots(&self, filter: &DepotFilter) -> Vec<Depot> {
+        let Some(depots) = self.root.get_object("depots") else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        for (key, value) in depots.iter() {
+            if NON_DEPOT_KEYS.contains(&key) {
+                continue;
+            }
+            let Ok(id) = key.parse::<u32>() else {
+                // A non-numeric key that is not a known non-depot entry is
+                // something new; skipping it is right, but silently is not, so
+                // it is left out of the install and visible in `raw()`.
+                continue;
+            };
+            let Some(entry) = value.as_object() else {
+                continue;
+            };
+
+            if !self.depot_matches(entry, filter) {
+                continue;
+            }
+            let Some(manifests) = entry.get_object("manifests") else {
+                // A depot with no manifests block has nothing to download —
+                // shared-install stubs look like this.
+                continue;
+            };
+            let Some(branch) = manifests.get_object(&filter.branch) else {
+                continue;
+            };
+            let Some(gid) = branch.get_u64("gid") else {
+                continue;
+            };
+
+            out.push(Depot {
+                id: DepotId(id),
+                manifest: ManifestId(gid),
+                size: branch.get_u64("size").unwrap_or(0),
+                download_size: branch.get_u64("download").unwrap_or(0),
+                // A depot borrowed from another app carries `depotfromapp`, and
+                // its decryption key has to be requested against that app
+                // rather than this one.
+                owner: entry
+                    .get_u64("depotfromapp")
+                    .and_then(|v| u32::try_from(v).ok())
+                    .map_or(self.app_id, AppId),
+            });
+        }
+
+        out.sort_by_key(|depot| depot.id.get());
+        out
+    }
+
+    /// Whether a depot belongs in this install.
+    fn depot_matches(&self, entry: &Object, filter: &DepotFilter) -> bool {
+        if !filter.include_dlc && entry.get("dlcappid").is_some() {
+            return false;
+        }
+
+        // No oslist means the depot is platform-neutral — shared content, and
+        // the majority of what an install actually needs.
+        if let Some(config) = entry.get_object("config")
+            && let Some(oslist) = config.get_str("oslist")
+            && !oslist.trim().is_empty()
+        {
+            return oslist
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case(filter.os.token()));
+        }
+        true
+    }
+
+    /// The total installed size of a filtered depot set.
+    #[must_use]
+    pub fn install_size(&self, filter: &DepotFilter) -> u64 {
+        self.depots(filter).iter().map(|d| d.size).sum()
+    }
+}
+
+/// Where an app's PICS document says its Workshop content lives.
+impl AppInfo {
+    /// The depot Workshop items for this app are stored in.
+    ///
+    /// Steam keeps SteamPipe UGC in a dedicated depot named by
+    /// `depots/workshopdepot`; without it, a Workshop download has no depot to
+    /// fetch a manifest from.
+    #[must_use]
+    pub fn workshop_depot(&self) -> Option<DepotId> {
+        let value = self.root.get_object("depots")?.get_u64("workshopdepot")?;
+        u32::try_from(value).ok().map(DepotId)
+    }
+}
+
+impl AppInfo {
+    /// Builds an `AppInfo` from an already-parsed document, for tests.
+    #[must_use]
+    pub const fn from_object(app_id: AppId, root: Object) -> Self {
+        Self { app_id, root }
+    }
+}
+
+/// Convenience for reading a nested value without three `?`s at the call site.
+#[allow(dead_code, reason = "kept next to the accessors it mirrors")]
+fn nested<'a>(object: &'a Object, path: &[&str]) -> Option<&'a Value> {
+    let mut current = object;
+    let (last, parents) = path.split_last()?;
+    for step in parents {
+        current = current.get_object(step)?;
+    }
+    current.get(last)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real PICS response for app 232250, captured live 2026-08-26 and cut
+    /// down to the parts that decide an install.
+    const TF2_DS: &str = r#"
+"appinfo"
+{
+	"appid"		"232250"
+	"common"
+	{
+		"name"		"Team Fortress 2 Dedicated Server"
+		"type"		"Tool"
+		"oslist"		"windows,linux"
+		"parent"		"440"
+	}
+	"depots"
+	{
+		"232250"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3447236868550150350"
+					"size"		"14752673735"
+					"download"		"10314244064"
+				}
+				"prerelease"
+				{
+					"gid"		"3447236868550150350"
+					"size"		"14752673735"
+					"download"		"10314244064"
+				}
+			}
+		}
+		"232255"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"428487833251189920"
+					"size"		"268007501"
+					"download"		"99587520"
+				}
+			}
+		}
+		"232256"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"698669566371320345"
+					"size"		"156284679"
+					"download"		"46201536"
+				}
+			}
+		}
+		"232257"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4797708003880603728"
+					"size"		"9989"
+					"download"		"9989"
+				}
+			}
+		}
+		"overridescddb"		"1"
+		"branches"
+		{
+			"public"
+			{
+				"buildid"		"17442188"
+			}
+			"prerelease"
+			{
+				"buildid"		"17442188"
+				"pwdrequired"		"1"
+			}
+		}
+	}
+}
+"#;
+
+    fn tf2() -> AppInfo {
+        AppInfo::parse(AppId(232_250), TF2_DS.as_bytes()).expect("the captured response must parse")
+    }
+
+    #[test]
+    fn a_nul_terminated_buffer_parses() {
+        // Steam's buffer ends with a NUL, which the parser would otherwise read
+        // as a bare token and trip over.
+        let mut buffer = TF2_DS.as_bytes().to_vec();
+        buffer.push(0);
+        let info = AppInfo::parse(AppId(232_250), &buffer).expect("must parse");
+        assert_eq!(info.name(), Some("Team Fortress 2 Dedicated Server"));
+    }
+
+    #[test]
+    fn the_app_reads_back_the_way_pics_wrote_it() {
+        let info = tf2();
+        assert_eq!(info.name(), Some("Team Fortress 2 Dedicated Server"));
+        // Dedicated servers are Tools, not Games — filtering on Game would hide
+        // exactly the apps this project exists to install.
+        assert_eq!(info.app_type(), Some("Tool"));
+        assert_eq!(info.build_id("public"), Some(17_442_188));
+    }
+
+    #[test]
+    fn a_linux_install_leaves_the_windows_depot_behind() {
+        // Depot 232255 is Windows-only. Taking it on Linux would download 268 MB
+        // of DLLs the server cannot run.
+        let depots = tf2().depots(&DepotFilter {
+            os: Os::Linux,
+            branch: "public".to_owned(),
+            include_dlc: false,
+        });
+
+        let ids: Vec<u32> = depots.iter().map(|d| d.id.get()).collect();
+        assert_eq!(ids, vec![232_250, 232_256, 232_257]);
+        assert!(!ids.contains(&232_255), "the Windows depot came along");
+    }
+
+    #[test]
+    fn a_windows_install_leaves_the_linux_depot_behind() {
+        let depots = tf2().depots(&DepotFilter {
+            os: Os::Windows,
+            branch: "public".to_owned(),
+            include_dlc: false,
+        });
+        let ids: Vec<u32> = depots.iter().map(|d| d.id.get()).collect();
+        assert_eq!(ids, vec![232_250, 232_255, 232_257]);
+    }
+
+    #[test]
+    fn manifest_ids_and_sizes_come_through_intact() {
+        // These are the numbers an install is pinned to; a truncation here would
+        // download a different build.
+        let depots = tf2().depots(&DepotFilter::default());
+        let shared = depots
+            .iter()
+            .find(|d| d.id.get() == 232_250)
+            .expect("the shared depot");
+
+        assert_eq!(shared.manifest.get(), 3_447_236_868_550_150_350);
+        assert_eq!(shared.size, 14_752_673_735);
+        assert_eq!(shared.download_size, 10_314_244_064);
+        assert_eq!(shared.owner, AppId(232_250));
+    }
+
+    #[test]
+    fn the_branches_key_is_not_mistaken_for_a_depot() {
+        // PICS puts `branches` and `overridescddb` alongside the numeric depot
+        // ids. A reader taking every child would try to download one called
+        // "branches".
+        let depots = tf2().depots(&DepotFilter::default());
+        assert!(
+            depots.iter().all(|d| d.id.get() >= 232_250),
+            "a non-depot key was treated as a depot"
+        );
+        assert_eq!(depots.len(), 3);
+    }
+
+    #[test]
+    fn branches_are_listed_with_their_password_flag() {
+        let branches = tf2().branches();
+        let public = branches
+            .iter()
+            .find(|b| b.name == "public")
+            .expect("a public branch");
+        assert_eq!(public.build_id, Some(17_442_188));
+        assert!(!public.password_required);
+
+        let prerelease = branches
+            .iter()
+            .find(|b| b.name == "prerelease")
+            .expect("the prerelease branch");
+        assert!(prerelease.password_required);
+    }
+
+    #[test]
+    fn an_unknown_branch_yields_nothing_rather_than_the_public_one() {
+        // Silently falling back to public would install a different build than
+        // the one asked for.
+        let depots = tf2().depots(&DepotFilter {
+            os: Os::Linux,
+            branch: "no-such-branch".to_owned(),
+            include_dlc: false,
+        });
+        assert!(depots.is_empty());
+    }
+
+    #[test]
+    fn install_size_sums_the_filtered_set() {
+        let filter = DepotFilter {
+            os: Os::Linux,
+            branch: "public".to_owned(),
+            include_dlc: false,
+        };
+        // 14752673735 + 156284679 + 9989
+        assert_eq!(tf2().install_size(&filter), 14_908_968_403);
+    }
+
+    #[test]
+    fn a_borrowed_depot_names_the_app_that_owns_it() {
+        // A shared runtime depot's key must be requested against its owning app,
+        // not the app being installed.
+        let document = r#"
+            "appinfo" {
+                "appid" "1"
+                "depots" {
+                    "9999" {
+                        "depotfromapp" "228980"
+                        "manifests" { "public" { "gid" "42" "size" "10" } }
+                    }
+                }
+            }
+        "#;
+        let info = AppInfo::parse(AppId(1), document.as_bytes()).expect("must parse");
+        let depot = info
+            .depots(&DepotFilter::default())
+            .into_iter()
+            .next()
+            .expect("one depot");
+        assert_eq!(depot.owner, AppId(228_980));
+    }
+
+    #[test]
+    fn dlc_depots_stay_out_unless_asked_for() {
+        let document = r#"
+            "appinfo" {
+                "appid" "1"
+                "depots" {
+                    "100" { "manifests" { "public" { "gid" "1" } } }
+                    "200" { "dlcappid" "555" "manifests" { "public" { "gid" "2" } } }
+                }
+            }
+        "#;
+        let info = AppInfo::parse(AppId(1), document.as_bytes()).expect("must parse");
+
+        let without = info.depots(&DepotFilter::default());
+        assert_eq!(without.len(), 1);
+
+        let with = info.depots(&DepotFilter {
+            include_dlc: true,
+            ..DepotFilter::default()
+        });
+        assert_eq!(with.len(), 2);
+    }
+}
