@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/tapline",
+    "crates/tapline-auth",
     "crates/tapline-cdn",
     "crates/tapline-crypto",
     "crates/tapline-event",
@@ -38,6 +39,7 @@ tapline-wire = { path = "crates/tapline-wire" }
 tapline-ids = { path = "crates/tapline-ids" }
 tapline-proto = { path = "crates/tapline-proto" }
 tapline = { path = "crates/tapline" }
+tapline-auth = { path = "crates/tapline-auth" }
 tapline-cdn = { path = "crates/tapline-cdn" }
 tapline-crypto = { path = "crates/tapline-crypto" }
 tapline-state = { path = "crates/tapline-state" }

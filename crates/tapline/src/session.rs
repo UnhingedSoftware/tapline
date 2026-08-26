@@ -12,6 +12,11 @@ use tapline_io::Sink;
 use tapline_manifest::Manifest;
 use tapline_net::{EMsg, Frame, Session as CmSession};
 use tapline_pics::Depot;
+use tapline_proto::steammessages_auth_steamclient::{
+    CAuthentication_BeginAuthSessionViaCredentials_Request,
+    CAuthentication_BeginAuthSessionViaQR_Request, CAuthentication_GetPasswordRSAPublicKey_Request,
+    CAuthentication_PollAuthSessionStatus_Request,
+};
 use tapline_proto::steammessages_base::CMsgProtoBufHeader;
 use tapline_proto::steammessages_clientserver_2::{
     CMsgClientGetDepotDecryptionKey, CMsgClientGetDepotDecryptionKeyResponse,
@@ -363,6 +368,159 @@ impl Session {
             .map_err(|e| InstallError::Io(e.to_string()))?;
 
         Ok(report)
+    }
+
+    /// Starts a QR login.
+    ///
+    /// No password is involved at any point: Steam issues a challenge URL, the
+    /// user approves it in the mobile app, and [`Session::poll_login`] returns a
+    /// token. For anything interactive this is both easier and safer than
+    /// typing a password into a terminal.
+    pub async fn begin_qr_login(&mut self) -> Result<crate::PendingLogin, crate::LoginError> {
+        let response = self
+            .cm
+            .call(&CAuthentication_BeginAuthSessionViaQR_Request {
+                device_friendly_name: Some(tapline_auth::DEVICE_NAME.to_owned()),
+                platform_type: Some(
+                    tapline_proto::steammessages_auth_steamclient::EAuthTokenPlatformType::from(
+                        tapline_auth::PLATFORM_STEAM_CLIENT,
+                    ),
+                ),
+                device_details: Some(crate::login::device_details()),
+                website_id: Some("Client".to_owned()),
+            })
+            .await
+            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+
+        Ok(crate::PendingLogin {
+            client_id: response.client_id.unwrap_or(0),
+            request_id: response.request_id.clone().unwrap_or_default(),
+            interval: response.interval.unwrap_or(5.0),
+            confirmations: crate::login::confirmations_from(&response.allowed_confirmations),
+            challenge_url: response.challenge_url.clone(),
+            account: None,
+        })
+    }
+
+    /// Fetches the per-account RSA key Steam issues for a password login.
+    ///
+    /// A separate step because it needs no secret — only the account name — and
+    /// separating it means the password exists for as short a time as possible:
+    /// the caller can prompt for it *after* this returns.
+    pub async fn password_key(
+        &mut self,
+        account: &str,
+    ) -> Result<tapline_auth::PublicKey, crate::LoginError> {
+        let response = self
+            .cm
+            .call(&CAuthentication_GetPasswordRSAPublicKey_Request {
+                account_name: Some(account.to_owned()),
+            })
+            .await
+            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+
+        crate::login::key_from_response(&response)
+    }
+
+    /// Starts a password login.
+    ///
+    /// Takes the password by value and hands it straight to the encrypter, which
+    /// zeroes it. Nothing here logs it, stores it, or keeps a second copy.
+    pub async fn begin_password_login(
+        &mut self,
+        account: &str,
+        password: String,
+        key: &tapline_auth::PublicKey,
+    ) -> Result<crate::PendingLogin, crate::LoginError> {
+        let encrypted = tapline_auth::encrypt_password(password, key)
+            .map_err(|error| crate::LoginError::Password(error.to_string()))?;
+
+        let response = self
+            .cm
+            .call(&CAuthentication_BeginAuthSessionViaCredentials_Request {
+                device_friendly_name: Some(tapline_auth::DEVICE_NAME.to_owned()),
+                account_name: Some(account.to_owned()),
+                encrypted_password: Some(encrypted),
+                encryption_timestamp: Some(key.timestamp),
+                remember_login: Some(true),
+                platform_type: Some(
+                    tapline_proto::steammessages_auth_steamclient::EAuthTokenPlatformType::from(
+                        tapline_auth::PLATFORM_STEAM_CLIENT,
+                    ),
+                ),
+                device_details: Some(crate::login::device_details()),
+                website_id: Some("Client".to_owned()),
+                ..CAuthentication_BeginAuthSessionViaCredentials_Request::default()
+            })
+            .await
+            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+
+        // Steam reports a failed password as an eresult on the reply rather than
+        // as an error, so a caller that only checked for transport failures
+        // would see an empty session and no reason.
+        if response.client_id.is_none() {
+            return Err(crate::LoginError::Refused {
+                eresult: 0,
+                message: response.extended_error_message.clone(),
+            });
+        }
+
+        Ok(crate::PendingLogin {
+            client_id: response.client_id.unwrap_or(0),
+            request_id: response.request_id.clone().unwrap_or_default(),
+            interval: response.interval.unwrap_or(5.0),
+            confirmations: crate::login::confirmations_from(&response.allowed_confirmations),
+            challenge_url: None,
+            account: Some(account.to_owned()),
+        })
+    }
+
+    /// Polls a login once.
+    ///
+    /// The caller sleeps for `PendingLogin::interval` between calls. Polling
+    /// faster is how a login gets rate limited, and Steam says what it wants.
+    pub async fn poll_login(
+        &mut self,
+        pending: &crate::PendingLogin,
+    ) -> Result<crate::PollOutcome, crate::LoginError> {
+        let response = self
+            .cm
+            .call(&CAuthentication_PollAuthSessionStatus_Request {
+                client_id: Some(pending.client_id),
+                request_id: Some(pending.request_id.clone()),
+                token_to_revoke: None,
+            })
+            .await
+            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+
+        if let Some(refresh_token) = response
+            .refresh_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+        {
+            return Ok(crate::PollOutcome::Complete {
+                account: response
+                    .account_name
+                    .clone()
+                    .or_else(|| pending.account.clone())
+                    .unwrap_or_default(),
+                refresh_token: refresh_token.to_owned(),
+                access_token: response.access_token.clone().unwrap_or_default(),
+            });
+        }
+
+        // A QR code that refreshed moves the session. Polling the old client id
+        // afterwards waits forever.
+        if let Some(new_client_id) = response.new_client_id.filter(|id| *id != 0) {
+            return Ok(crate::PollOutcome::Moved {
+                client_id: new_client_id,
+                challenge_url: response.new_challenge_url.clone(),
+            });
+        }
+
+        Ok(crate::PollOutcome::Pending {
+            had_interaction: response.had_remote_interaction.unwrap_or(false),
+        })
     }
 
     /// Makes a unified-message call on the session's CM connection.

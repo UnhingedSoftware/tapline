@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tapline-auth = { workspace = true }
 tapline-cdn = { workspace = true }
 tapline-crypto = { workspace = true }
 tapline-event = { workspace = true }
@@ -25,6 +26,7 @@ tapline-wire = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync"] }
 
 [dev-dependencies]
+tapline-auth = { workspace = true }
 tapline-state = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

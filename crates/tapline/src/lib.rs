@@ -30,16 +30,19 @@
 
 mod delta;
 mod install;
+mod login;
 mod session;
 mod validate;
 mod workshop;
 
 pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
 pub use install::{InstallError, InstallOptions, InstallReport};
+pub use login::{LoginError, PendingLogin, PollOutcome};
 pub use session::Session;
 pub use validate::{Damage, ValidationReport, validate_manifest};
 pub use workshop::{WorkshopContent, WorkshopError, WorkshopItem, classify, item_dir, options_for};
 
+pub use tapline_auth::{GuardType, StoredToken, TokenStore};
 pub use tapline_event::{Event, Plan, RetryReason};
 pub use tapline_ids::{AppId, DepotId, ManifestId, PublishedFileId};
 pub use tapline_pics::Os;

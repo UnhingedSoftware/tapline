@@ -1,0 +1,28 @@
+[package]
+name = "tapline-auth"
+description = "Signing in: password RSA encryption, QR sessions, Steam Guard, and the refresh-token store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rsa = { workspace = true }
+tapline-ids = { workspace = true }
+zeroize = { workspace = true }
+
+[features]
+# Persist the refresh token in the OS keyring rather than a file. Off by
+# default: a headless game-server node usually has no keyring daemon, and
+# failing to start because of one would be worse than a 0600 file.
+keyring = ["dep:keyring"]
+
+[dependencies.keyring]
+version = "3"
+optional = true
+default-features = false
+features = ["sync-secret-service", "crypto-rust"]
+
+[lints]
+workspace = true
