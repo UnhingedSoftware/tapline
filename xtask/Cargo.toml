@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+description = "Build-time tooling: generates the Rust protobuf message types from Valve's .proto files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# No dependencies, including no protobuf library. The whole point of generating
+# ahead of time and committing the output is that neither this tool nor `protoc`
+# ends up in anyone's build.
+[dependencies]
+
+[lints]
+workspace = true

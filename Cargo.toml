@@ -4,9 +4,11 @@ members = [
     "crates/tapline-crypto",
     "crates/tapline-event",
     "crates/tapline-ids",
+    "crates/tapline-proto",
     "crates/tapline-io",
     "crates/tapline-vdf",
     "crates/tapline-wire",
+    "xtask",
 ]
 
 [workspace.package]
@@ -25,6 +27,7 @@ rust-version = "1.85"
 # internal — leaves
 tapline-wire = { path = "crates/tapline-wire" }
 tapline-ids = { path = "crates/tapline-ids" }
+tapline-proto = { path = "crates/tapline-proto" }
 tapline-crypto = { path = "crates/tapline-crypto" }
 tapline-vdf = { path = "crates/tapline-vdf" }
 tapline-lzma = { path = "crates/tapline-lzma" }

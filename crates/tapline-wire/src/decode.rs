@@ -163,6 +163,51 @@ impl<'a> Decoder<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    /// Reads a `sint32` field, undoing the zigzag encoding.
+    pub fn read_sint32(&mut self) -> Result<i32, WireError> {
+        Ok(crate::zigzag_decode_32(self.read_varint()? as u32))
+    }
+
+    /// Reads a `sint64` field, undoing the zigzag encoding.
+    pub fn read_sint64(&mut self) -> Result<i64, WireError> {
+        Ok(crate::zigzag_decode_64(self.read_varint()?))
+    }
+
+    /// Reads a `float`.
+    pub fn read_float(&mut self) -> Result<f32, WireError> {
+        Ok(f32::from_bits(self.read_fixed32()?))
+    }
+
+    /// Reads a `double`.
+    pub fn read_double(&mut self) -> Result<f64, WireError> {
+        Ok(f64::from_bits(self.read_fixed64()?))
+    }
+
+    /// Reads a repeated numeric field that may or may not be packed.
+    ///
+    /// proto2 does not pack by default, but protobuf requires every decoder to
+    /// accept both forms for the same field — a sender is free to change its
+    /// mind, and Steam's own encoders are not consistent. `wire_type` is what
+    /// the field key actually carried, so a length-delimited key means packed
+    /// and anything else means a single value.
+    pub fn read_maybe_packed<T>(
+        &mut self,
+        wire_type: WireType,
+        out: &mut Vec<T>,
+        read_one: impl Fn(&mut Decoder<'_>) -> Result<T, WireError>,
+    ) -> Result<(), WireError> {
+        if wire_type != WireType::LengthDelimited {
+            out.push(read_one(self)?);
+            return Ok(());
+        }
+        let payload = self.read_bytes()?;
+        let mut nested = Decoder::new(payload);
+        while !nested.is_empty() {
+            out.push(read_one(&mut nested)?);
+        }
+        Ok(())
+    }
+
     /// Reads a length-delimited field's payload.
     ///
     /// The length is checked against what is actually left before anything is

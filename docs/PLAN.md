@@ -336,7 +336,7 @@ No milestone closes on "it ran once by hand".
 | # | milestone | gate |
 |---|---|---|
 | M0 | repo, workspace, licence, CI, `cargo-deny`, dev profile | CI green on empty crates |
-| M1 | leaves: `wire`, `ids`, `crypto`, `vdf`, `io` traits + fuzz targets | codec round-trips a real captured message; ACF round-trips byte-identical |
+| M1 | leaves: `wire`, `ids`, `crypto`, `vdf`, `event`, `io` traits + fuzz targets | codec round-trips a real captured message; ACF round-trips byte-identical |
 | M2 | `xtask` codegen → committed `tapline-proto`; `--timings` check | every Steam `.proto` compiles; no `prost`/`protoc` in the consumer tree |
 | M3 | `tapline-rt-tokio` + `tapline-net`: CM handshake (TCP + WS), mux, anon logon | `tapline whoami` on a real CM; captured-session vectors pass against an in-memory `Stream` with no network |
 | M4 | `tapline-pics` → `app info 232250 --json` | depots/branches match SteamDB |
@@ -379,6 +379,17 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
   cheap precondition rather than an ENOSPC halfway through.
 - `cargo clean` on `target/` between perf runs is scripted, and CI runners already
   have the hourly `_work` sweep from the runner-disk fix.
+
+## Deviations from this plan, and why
+
+- **`tapline-lzma` and `tapline-zstd` moved from M1 to M6.** They were planned as
+  leaves to build early, but the `VZ` and `VSZ` container headers around the
+  compressed payload are undocumented, and the only way to know their layout is
+  to read a real chunk. A real chunk needs a depot key and a manifest request
+  code, which need a CM session — so the earliest honest moment to write them is
+  M6, alongside the CDN client that fetches the sample. Writing them now would
+  mean inventing a header and testing it against my own invention, which would
+  pass every test and fail against Valve.
 
 ## Verification
 

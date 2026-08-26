@@ -89,6 +89,41 @@ impl Encoder {
         self.write_varint_field(number, u64::from(value));
     }
 
+    /// Writes a `sint32` field, zigzag encoded.
+    pub fn write_sint32_field(&mut self, number: u32, value: i32) {
+        self.write_varint_field(number, u64::from(crate::zigzag_encode_32(value)));
+    }
+
+    /// Writes a `sint64` field, zigzag encoded.
+    pub fn write_sint64_field(&mut self, number: u32, value: i64) {
+        self.write_varint_field(number, crate::zigzag_encode_64(value));
+    }
+
+    /// Writes a `float` field.
+    pub fn write_float_field(&mut self, number: u32, value: f32) {
+        self.write_fixed32_field(number, value.to_bits());
+    }
+
+    /// Writes a `double` field.
+    pub fn write_double_field(&mut self, number: u32, value: f64) {
+        self.write_fixed64_field(number, value.to_bits());
+    }
+
+    /// Writes a packed repeated `fixed64` field, omitting it when empty.
+    pub fn write_packed_fixed64(&mut self, number: u32, values: &[u64]) {
+        if values.is_empty() {
+            return;
+        }
+        self.write_key(FieldKey {
+            number,
+            wire_type: WireType::LengthDelimited,
+        });
+        self.write_varint((values.len() * 8) as u64);
+        for value in values {
+            self.buf.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
     /// Writes a `fixed32` field.
     pub fn write_fixed32_field(&mut self, number: u32, value: u32) {
         self.write_key(FieldKey {

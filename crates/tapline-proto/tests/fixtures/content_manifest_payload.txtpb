@@ -1,0 +1,21 @@
+mappings {
+  filename: "bin/srcds_linux"
+  size: 12345678
+  flags: 64
+  sha_content: "0123456789abcdef0123"
+  chunks {
+    sha: "abcdefghij0123456789"
+    crc: 305419896
+    offset: 0
+    cb_original: 1048576
+    cb_compressed: 524288
+  }
+  chunks {
+    sha: "jihgfedcba9876543210"
+    crc: 2271560481
+    offset: 1048576
+    cb_original: 65536
+    cb_compressed: 32768
+  }
+  linktarget: ""
+}

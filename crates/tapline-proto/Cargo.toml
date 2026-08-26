@@ -1,0 +1,16 @@
+[package]
+name = "tapline-proto"
+description = "Steam's protobuf messages, generated ahead of time from Valve's own schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# No build script and no protobuf library. The generated Rust is committed, which
+# is the whole reason a consumer of this workspace never sees prost or protoc.
+[dependencies]
+tapline-wire = { workspace = true }
+
+[lints]
+workspace = true

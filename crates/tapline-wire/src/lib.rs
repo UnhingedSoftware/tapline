@@ -118,6 +118,24 @@ pub trait Message: Sized + Default {
     }
 }
 
+/// A request message that names its own response type and RPC target.
+///
+/// Steam's unified messages are addressed by a string such as
+/// `Authentication.BeginAuthSessionViaCredentials`, and every one of them has
+/// exactly one response type. Tying the three together in the type system means
+/// the RPC layer can be written once, generically, and a caller cannot ask for
+/// one method and decode another's reply — a mistake that otherwise surfaces as
+/// a message that decodes to all-default fields with no error at all.
+///
+/// Implemented by generated code from the `service` blocks in Valve's schema.
+pub trait Rpc: Message {
+    /// The reply Steam sends.
+    type Response: Message;
+
+    /// The target string, without the `#1` version suffix the transport adds.
+    const TARGET: &'static str;
+}
+
 /// Zigzag-encodes a signed 32-bit value for a `sint32` field.
 #[inline]
 #[must_use]
