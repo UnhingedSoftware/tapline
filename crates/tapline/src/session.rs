@@ -779,6 +779,11 @@ impl Session {
         let mut tasks: tokio::task::JoinSet<(usize, Result<ChunkOutcome, InstallError>)> =
             tokio::task::JoinSet::new();
 
+        // Finalisations run here rather than inline, so an fsync never stops the
+        // loop from dispatching the next chunk.
+        let mut finalizing: tokio::task::JoinSet<Result<(), InstallError>> =
+            tokio::task::JoinSet::new();
+
         let mut files_written = 0_u64;
         // Files whose chunks are still in flight, by index. A file leaves this
         // map — and closes its descriptor — as soon as its own last chunk
@@ -928,8 +933,8 @@ impl Session {
 
             if outstanding == 0 {
                 // A zero-length file has no chunks, so nothing will ever finish
-                // for it. Finalise it here or its descriptor is never released.
-                finalize_file(entry_pending).await?;
+                // for it. Queue it or its descriptor is never released.
+                finalizing.spawn_blocking(move || finalize_file(entry_pending));
             } else {
                 pending.insert(index, entry_pending);
             }
@@ -938,18 +943,43 @@ impl Session {
             // set does not grow without bound, and finished files release their
             // descriptors.
             while let Some(joined) = tasks.try_join_next() {
-                apply_outcome(joined, report, &mut self.pool, &mut pending).await?;
+                apply_outcome(
+                    joined,
+                    report,
+                    &mut self.pool,
+                    &mut pending,
+                    &mut finalizing,
+                )?;
+            }
+            while let Some(joined) = finalizing.try_join_next() {
+                collect_finalize(joined)?;
             }
 
             // A hard ceiling on open descriptors, independent of how a depot
             // happens to distribute chunks across files. The chunk semaphore
             // already bounds this in practice; this is the guarantee rather
             // than the expectation.
-            while pending.len() >= MAX_OPEN_FILES {
+            while pending.len() + finalizing.len() >= MAX_OPEN_FILES {
+                // A file being synced still holds its descriptor, so it counts
+                // against the ceiling until the sync returns.
+                if let Some(joined) = finalizing.try_join_next() {
+                    collect_finalize(joined)?;
+                    continue;
+                }
                 let Some(joined) = tasks.join_next().await else {
-                    break;
+                    let Some(joined) = finalizing.join_next().await else {
+                        break;
+                    };
+                    collect_finalize(joined)?;
+                    continue;
                 };
-                apply_outcome(joined, report, &mut self.pool, &mut pending).await?;
+                apply_outcome(
+                    joined,
+                    report,
+                    &mut self.pool,
+                    &mut pending,
+                    &mut finalizing,
+                )?;
                 self.maybe_heartbeat().await?;
             }
         }
@@ -959,7 +989,19 @@ impl Session {
         // the connection goes quiet for as long as the tail takes. That is how
         // this failed the first time it ran — a broken pipe 101 seconds in.
         while let Some(joined) = tasks.join_next().await {
-            apply_outcome(joined, report, &mut self.pool, &mut pending).await?;
+            apply_outcome(
+                joined,
+                report,
+                &mut self.pool,
+                &mut pending,
+                &mut finalizing,
+            )?;
+            self.maybe_heartbeat().await?;
+        }
+
+        // Every file must be on disk before the install record claims it is.
+        while let Some(joined) = finalizing.join_next().await {
+            collect_finalize(joined)?;
             self.maybe_heartbeat().await?;
         }
 
@@ -1065,19 +1107,36 @@ struct PendingFile {
 const MAX_OPEN_FILES: usize = 64;
 
 /// Syncs a finished file, applies its mode, and closes it.
-async fn finalize_file(file: PendingFile) -> Result<(), InstallError> {
-    file.sink.sync().await?;
+///
+/// Blocking on purpose, and never called from the task that dispatches chunks.
+/// `fsync` on a multi-megabyte file is not quick: measured over a Garry's Mod
+/// install it was 13.5 seconds of a 41-second wall clock, and every one of
+/// those seconds was time the dispatch loop spent not starting new fetches,
+/// draining all sixteen slots to idle. Off the critical path it overlaps with
+/// the downloads instead.
+fn finalize_file(file: PendingFile) -> Result<(), InstallError> {
+    file.sink
+        .sync_blocking()
+        .map_err(|error| InstallError::Io(error.to_string()))?;
     set_permissions(&file.target, file.mode)?;
     // Explicit, because the descriptor closing here is the point.
     drop(file.sink);
     Ok(())
 }
 
-async fn apply_outcome(
+/// Unwraps a finished finalisation, turning a panicked task into an error.
+fn collect_finalize(
+    joined: Result<Result<(), InstallError>, tokio::task::JoinError>,
+) -> Result<(), InstallError> {
+    joined.map_err(|error| InstallError::Io(format!("a file could not be finalised: {error}")))?
+}
+
+fn apply_outcome(
     joined: Result<(usize, Result<ChunkOutcome, InstallError>), tokio::task::JoinError>,
     report: &mut InstallReport,
     pool: &mut HostPool,
     pending: &mut std::collections::BTreeMap<usize, PendingFile>,
+    finalizing: &mut tokio::task::JoinSet<Result<(), InstallError>>,
 ) -> Result<(), InstallError> {
     let (index, outcome) =
         joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))?;
@@ -1094,7 +1153,7 @@ async fn apply_outcome(
     };
     let outcome = outcome?;
     if finished && let Some(file) = pending.remove(&index) {
-        finalize_file(file).await?;
+        finalizing.spawn_blocking(move || finalize_file(file));
     }
 
     if outcome.reused {

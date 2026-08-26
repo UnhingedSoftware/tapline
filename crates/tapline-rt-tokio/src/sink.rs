@@ -42,6 +42,17 @@ impl FileSink {
         Ok(Self { file })
     }
 
+    /// Flushes to disk, blocking.
+    ///
+    /// The `Sink` trait's `sync` is an async method whose body is this same
+    /// blocking call, which is fine when it is awaited somewhere that can
+    /// afford to block and wrong when it is awaited on a task that is also
+    /// dispatching work. Exposing it directly lets the caller put it on a
+    /// blocking thread where it belongs.
+    pub fn sync_blocking(&self) -> io::Result<()> {
+        self.file.sync_all()
+    }
+
     /// Reads `len` bytes at `offset`, for verifying what is already on disk.
     pub fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0_u8; len];
