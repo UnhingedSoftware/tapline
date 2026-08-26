@@ -382,6 +382,26 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
 
 ## Deviations from this plan, and why
 
+- **The CM transport is WebSocket-only. There is no TCP path to write.** Measured
+  2026-08-26: `ISteamDirectory/GetCMListForConnect` returns 58 servers — 52
+  `websockets`, 6 `netfilter`, and **zero** TCP. Ports 443 and 27018 both answer
+  with TLS 1.3 and a valid certificate (`CN=cmp1-iad1.steamserver.net`,
+  verification OK); the legacy raw-TCP port 27017 is filtered. So the plan's
+  "TCP path needs no TLS, and the WebSocket path skips channel encryption in
+  exchange" is half right: there is only the second half.
+
+  Consequences, all of them simplifications:
+  * No `ChannelEncryptRequest`/`Response` handshake to implement. TLS provides
+    confidentiality and authenticates the server through ordinary PKI.
+  * **Valve's universe RSA public key is not needed at all.** It existed to
+    encrypt the session key during that handshake. Password encryption at M9 uses
+    a per-account key from `Authentication.GetPasswordRSAPublicKey`, so nothing in
+    tapline ever needs a hardcoded Valve constant — which also removes the one
+    constant that could not have been verified from first principles.
+  * `tapline-crypto`'s message encryption is still needed, but for depot content:
+    manifest filename decryption and chunk decryption, not the channel.
+  * We owe a WebSocket client (RFC 6455 framing) instead of the CM handshake.
+
 - **`tapline-lzma` and `tapline-zstd` moved from M1 to M6.** They were planned as
   leaves to build early, but the `VZ` and `VSZ` container headers around the
   compressed payload are undocumented, and the only way to know their layout is

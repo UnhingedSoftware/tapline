@@ -3,9 +3,9 @@
 //! Every crate above the leaves consumes these traits and none of them
 //! constructs one. That buys two things worth more than the indirection costs:
 //!
-//! * **The protocol is testable without a network.** A recorded CM handshake
-//!   replayed through an in-memory [`Stream`] exercises the framing and the
-//!   channel crypto with no socket, no Steam account and no flakiness.
+//! * **The protocol is testable without a network.** A recorded CM exchange
+//!   replayed through an in-memory [`Transport`] exercises the framing and the
+//!   message routing with no socket, no Steam account and no flakiness.
 //! * **`tokio` is a dependency of one crate.** A service that already runs its
 //!   own reactor links `tapline` without inheriting ours.
 //!
@@ -28,26 +28,31 @@ use std::future::Future;
 use std::io;
 use std::time::{Duration, SystemTime};
 
-/// A bidirectional byte stream: the CM connection.
+/// The CM connection, as a sequence of whole messages.
 ///
-/// Deliberately narrower than `AsyncRead + AsyncWrite`. The CM protocol is
-/// framed — a length prefix, then exactly that many bytes — so the connection
-/// only ever needs "fill this buffer" and "send these bytes", and a narrower
-/// trait is a smaller thing to implement for a test double.
-pub trait Stream: Send {
-    /// Reads exactly enough bytes to fill `buf`.
+/// Message-oriented rather than byte-oriented, because that is what the
+/// transport actually is. Measured 2026-08-26:
+/// `ISteamDirectory/GetCMListForConnect` offers 52 `websockets` servers, 6
+/// `netfilter`, and no TCP at all, and Steam puts exactly one protocol message
+/// in each WebSocket binary frame. A byte-stream trait would force the
+/// implementation to throw the frame boundaries away and the caller to invent a
+/// length prefix to get them back.
+///
+/// So there is no `read_exact` here. There is nothing to length-prefix: the
+/// frame is the message.
+pub trait Transport: Send {
+    /// Sends one whole message.
+    fn send(&mut self, message: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
+
+    /// Receives the next whole message.
     ///
-    /// Returns [`io::ErrorKind::UnexpectedEof`] if the peer closes first. Short
-    /// reads are handled by the implementation rather than the caller, because
-    /// every caller in this workspace wants a whole frame and a partial one is
-    /// never useful.
-    fn read_exact(&mut self, buf: &mut [u8]) -> impl Future<Output = io::Result<()>> + Send;
+    /// Returns [`io::ErrorKind::UnexpectedEof`] when the peer closes cleanly, so
+    /// a disconnect is an error the caller handles rather than an empty message
+    /// it might mistake for a real one.
+    fn recv(&mut self) -> impl Future<Output = io::Result<Vec<u8>>> + Send;
 
-    /// Writes all of `buf`.
-    fn write_all(&mut self, buf: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
-
-    /// Flushes anything buffered and closes the write half.
-    fn shutdown(&mut self) -> impl Future<Output = io::Result<()>> + Send;
+    /// Closes the connection.
+    fn close(&mut self) -> impl Future<Output = io::Result<()>> + Send;
 }
 
 /// A destination for downloaded content: a file being filled at arbitrary
@@ -91,30 +96,25 @@ pub trait Clock: Send + Sync {
 #[cfg(all(test, feature = "testing"))]
 mod tests {
     use super::*;
-    use crate::testing::{MemoryStream, block_on};
+    use crate::testing::{MemoryTransport, block_on};
 
     #[test]
-    fn a_memory_backed_stream_satisfies_the_trait() {
+    fn a_memory_backed_transport_satisfies_the_trait() {
         // The point of this test is that the trait is implementable by something
         // with no runtime behind it — that is what makes the protocol testable
         // without a network.
-        let mut stream = MemoryStream::new(vec![1, 2, 3, 4]);
+        let mut transport = MemoryTransport::new(vec![b"hello".to_vec()]);
 
         block_on(async {
-            let mut buf = [0_u8; 2];
-            stream.read_exact(&mut buf).await.expect("must read");
-            assert_eq!(buf, [1, 2]);
+            let message = transport.recv().await.expect("must receive");
+            assert_eq!(message, b"hello");
 
-            stream.write_all(&[9, 9]).await.expect("must write");
-            assert_eq!(stream.written(), &[9, 9]);
+            transport.send(b"reply").await.expect("must send");
+            assert_eq!(transport.sent(), &[b"reply".to_vec()]);
 
-            // Reading past the end reports EOF rather than a short read.
-            let mut too_much = [0_u8; 4];
-            let err = stream
-                .read_exact(&mut too_much)
-                .await
-                .expect_err("must refuse to over-read");
-            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+            // Reading past the end reports EOF rather than an empty message.
+            let error = transport.recv().await.expect_err("must report EOF");
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         });
     }
 }

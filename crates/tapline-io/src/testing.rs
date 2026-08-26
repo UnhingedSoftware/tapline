@@ -5,7 +5,7 @@
 //! instead of a live Steam connection: no account, no network, no flakiness, and
 //! a failing test points at our framing rather than at Valve having a bad day.
 
-use crate::{Sink, Stream};
+use crate::{Sink, Transport};
 use std::future::Future;
 use std::io;
 use std::sync::Mutex;
@@ -27,75 +27,74 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// A [`Stream`] that reads from a buffer and records what was written.
+/// A [`Transport`] that serves queued messages and records what was sent.
 ///
-/// This is how a recorded CM handshake is replayed: load the bytes Steam sent,
-/// run the real handshake code against them, and assert on what it tried to
-/// send back.
+/// This is how a recorded CM exchange is replayed: load the messages Steam sent,
+/// run the real protocol code against them, and assert on what it tried to send
+/// back. No socket, no account, no flakiness — a failing test points at our
+/// framing rather than at Valve having a bad day.
 #[derive(Debug, Default)]
-pub struct MemoryStream {
-    input: Vec<u8>,
-    read_pos: usize,
-    written: Vec<u8>,
-    shutdown: bool,
+pub struct MemoryTransport {
+    incoming: std::collections::VecDeque<Vec<u8>>,
+    sent: Vec<Vec<u8>>,
+    closed: bool,
 }
 
-impl MemoryStream {
-    /// A stream that will serve `input` to its reader.
+impl MemoryTransport {
+    /// A transport that will hand `incoming` to its reader, in order.
     #[must_use]
-    pub fn new(input: Vec<u8>) -> Self {
+    pub fn new(incoming: Vec<Vec<u8>>) -> Self {
         Self {
-            input,
-            read_pos: 0,
-            written: Vec::new(),
-            shutdown: false,
+            incoming: incoming.into(),
+            sent: Vec::new(),
+            closed: false,
         }
     }
 
-    /// Everything written so far.
+    /// Every message sent so far, in order.
     #[must_use]
-    pub fn written(&self) -> &[u8] {
-        &self.written
+    pub fn sent(&self) -> &[Vec<u8>] {
+        &self.sent
     }
 
-    /// How many bytes of the input have not been read.
+    /// How many queued messages have not been read.
     ///
-    /// A replay test asserting this is zero proves the parser consumed the whole
+    /// A replay test asserting this is zero proves the code consumed the whole
     /// recording rather than stopping early and passing by accident.
     #[must_use]
     pub fn unread(&self) -> usize {
-        self.input.len().saturating_sub(self.read_pos)
+        self.incoming.len()
     }
 
-    /// Whether the writer closed the stream.
+    /// Whether the connection was closed.
     #[must_use]
-    pub const fn is_shutdown(&self) -> bool {
-        self.shutdown
+    pub const fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Queues another message for the reader, mid-test.
+    pub fn push_incoming(&mut self, message: Vec<u8>) {
+        self.incoming.push_back(message);
     }
 }
 
-impl Stream for MemoryStream {
-    async fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        let end = self
-            .read_pos
-            .checked_add(buf.len())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
-        let src = self
-            .input
-            .get(self.read_pos..end)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
-        buf.copy_from_slice(src);
-        self.read_pos = end;
+impl Transport for MemoryTransport {
+    async fn send(&mut self, message: &[u8]) -> io::Result<()> {
+        if self.closed {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+        self.sent.push(message.to_vec());
         Ok(())
     }
 
-    async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.written.extend_from_slice(buf);
-        Ok(())
+    async fn recv(&mut self) -> io::Result<Vec<u8>> {
+        self.incoming
+            .pop_front()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
     }
 
-    async fn shutdown(&mut self) -> io::Result<()> {
-        self.shutdown = true;
+    async fn close(&mut self) -> io::Result<()> {
+        self.closed = true;
         Ok(())
     }
 }
@@ -207,13 +206,24 @@ mod tests {
     }
 
     #[test]
-    fn unread_input_is_visible_to_the_test() {
-        // A replay test that stopped parsing early would otherwise pass.
-        let mut stream = MemoryStream::new(vec![1, 2, 3, 4]);
+    fn unread_messages_are_visible_to_the_test() {
+        // A replay test that stopped reading early would otherwise pass.
+        let mut transport = MemoryTransport::new(vec![vec![1, 2], vec![3, 4]]);
         block_on(async {
-            let mut buf = [0_u8; 2];
-            stream.read_exact(&mut buf).await.expect("must read");
+            let first = transport.recv().await.expect("must receive");
+            assert_eq!(first, vec![1, 2]);
         });
-        assert_eq!(stream.unread(), 2);
+        assert_eq!(transport.unread(), 1);
+    }
+
+    #[test]
+    fn a_closed_transport_reports_eof_not_an_empty_message() {
+        // An empty Vec would be indistinguishable from a real zero-length
+        // message, and the caller would act on it.
+        let mut transport = MemoryTransport::new(Vec::new());
+        block_on(async {
+            let error = transport.recv().await.expect_err("must report EOF");
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        });
     }
 }
