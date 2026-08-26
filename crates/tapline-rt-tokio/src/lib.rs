@@ -21,11 +21,13 @@
 
 mod directory;
 mod http;
+mod sink;
 mod tls;
 mod ws;
 
 pub use directory::{CmServer, cm_list};
 pub use http::{HttpClient, SharedHttpClient};
+pub use sink::FileSink;
 pub use tls::connect_tls;
 pub use ws::MAX_MESSAGE;
 

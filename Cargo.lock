@@ -575,6 +575,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-cdn"
+version = "0.1.0"
+dependencies = [
+ "tapline-crypto",
+ "tapline-fs",
+ "tapline-ids",
+ "tapline-io",
+ "tapline-lzma",
+ "tapline-manifest",
+ "tapline-net",
+ "tapline-pics",
+ "tapline-proto",
+ "tapline-rt-tokio",
+ "tapline-wire",
+ "tokio",
+]
+
+[[package]]
 name = "tapline-crypto"
 version = "0.1.0"
 dependencies = [

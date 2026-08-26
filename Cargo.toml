@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/tapline-cdn",
     "crates/tapline-crypto",
     "crates/tapline-event",
     "crates/tapline-ids",
@@ -34,6 +35,7 @@ rust-version = "1.85"
 tapline-wire = { path = "crates/tapline-wire" }
 tapline-ids = { path = "crates/tapline-ids" }
 tapline-proto = { path = "crates/tapline-proto" }
+tapline-cdn = { path = "crates/tapline-cdn" }
 tapline-crypto = { path = "crates/tapline-crypto" }
 tapline-vdf = { path = "crates/tapline-vdf" }
 tapline-lzma = { path = "crates/tapline-lzma" }

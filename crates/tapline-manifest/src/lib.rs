@@ -31,5 +31,5 @@
 mod container;
 mod file;
 
-pub use container::{ManifestError, RawManifest};
+pub use container::{MAX_MANIFEST, ManifestError, RawManifest};
 pub use file::{Chunk, FileEntry, FileFlags, Manifest};
