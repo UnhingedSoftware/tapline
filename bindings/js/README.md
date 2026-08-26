@@ -74,12 +74,23 @@ Node has no built-in FFI, so it needs [koffi](https://koffi.dev). Deno and Bun
 have one built in and need nothing. If koffi is missing, tapline says so rather
 than failing obscurely.
 
-The native library is found next to the package, or wherever `TAPLINE_LIB`
-points — which is what you want while working on tapline itself:
+Node also needs **22.18 or newer**. The package ships TypeScript with no build
+step, and that is the version where importing it stopped needing a flag. Deno
+and Bun have never cared.
+
+### The shared library is not in the package yet
+
+There are no prebuilt binaries on npm, so for now you build it once:
 
 ```sh
-TAPLINE_LIB=../../target/release/libtapline_ffi.so bun test/smoke.ts
+cargo build --release -p tapline-ffi   # or: npm run build:lib
 ```
+
+It is then found automatically — beside the package, or in the workspace's
+`target/release` — with no configuration. `TAPLINE_LIB` overrides that if the
+library lives somewhere else. When it cannot be found, the error lists every
+path that was tried, because "library not found" with no indication of where it
+looked is the least useful thing a binding can say.
 
 ## Why there are no native callbacks
 
@@ -129,6 +140,8 @@ bun            test/smoke.ts
 node           test/smoke.ts
 deno run --allow-ffi --allow-env --allow-read --unstable-ffi test/smoke.ts
 ```
+
+No `TAPLINE_LIB` needed: the workspace build is found on its own.
 
 Add `TAPLINE_LIVE=1` for the tests that talk to Steam and download real content.
 Measured on 2026-08-26: 10/10 on Deno 2.9.5, Bun 1.3.14 and Node 26.7.0.

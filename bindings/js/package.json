@@ -14,7 +14,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18.0"
   },
   "peerDependencies": {
     "koffi": "^3.1.6"
@@ -25,8 +25,10 @@
     }
   },
   "scripts": {
-    "test:deno": "deno test --allow-ffi --allow-env --allow-read --unstable-ffi test/",
-    "test:bun": "bun test test/",
-    "test:node": "node --test test/"
+    "build:lib": "cargo build --release -p tapline-ffi --manifest-path ../../Cargo.toml",
+    "test": "node test/smoke.ts",
+    "test:deno": "deno run --allow-ffi --allow-env --allow-read --unstable-ffi test/smoke.ts",
+    "test:bun": "bun test/smoke.ts",
+    "test:node": "node test/smoke.ts"
   }
 }

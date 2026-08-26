@@ -63,27 +63,7 @@ function cstring(value: string): Uint8Array {
   return out;
 }
 
-/** Where the shared library is. */
-export function libraryPath(): string {
-  const override = getEnv("TAPLINE_LIB");
-  if (override) return override;
-
-  const platform = getPlatform();
-  const name =
-    platform === "darwin"
-      ? "libtapline_ffi.dylib"
-      : platform === "win32"
-        ? "tapline_ffi.dll"
-        : "libtapline_ffi.so";
-
-  // Beside the package first, then the cargo target directory, which is where
-  // it is during development and the single most common reason for a confusing
-  // "library not found" while working on tapline itself.
-  return getEnv("TAPLINE_TARGET_DIR")
-    ? `${getEnv("TAPLINE_TARGET_DIR")}/${name}`
-    : name;
-}
-
+/** An environment variable, in whichever runtime this is. */
 function getEnv(key: string): string | undefined {
   // deno-lint-ignore no-explicit-any
   const g = globalThis as any;
@@ -92,6 +72,7 @@ function getEnv(key: string): string | undefined {
   return undefined;
 }
 
+/** The platform, spelled the way Node spells it. */
 function getPlatform(): string {
   // deno-lint-ignore no-explicit-any
   const g = globalThis as any;
@@ -100,6 +81,71 @@ function getPlatform(): string {
     return os === "windows" ? "win32" : os;
   }
   return g.process?.platform ?? "linux";
+}
+
+/** The library's filename on this platform. */
+function libraryName(): string {
+  const platform = getPlatform();
+  if (platform === "darwin") return "libtapline_ffi.dylib";
+  if (platform === "win32") return "tapline_ffi.dll";
+  return "libtapline_ffi.so";
+}
+
+/**
+ * Everywhere the shared library might be, best first.
+ *
+ * Returning candidates rather than one path is deliberate: "library not found"
+ * with no indication of where it was looked for is the least useful error a
+ * binding can produce, and it is the first thing every user of one hits.
+ */
+export function libraryCandidates(): string[] {
+  const name = libraryName();
+  const candidates: string[] = [];
+
+  const override = getEnv("TAPLINE_LIB");
+  if (override) candidates.push(override);
+
+  const here = moduleDirectory();
+  if (here) {
+    // Beside the package, where a prebuilt or locally built copy would sit.
+    candidates.push(`${here}/../${name}`);
+    // And the workspace target directory, which is where it is while working
+    // on tapline itself — the single most common source of this error.
+    candidates.push(`${here}/../../../target/release/${name}`);
+    candidates.push(`${here}/../../../target/debug/${name}`);
+  }
+
+  // Last: let the platform loader search its own paths.
+  candidates.push(name);
+  return candidates;
+}
+
+/** The first candidate that exists, or the bare name as a last resort. */
+export async function resolveLibraryPath(): Promise<string> {
+  const candidates = libraryCandidates();
+  for (const candidate of candidates) {
+    if (candidate.includes("/") && (await fileExists(candidate))) return candidate;
+  }
+  return candidates[candidates.length - 1] ?? libraryName();
+}
+
+/** This module's directory, for finding the library relative to it. */
+function moduleDirectory(): string | undefined {
+  const url = import.meta.url;
+  if (!url.startsWith("file:")) return undefined;
+  const path = decodeURIComponent(url.slice("file://".length));
+  const cut = path.lastIndexOf("/");
+  return cut === -1 ? undefined : path.slice(0, cut);
+}
+
+/** Whether a path exists. `node:fs` is the one API all three runtimes share. */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    const fs = await import("node:fs");
+    return fs.existsSync(path);
+  } catch {
+    return false;
+  }
 }
 
 /** Which runtime this is. */
@@ -112,14 +158,27 @@ export function detectRuntime(): "deno" | "bun" | "node" {
 }
 
 /** Opens the library for the current runtime. */
-export async function load(path = libraryPath()): Promise<Ffi> {
-  switch (detectRuntime()) {
-    case "deno":
-      return loadDeno(path);
-    case "bun":
-      return loadBun(path);
-    default:
-      return loadNode(path);
+export async function load(path?: string): Promise<Ffi> {
+  const resolved = path ?? (await resolveLibraryPath());
+  try {
+    switch (detectRuntime()) {
+      case "deno":
+        return await loadDeno(resolved);
+      case "bun":
+        return await loadBun(resolved);
+      default:
+        return await loadNode(resolved);
+    }
+  } catch (cause) {
+    // koffi's own message is more useful than anything wrapped around it.
+    if (cause instanceof Error && cause.message.includes("koffi")) throw cause;
+    throw new Error(
+      `could not load the tapline shared library.\n` +
+        `Tried:\n${libraryCandidates().map((c) => `  ${c}`).join("\n")}\n` +
+        `Build it with \`cargo build --release -p tapline-ffi\`, ` +
+        `or point TAPLINE_LIB at it.`,
+      { cause },
+    );
   }
 }
 
