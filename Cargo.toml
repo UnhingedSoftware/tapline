@@ -37,25 +37,25 @@ rust-version = "1.85"
 # Deliberately absent: reqwest, hyper, prost, protoc, openssl, any -sys crate.
 [workspace.dependencies]
 # internal — leaves
-tapline-wire = { path = "crates/tapline-wire" }
-tapline-ids = { path = "crates/tapline-ids" }
-tapline-proto = { path = "crates/tapline-proto" }
-tapline = { path = "crates/tapline" }
-tapline-auth = { path = "crates/tapline-auth" }
-tapline-cdn = { path = "crates/tapline-cdn" }
-tapline-cli = { path = "crates/tapline-cli" }
-tapline-crypto = { path = "crates/tapline-crypto" }
-tapline-state = { path = "crates/tapline-state" }
-tapline-vdf = { path = "crates/tapline-vdf" }
-tapline-chunk = { path = "crates/tapline-chunk" }
-tapline-event = { path = "crates/tapline-event" }
-tapline-io = { path = "crates/tapline-io" }
-tapline-fs = { path = "crates/tapline-fs" }
-tapline-manifest = { path = "crates/tapline-manifest" }
-tapline-net = { path = "crates/tapline-net" }
-tapline-pics = { path = "crates/tapline-pics" }
-tapline-rt-tokio = { path = "crates/tapline-rt-tokio" }
-tapline-ffi = { path = "crates/tapline-ffi" }
+tapline-wire = { path = "crates/tapline-wire", version = "0.1.0" }
+tapline-ids = { path = "crates/tapline-ids", version = "0.1.0" }
+tapline-proto = { path = "crates/tapline-proto", version = "0.1.0" }
+tapline = { path = "crates/tapline", version = "0.1.0" }
+tapline-auth = { path = "crates/tapline-auth", version = "0.1.0" }
+tapline-cdn = { path = "crates/tapline-cdn", version = "0.1.0" }
+tapline-cli = { path = "crates/tapline-cli", version = "0.1.0" }
+tapline-crypto = { path = "crates/tapline-crypto", version = "0.1.0" }
+tapline-state = { path = "crates/tapline-state", version = "0.1.0" }
+tapline-vdf = { path = "crates/tapline-vdf", version = "0.1.0" }
+tapline-chunk = { path = "crates/tapline-chunk", version = "0.1.0" }
+tapline-event = { path = "crates/tapline-event", version = "0.1.0" }
+tapline-io = { path = "crates/tapline-io", version = "0.1.0" }
+tapline-fs = { path = "crates/tapline-fs", version = "0.1.0" }
+tapline-manifest = { path = "crates/tapline-manifest", version = "0.1.0" }
+tapline-net = { path = "crates/tapline-net", version = "0.1.0" }
+tapline-pics = { path = "crates/tapline-pics", version = "0.1.0" }
+tapline-rt-tokio = { path = "crates/tapline-rt-tokio", version = "0.1.0" }
+tapline-ffi = { path = "crates/tapline-ffi", version = "0.1.0" }
 
 # async + parallelism. `tokio` is a dependency of tapline-rt-tokio ALONE, so a
 # host application that already runs its own reactor never inherits ours.

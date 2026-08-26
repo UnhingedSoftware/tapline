@@ -65,7 +65,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install the musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools binutils file
 
       - name: Build the release binary
         run: cargo build --release --target x86_64-unknown-linux-musl -p tapline-cli
@@ -85,11 +85,23 @@ jobs:
         run: |
           BIN=target/x86_64-unknown-linux-musl/release/tapline
           file "$BIN"
-          if ldd "$BIN" 2>&1 | grep -qv "not a dynamic executable"; then
-            echo "::error::the musl binary is not static"
-            ldd "$BIN" || true
+          # readelf, not ldd. A static binary is one with no DT_NEEDED entries
+          # and no interpreter, and readelf answers that exactly. The previous
+          # check grepped ldd's prose for "not a dynamic executable" -- but a
+          # musl static binary makes glibc's ldd print "statically linked"
+          # instead, which the expression read as a mismatch and reported as a
+          # failure. It never got that far here, because `file` is not
+          # installed on these runners and the step exited 127.
+          if readelf -d "$BIN" 2>/dev/null | grep -q "(NEEDED)"; then
+            echo "::error::the musl binary links shared libraries"
+            readelf -d "$BIN" | grep "(NEEDED)"
             exit 1
           fi
+          if readelf -l "$BIN" 2>/dev/null | grep -q "INTERP"; then
+            echo "::error::the musl binary has a dynamic loader"
+            exit 1
+          fi
+          echo "static: no NEEDED entries, no interpreter"
 
       - name: And it must run
         run: target/x86_64-unknown-linux-musl/release/tapline --version
@@ -113,3 +125,37 @@ jobs:
               exit 1
             fi
           done
+
+  bindings:
+    name: JS bindings
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build the shared library
+        run: cargo build --release -p tapline-ffi
+
+      - name: It must export the C ABI
+        run: |
+          LIB=target/release/libtapline_ffi.so
+          for symbol in tapline_install tapline_plan tapline_workshop_download \
+                        tapline_job_next tapline_job_cancel tapline_job_free \
+                        tapline_last_error tapline_version; do
+            if ! nm -D --defined-only "$LIB" | grep -q " T $symbol$"; then
+              echo "::error::$LIB does not export $symbol"
+              exit 1
+            fi
+          done
+          echo "all eight symbols exported"
+
+      - name: The bindings must load and run
+        working-directory: bindings/js
+        run: |
+          npm install --no-audit --no-fund koffi
+          TAPLINE_LIB=$GITHUB_WORKSPACE/target/release/libtapline_ffi.so \
+            node test/smoke.ts

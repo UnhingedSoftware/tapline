@@ -16,6 +16,22 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin Attack": a timing sidechannel in the `rsa`
+    # crate that can recover a key. There is no fixed version; the maintainers
+    # have not shipped one.
+    #
+    # It applies to RSA operations that use the *private* key, which is what
+    # leaks timing. tapline never holds an RSA private key and never performs a
+    # private-key operation. Its only use of RSA is encrypting a password to
+    # Steam's public key during credentialed login, and the CM transport is
+    # WebSocket-over-TLS, so the old handshake that encrypted a session key to
+    # Valve's universe key does not exist here either.
+    #
+    # Reviewed 2026-08-26. If tapline ever decrypts or signs with RSA, this
+    # entry stops being true and must be removed rather than extended.
+    "RUSTSEC-2023-0071",
+]
 
 [licenses]
 version = 2
@@ -30,12 +46,21 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots, which is Mozilla's CA bundle repackaged. The data licence
+    # rather than a code licence, because the crate is the trust store, and it
+    # is permissive: use, modify and redistribute, with no copyleft reach into
+    # anything that links it.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Left off deliberately. It does not apply to publishable crates -- crates.io
+# rejects a path-only dependency -- so the fix was to give the internal
+# dependencies the versions they need to be published at all, rather than to
+# tell cargo-deny to stop looking.
 
 # A C toolchain in the tree breaks the static musl build and the "no build
 # dependencies you did not ask for" promise. These are the usual ways it sneaks
