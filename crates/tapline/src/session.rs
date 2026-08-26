@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tapline_cdn::{Host, HostPool, fetch_chunk_bytes, fetch_manifest};
-use tapline_event::Plan;
+use tapline_event::{Event, Plan};
 use tapline_fs::validate_path;
 use tapline_ids::{AppId, DepotId, PublishedFileId};
 use tapline_io::Sink;
@@ -342,7 +342,38 @@ impl Session {
         app: AppId,
         options: &InstallOptions,
     ) -> Result<InstallReport, InstallError> {
+        self.install_observed(app, options, &mut |_| {}).await
+    }
+
+    /// Installs, reporting progress as it goes.
+    ///
+    /// The observer is called on the task driving the download, never from a
+    /// fetch task, so it needs no synchronisation of its own and cannot be
+    /// invoked concurrently with itself. It should still return quickly: time
+    /// spent in it is time no chunk is dispatched.
+    ///
+    /// [`Event`] existed as a vocabulary long before anything emitted it, which
+    /// meant every consumer had to choose between "no progress at all" and
+    /// reimplementing the walk. This is what emits it.
+    pub async fn install_observed(
+        &mut self,
+        app: AppId,
+        options: &InstallOptions,
+        observe: &mut dyn FnMut(Event),
+    ) -> Result<InstallReport, InstallError> {
         let resolved = self.resolve(app, options).await?;
+
+        // Planned first, always: a consumer drawing a progress bar needs the
+        // denominator before the numerator starts moving.
+        let mut planned = Plan::default();
+        for entry in &resolved {
+            let (chunks, download_bytes) = entry.manifest.distinct_chunks();
+            planned.chunk_count += chunks.len() as u64;
+            planned.total_bytes += entry.manifest.total_size;
+            planned.file_count += entry.manifest.regular_files().count() as u64;
+            planned.download_bytes += download_bytes;
+        }
+        observe(Event::Planned { plan: planned });
         std::fs::create_dir_all(&options.install_dir)?;
 
         let mut state = AppState::read(&options.install_dir, app)
@@ -373,7 +404,16 @@ impl Session {
                 continue;
             }
 
-            self.install_depot(entry, options, &mut report).await?;
+            observe(Event::DepotStarted {
+                depot: entry.depot.id,
+                manifest: entry.depot.manifest,
+                bytes: entry.manifest.total_size,
+            });
+            self.install_depot(entry, options, &mut report, observe, planned.total_bytes)
+                .await?;
+            observe(Event::DepotCompleted {
+                depot: entry.depot.id,
+            });
             state.set_depot(
                 entry.depot.id,
                 entry.depot.manifest,
@@ -641,6 +681,19 @@ impl Session {
         item: &crate::WorkshopItem,
         options: &InstallOptions,
     ) -> Result<InstallReport, InstallError> {
+        self.download_workshop_item_observed(item, options, &mut |_| {})
+            .await
+    }
+
+    /// Downloads a Workshop item, reporting progress as it goes.
+    ///
+    /// Same observer contract as [`Session::install_observed`].
+    pub async fn download_workshop_item_observed(
+        &mut self,
+        item: &crate::WorkshopItem,
+        options: &InstallOptions,
+        observe: &mut dyn FnMut(Event),
+    ) -> Result<InstallReport, InstallError> {
         let target = crate::options_for(options, item.app, item.id);
         std::fs::create_dir_all(&target.install_dir)?;
 
@@ -689,7 +742,9 @@ impl Session {
                     key,
                 };
                 report.depots.push(*depot);
-                self.install_depot(&entry, &target, &mut report).await?;
+                let bytes_total = entry.manifest.total_size;
+                self.install_depot(&entry, &target, &mut report, observe, bytes_total)
+                    .await?;
             }
 
             crate::WorkshopContent::Legacy { url, filename } => {
@@ -777,11 +832,14 @@ impl Session {
     /// limits per host, and a download that opens fifty connections to one
     /// cache is a download that gets throttled. Work is spread across the pool
     /// rather than piled onto the least-loaded host for the same reason.
+    #[allow(clippy::too_many_arguments)]
     async fn install_depot(
         &mut self,
         entry: &ResolvedDepot,
         options: &InstallOptions,
         report: &mut InstallReport,
+        observe: &mut dyn FnMut(Event),
+        bytes_total: u64,
     ) -> Result<(), InstallError> {
         // Directories first, so a file never races the directory it lives in.
         for file in &entry.manifest.files {
@@ -809,7 +867,7 @@ impl Session {
 
         // Finalisations run here rather than inline, so an fsync never stops the
         // loop from dispatching the next chunk.
-        let mut finalizing: tokio::task::JoinSet<Result<(), InstallError>> =
+        let mut finalizing: tokio::task::JoinSet<Result<(String, u64), InstallError>> =
             tokio::task::JoinSet::new();
 
         let mut files_written = 0_u64;
@@ -954,6 +1012,8 @@ impl Session {
             let entry_pending = PendingFile {
                 sink,
                 target,
+                path: file.path.clone(),
+                size: file.size,
                 mode: options.file_modes.mode_for(file.flags.executable),
                 outstanding,
             };
@@ -978,9 +1038,13 @@ impl Session {
                     &mut pending,
                     &mut finalizing,
                 )?;
+                observe(Event::Progress {
+                    bytes_done: report.bytes_written,
+                    bytes_total,
+                });
             }
             while let Some(joined) = finalizing.try_join_next() {
-                collect_finalize(joined)?;
+                collect_finalize(joined, observe)?;
             }
 
             // A hard ceiling on open descriptors, independent of how a depot
@@ -991,14 +1055,14 @@ impl Session {
                 // A file being synced still holds its descriptor, so it counts
                 // against the ceiling until the sync returns.
                 if let Some(joined) = finalizing.try_join_next() {
-                    collect_finalize(joined)?;
+                    collect_finalize(joined, observe)?;
                     continue;
                 }
                 let Some(joined) = tasks.join_next().await else {
                     let Some(joined) = finalizing.join_next().await else {
                         break;
                     };
-                    collect_finalize(joined)?;
+                    collect_finalize(joined, observe)?;
                     continue;
                 };
                 apply_outcome(
@@ -1029,7 +1093,7 @@ impl Session {
 
         // Every file must be on disk before the install record claims it is.
         while let Some(joined) = finalizing.join_next().await {
-            collect_finalize(joined)?;
+            collect_finalize(joined, observe)?;
             self.maybe_heartbeat().await?;
         }
 
@@ -1122,6 +1186,10 @@ struct PendingFile {
     sink: Arc<FileSink>,
     /// Where it lands.
     target: std::path::PathBuf,
+    /// The manifest's own path for it, which is what a consumer recognises.
+    path: String,
+    /// Its size, so a completion event can report it without a stat.
+    size: u64,
     /// The mode to apply once it is complete.
     mode: u32,
     /// How many of its chunks have not finished yet.
@@ -1142,21 +1210,28 @@ const MAX_OPEN_FILES: usize = 64;
 /// those seconds was time the dispatch loop spent not starting new fetches,
 /// draining all sixteen slots to idle. Off the critical path it overlaps with
 /// the downloads instead.
-fn finalize_file(file: PendingFile) -> Result<(), InstallError> {
+fn finalize_file(file: PendingFile) -> Result<(String, u64), InstallError> {
     file.sink
         .sync_blocking()
         .map_err(|error| InstallError::Io(error.to_string()))?;
     set_permissions(&file.target, file.mode)?;
     // Explicit, because the descriptor closing here is the point.
     drop(file.sink);
-    Ok(())
+    Ok((file.path, file.size))
 }
 
-/// Unwraps a finished finalisation, turning a panicked task into an error.
+/// Unwraps a finished finalisation and reports the file it completed.
 fn collect_finalize(
-    joined: Result<Result<(), InstallError>, tokio::task::JoinError>,
+    joined: Result<Result<(String, u64), InstallError>, tokio::task::JoinError>,
+    observe: &mut dyn FnMut(Event),
 ) -> Result<(), InstallError> {
-    joined.map_err(|error| InstallError::Io(format!("a file could not be finalised: {error}")))?
+    let (path, bytes) = joined
+        .map_err(|error| InstallError::Io(format!("a file could not be finalised: {error}")))??;
+    // Emitted here rather than when the last chunk lands: until the sync
+    // returns, the file is not on disk, and a consumer acting on this event
+    // (hashing it, launching it) would be acting on a file that is not there.
+    observe(Event::FileCompleted { path, bytes });
+    Ok(())
 }
 
 fn apply_outcome(
@@ -1164,7 +1239,7 @@ fn apply_outcome(
     report: &mut InstallReport,
     pool: &mut HostPool,
     pending: &mut std::collections::BTreeMap<usize, PendingFile>,
-    finalizing: &mut tokio::task::JoinSet<Result<(), InstallError>>,
+    finalizing: &mut tokio::task::JoinSet<Result<(String, u64), InstallError>>,
 ) -> Result<(), InstallError> {
     let (index, outcome) =
         joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))?;

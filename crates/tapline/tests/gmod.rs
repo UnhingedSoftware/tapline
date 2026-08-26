@@ -110,7 +110,48 @@ async fn a_gmod_server_installs_ready_to_run() {
 
     let mut session = Session::anonymous().await.expect("anonymous session");
     let started = std::time::Instant::now();
-    let report = session.install(APP, &options).await.expect("install");
+
+    // The progress contract, asserted rather than eyeballed: a consumer drawing
+    // a bar needs the denominator first and needs the numerator never to go
+    // backwards, and both are easy to break without noticing.
+    let mut events = Vec::new();
+    let mut last_done = 0_u64;
+    let mut monotonic = true;
+    let mut progress_seen = 0_u64;
+    let mut files_completed = 0_u64;
+    let report = session
+        .install_observed(APP, &options, &mut |event| {
+            match &event {
+                tapline::Event::Progress { bytes_done, .. } => {
+                    if *bytes_done < last_done {
+                        monotonic = false;
+                    }
+                    last_done = *bytes_done;
+                    progress_seen += 1;
+                }
+                tapline::Event::FileCompleted { .. } => files_completed += 1,
+                _ => {}
+            }
+            // Only the first few are kept: a 2,329-file install emits far too
+            // many to hold, and the ordering claims below are about the head.
+            if events.len() < 4 {
+                events.push(event);
+            }
+        })
+        .await
+        .expect("install");
+
+    assert!(
+        matches!(events.first(), Some(tapline::Event::Planned { .. })),
+        "the first event must be Planned, got {:?}",
+        events.first()
+    );
+    assert!(monotonic, "Progress went backwards");
+    assert!(progress_seen > 0, "no Progress events were emitted");
+    assert_eq!(
+        files_completed, report.files,
+        "FileCompleted count must match the report"
+    );
     println!(
         "installed {} files, {} bytes downloaded, in {:.1}s",
         report.files,
