@@ -589,6 +589,7 @@ version = "0.1.0"
 dependencies = [
  "tapline-cdn",
  "tapline-chunk",
+ "tapline-crypto",
  "tapline-event",
  "tapline-fs",
  "tapline-ids",
@@ -598,6 +599,7 @@ dependencies = [
  "tapline-pics",
  "tapline-proto",
  "tapline-rt-tokio",
+ "tapline-state",
  "tapline-wire",
  "tokio",
 ]
@@ -734,6 +736,14 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "webpki-roots",
+]
+
+[[package]]
+name = "tapline-state"
+version = "0.1.0"
+dependencies = [
+ "tapline-ids",
+ "tapline-vdf",
 ]
 
 [[package]]

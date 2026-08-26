@@ -21,6 +21,7 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
     CContentServerDirectory_GetServersForSteamPipe_Request,
 };
 use tapline_rt_tokio::{CmTransport, FileSink, HttpClient, cm_list};
+use tapline_state::AppState;
 use tapline_wire::Message;
 
 /// Steam's result code for success.
@@ -37,6 +38,18 @@ pub struct Session {
     /// Steam grants these per depot and they do not change during an install;
     /// asking again for every chunk would be a round trip per megabyte.
     keys: HashMap<DepotId, [u8; 32]>,
+    /// How often Steam wants a heartbeat, and when the last one went.
+    ///
+    /// Not optional. Steam drops a session that stops heartbeating and does not
+    /// say why, and a large download spends minutes doing HTTP without touching
+    /// the CM connection — so the second install of a pair fails with a bare
+    /// disconnect, which is exactly how this was found.
+    heartbeat_interval: std::time::Duration,
+    last_heartbeat: std::time::Instant,
+    /// The name of the app most recently resolved, for the install record.
+    app_name: Option<String>,
+    /// The build id of the branch most recently resolved.
+    build_id: Option<u64>,
 }
 
 /// Everything needed to download one depot.
@@ -75,6 +88,14 @@ impl Session {
             pool: HostPool::new(Vec::new()),
             cell_id: outcome.cell_id,
             keys: HashMap::new(),
+            // Steam asks for 9 seconds; the margin keeps a slow chunk from
+            // pushing us past the deadline.
+            heartbeat_interval: std::time::Duration::from_secs(
+                u64::from(outcome.heartbeat_seconds).clamp(1, 60),
+            ),
+            last_heartbeat: std::time::Instant::now(),
+            app_name: None,
+            build_id: None,
         };
         session.refresh_hosts().await?;
         Ok(session)
@@ -118,6 +139,20 @@ impl Session {
             .collect();
 
         self.pool = HostPool::new(hosts);
+        Ok(())
+    }
+
+    /// Sends a heartbeat if one is due.
+    ///
+    /// Called between chunks. A download is minutes of HTTP with no CM traffic,
+    /// and Steam ends a silent session without warning — the failure surfaces
+    /// much later, as an unrelated request returning "disconnected".
+    async fn maybe_heartbeat(&mut self) -> Result<(), InstallError> {
+        if self.last_heartbeat.elapsed() < self.heartbeat_interval {
+            return Ok(());
+        }
+        self.cm.heartbeat().await?;
+        self.last_heartbeat = std::time::Instant::now();
         Ok(())
     }
 
@@ -174,6 +209,8 @@ impl Session {
         options: &InstallOptions,
     ) -> Result<Vec<ResolvedDepot>, InstallError> {
         let info = tapline_pics::product_info(&mut self.cm, app).await?;
+        self.app_name = info.name().map(str::to_owned);
+        self.build_id = info.build_id(&options.branch);
         let depots = info.depots(&options.filter());
 
         if depots.is_empty() {
@@ -258,7 +295,12 @@ impl Session {
         Ok(plan)
     }
 
-    /// Installs an app.
+    /// Installs or updates an app.
+    ///
+    /// Reads the existing install record first. A depot already at the manifest
+    /// being installed is skipped entirely — running an update when nothing
+    /// changed must not move a byte, and that is the case an operator hits most
+    /// often.
     pub async fn install(
         &mut self,
         app: AppId,
@@ -267,6 +309,16 @@ impl Session {
         let resolved = self.resolve(app, options).await?;
         std::fs::create_dir_all(&options.install_dir)?;
 
+        let mut state = AppState::read(&options.install_dir, app)
+            .map_err(|e| InstallError::Io(e.to_string()))?
+            .unwrap_or_else(|| {
+                AppState::new(
+                    app,
+                    &self.app_name.clone().unwrap_or_else(|| app.to_string()),
+                    ".",
+                )
+            });
+
         let mut report = InstallReport {
             app,
             ..InstallReport::default()
@@ -274,9 +326,77 @@ impl Session {
 
         for entry in &resolved {
             report.depots.push(entry.depot.id);
+
+            if state.installed_manifest(entry.depot.id) == Some(entry.depot.manifest)
+                && !options.force
+            {
+                // Already at this build. Verifying every byte would be the
+                // `validate` command's job, not an update's.
+                report.depots_unchanged += 1;
+                report.chunks_reused += u64::from(entry.manifest.unique_chunks);
+                continue;
+            }
+
             self.install_depot(entry, options, &mut report).await?;
+            state.set_depot(
+                entry.depot.id,
+                entry.depot.manifest,
+                entry.manifest.total_size,
+            );
         }
+
+        // A depot the app no longer ships must leave the record, or the next
+        // update believes content is present that is not.
+        let current: std::collections::HashSet<DepotId> =
+            resolved.iter().map(|entry| entry.depot.id).collect();
+        for depot in state.installed_depots().keys().copied().collect::<Vec<_>>() {
+            if !current.contains(&depot) {
+                state.remove_depot(depot);
+            }
+        }
+
+        let total: u64 = resolved.iter().map(|e| e.manifest.total_size).sum();
+        state.mark_installed(self.build_id.unwrap_or(0), total, now_unix());
+        state
+            .write(&options.install_dir, app)
+            .map_err(|e| InstallError::Io(e.to_string()))?;
+
         Ok(report)
+    }
+
+    /// Checks an install against its manifests, hashing every chunk on disk.
+    ///
+    /// Answers the question an update takes on trust. Slower — it reads the
+    /// whole install — and always right, which is the trade `validate` exists
+    /// to make.
+    pub async fn validate(
+        &mut self,
+        app: AppId,
+        options: &InstallOptions,
+    ) -> Result<crate::ValidationReport, InstallError> {
+        let resolved = self.resolve(app, options).await?;
+
+        let mut combined = crate::ValidationReport::default();
+        for entry in &resolved {
+            self.maybe_heartbeat().await?;
+
+            let report = crate::validate_manifest(
+                &entry.manifest,
+                &options.install_dir,
+                |path, offset, len| {
+                    use std::os::unix::fs::FileExt;
+                    let file = std::fs::File::open(path)?;
+                    let mut buffer = vec![0_u8; len];
+                    file.read_exact_at(&mut buffer, offset)?;
+                    Ok(buffer)
+                },
+            );
+
+            combined.files_checked += report.files_checked;
+            combined.bytes_checked += report.bytes_checked;
+            combined.damaged.extend(report.damaged);
+        }
+        Ok(combined)
     }
 
     /// Downloads one depot's files.
@@ -299,16 +419,51 @@ impl Session {
         }
 
         for file in entry.manifest.regular_files() {
+            self.maybe_heartbeat().await?;
+
             let safe = validate_path(&file.path).map_err(|reason| InstallError::UnsafePath {
                 path: file.path.clone(),
                 reason,
             })?;
             let target = safe.resolve(&options.install_dir);
 
-            let sink = FileSink::create(&target)?;
-            sink.allocate(file.size).await?;
+            // A file already the right length may be a resumed download or a
+            // partially-correct one. Reading a chunk back and hashing it
+            // answers "is this byte range already right?" directly, without
+            // trusting any record of what happened last time — and a chunk that
+            // is already correct costs a read instead of a download.
+            let existing = if options.resume {
+                std::fs::metadata(&target)
+                    .ok()
+                    .filter(|metadata| metadata.len() == file.size)
+                    .and_then(|_| FileSink::open_existing(&target).ok())
+            } else {
+                None
+            };
+
+            let resuming = existing.is_some();
+            let sink = match existing {
+                Some(sink) => sink,
+                None => {
+                    let sink = FileSink::create(&target)?;
+                    sink.allocate(file.size).await?;
+                    sink
+                }
+            };
 
             for chunk in &file.chunks {
+                self.maybe_heartbeat().await?;
+
+                if resuming
+                    && let Ok(bytes) = sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
+                    && tapline_crypto::sha1(&bytes) == chunk.id
+                {
+                    // Already correct. This is what makes a resume cheap and a
+                    // repair surgical.
+                    report.chunks_reused += 1;
+                    continue;
+                }
+
                 let mut attempts = 0_u32;
                 let plaintext = loop {
                     let host = self.pool.acquire()?;
@@ -396,6 +551,17 @@ fn set_permissions(path: &Path, executable: bool) -> std::io::Result<()> {
     // what a server launcher expects to find.
     permissions.set_mode(if executable { 0o755 } else { 0o644 });
     std::fs::set_permissions(path, permissions)
+}
+
+/// The current time as a Unix timestamp.
+///
+/// Used only for `LastUpdated` in the install record, which is informational —
+/// a clock that is wrong makes the field wrong and nothing else.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

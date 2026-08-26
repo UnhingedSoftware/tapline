@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 tapline-cdn = { workspace = true }
+tapline-crypto = { workspace = true }
 tapline-event = { workspace = true }
 tapline-fs = { workspace = true }
 tapline-ids = { workspace = true }
@@ -19,10 +20,12 @@ tapline-net = { workspace = true }
 tapline-pics = { workspace = true }
 tapline-proto = { workspace = true }
 tapline-rt-tokio = { workspace = true }
+tapline-state = { workspace = true }
 tapline-wire = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync"] }
 
 [dev-dependencies]
+tapline-state = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

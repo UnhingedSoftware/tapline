@@ -1,0 +1,15 @@
+[package]
+name = "tapline-state"
+description = "appmanifest ACF files: the install record tapline shares with the Steam client and steamcmd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tapline-ids = { workspace = true }
+tapline-vdf = { workspace = true }
+
+[lints]
+workspace = true

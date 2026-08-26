@@ -20,6 +20,19 @@ pub struct InstallOptions {
     pub branch: String,
     /// Whether to include DLC depots.
     pub include_dlc: bool,
+    /// Check what is already on disk before fetching each chunk.
+    ///
+    /// Turns a killed download into a cheap resume and a corrupted file into a
+    /// surgical repair: a chunk that already hashes correctly costs a read
+    /// rather than a transfer. Costs one read per chunk, which is why it is not
+    /// on by default for a fresh install into an empty directory.
+    pub resume: bool,
+    /// Reinstall even when the install record says the depot is already at this
+    /// build.
+    ///
+    /// What `validate` turns on. Without it an update that finds nothing changed
+    /// does nothing, which is the behaviour an operator wants by default.
+    pub force: bool,
     /// How many chunks to fetch at once.
     ///
     /// The default is deliberately modest. Steam rate-limits per host, and a
@@ -36,6 +49,8 @@ impl Default for InstallOptions {
             os: Os::host(),
             branch: "public".to_owned(),
             include_dlc: false,
+            resume: true,
+            force: false,
             concurrency: 16,
         }
     }
@@ -68,6 +83,8 @@ pub struct InstallReport {
     pub bytes_downloaded: u64,
     /// Chunks that were already correct on disk and so were not refetched.
     pub chunks_reused: u64,
+    /// Depots that were already at the requested build and so were skipped.
+    pub depots_unchanged: u64,
     /// Files the manifest named that were skipped, with the reason.
     ///
     /// Never silent: a path a manifest asked for and tapline refused to create
