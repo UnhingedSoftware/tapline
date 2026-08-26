@@ -62,6 +62,32 @@ pub struct InstallOptions {
     pub concurrency: usize,
     /// What permissions to give installed files.
     pub file_modes: FileModes,
+    /// Where a Workshop item's files land. Ignored by app installs.
+    pub workshop_layout: WorkshopLayout,
+}
+
+/// Where a Workshop item's files are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkshopLayout {
+    /// `<dir>/steamapps/workshop/content/<app>/<item>/`, which is what
+    /// steamcmd does.
+    ///
+    /// The default, because it is the layout the Steam client, LinuxGSM and
+    /// every wings egg already expect to find items in, and because a server
+    /// configured with a Workshop collection looks there.
+    #[default]
+    SteamCmd,
+    /// Straight into the directory given, with no path built underneath it.
+    ///
+    /// What you want when the destination is already the right folder — a
+    /// Garry's Mod addon belongs in `garrysmod/addons`, and an item downloaded
+    /// there under the steamcmd layout would sit four directories below where
+    /// the server looks.
+    ///
+    /// An item is one or more named files, so several items downloaded flat
+    /// into one directory sit side by side. They collide only if two items ship
+    /// a file of the same name, which is why this is not the default.
+    Flat,
 }
 
 /// What permissions installed files get.
@@ -113,6 +139,7 @@ impl Default for InstallOptions {
             force: false,
             concurrency: 64,
             file_modes: FileModes::default(),
+            workshop_layout: WorkshopLayout::default(),
         }
     }
 }

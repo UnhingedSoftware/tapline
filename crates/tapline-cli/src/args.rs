@@ -95,6 +95,9 @@ pub enum Command {
     },
     /// `tapline workshop download <appid> <itemid> --dir <path>`
     WorkshopDownload {
+        /// Write the item's files straight into `--dir`, with no
+        /// `steamapps/workshop/content/...` path built underneath it.
+        flat: bool,
         /// The app.
         app: AppId,
         /// The item.
@@ -366,6 +369,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 .get(3)
                 .ok_or_else(|| ArgError::new("an item id is required"))?;
             Ok(Command::WorkshopDownload {
+                flat: options.flag("flat"),
                 app: app_id(positional.get(2))?,
                 item: PublishedFileId(
                     item.parse()

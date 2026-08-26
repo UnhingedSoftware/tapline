@@ -151,6 +151,41 @@ if (process_env("TAPLINE_LIVE") === "1") {
     assert(kinds.includes("planned"), `no planned event: ${kinds.join(",")}`);
   });
 
+  await test("a GMod addon can be downloaded straight into a folder", async () => {
+    // PAC3, a real addon, which arrives as a single .gma. Under the steamcmd
+    // layout it lands four directories down; flat puts it where a server's
+    // garrysmod/addons actually is.
+    const dir = scratch("addons");
+    const report = await downloadWorkshopItem({
+      app: 4000,
+      item: 104691717n,
+      dir,
+      layout: "flat",
+    });
+    assertEquals(report.files, 1, "an addon should be one file");
+
+    const fs = await import("node:fs");
+    const entries = fs.readdirSync(dir);
+    assertEquals(entries.length, 1, `expected one file, got ${entries.join(",")}`);
+    assert(
+      entries[0]?.endsWith(".gma"),
+      `expected a .gma, got ${entries[0]}`,
+    );
+    // GMAD is the addon container's magic; anything else means the wrong bytes.
+    const head = fs.readFileSync(`${dir}/${entries[0]}`).subarray(0, 4).toString();
+    assertEquals(head, "GMAD", "the file is not a Garry's Mod addon");
+  });
+
+  await test("the default layout is still steamcmd's", async () => {
+    const dir = scratch("addons-nested");
+    await downloadWorkshopItem({ app: 4000, item: 104691717n, dir });
+    const fs = await import("node:fs");
+    assert(
+      fs.existsSync(`${dir}/steamapps/workshop/content/4000/104691717`),
+      "the steamcmd layout moved, which would relocate every existing consumer's files",
+    );
+  });
+
   await test("concurrent downloads share one budget", async () => {
     // The property, not the throughput: two downloads must draw from one pool
     // rather than taking a full one each. Two at 64 is measurably slower than

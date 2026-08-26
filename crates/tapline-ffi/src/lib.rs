@@ -33,7 +33,7 @@ mod json;
 
 use std::ffi::{CStr, c_char};
 use std::sync::OnceLock;
-use tapline::{FileModes, InstallOptions, Os, PublishedFileId, Session, Shared};
+use tapline::{FileModes, InstallOptions, Os, PublishedFileId, Session, Shared, WorkshopLayout};
 use tapline_ids::AppId;
 
 /// An event was written to the buffer.
@@ -374,6 +374,9 @@ pub unsafe extern "C" fn tapline_plan(
 
 /// Downloads one Workshop item.
 ///
+/// `flat` non-zero writes the item's files straight into `dir`; zero uses
+/// steamcmd's `steamapps/workshop/content/<app>/<item>/` layout.
+///
 /// # Safety
 ///
 /// Same as [`tapline_install`].
@@ -383,6 +386,7 @@ pub unsafe extern "C" fn tapline_workshop_download(
     item_id: u64,
     dir: *const c_char,
     concurrency: u32,
+    flat: u8,
     out: *mut *mut TaplineJob,
 ) -> i32 {
     let Some(dir) = (unsafe { read_str(dir) }) else {
@@ -393,7 +397,15 @@ pub unsafe extern "C" fn tapline_workshop_download(
         concurrency,
         ..DEFAULTS
     };
-    let install = unsafe { options.into_install_options(dir) };
+    let mut install = unsafe { options.into_install_options(dir) };
+    // Non-zero writes the item's files into `dir` itself. A Garry's Mod addon
+    // belongs in garrysmod/addons, and under the steamcmd layout it would land
+    // four directories below where the server looks for it.
+    install.workshop_layout = if flat == 0 {
+        WorkshopLayout::SteamCmd
+    } else {
+        WorkshopLayout::Flat
+    };
     let _ = app_id;
 
     let shared_handle = shared().cloned();

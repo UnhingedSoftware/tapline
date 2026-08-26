@@ -201,8 +201,17 @@ pub fn item_dir(root: &std::path::Path, app: AppId, id: PublishedFileId) -> std:
 #[must_use]
 pub fn options_for(base: &InstallOptions, app: AppId, id: PublishedFileId) -> InstallOptions {
     InstallOptions {
-        install_dir: item_dir(&base.install_dir, app, id),
+        install_dir: target_dir(base, app, id),
         ..base.clone()
+    }
+}
+
+/// Where this item's files will actually be written.
+#[must_use]
+pub fn target_dir(base: &InstallOptions, app: AppId, id: PublishedFileId) -> std::path::PathBuf {
+    match base.workshop_layout {
+        crate::WorkshopLayout::SteamCmd => item_dir(&base.install_dir, app, id),
+        crate::WorkshopLayout::Flat => base.install_dir.clone(),
     }
 }
 
@@ -358,6 +367,57 @@ mod tests {
                 PublishedFileId(3_790_437_566)
             ),
             std::path::Path::new("/srv/gmod/steamapps/workshop/content/4000/3790437566")
+        );
+    }
+
+    #[test]
+    fn the_steamcmd_layout_builds_the_path_steamcmd_builds() {
+        let options = InstallOptions {
+            install_dir: std::path::PathBuf::from("/srv/gmod"),
+            ..InstallOptions::default()
+        };
+        assert_eq!(
+            target_dir(&options, AppId(4000), PublishedFileId(104_691_717)),
+            std::path::PathBuf::from("/srv/gmod/steamapps/workshop/content/4000/104691717")
+        );
+    }
+
+    #[test]
+    fn the_flat_layout_writes_into_the_directory_it_was_given() {
+        // The Garry's Mod case: garrysmod/addons is already the right folder,
+        // and the steamcmd layout would put the .gma four directories below
+        // where the server looks for it.
+        let options = InstallOptions {
+            install_dir: std::path::PathBuf::from("/srv/gmod/garrysmod/addons"),
+            workshop_layout: crate::WorkshopLayout::Flat,
+            ..InstallOptions::default()
+        };
+        assert_eq!(
+            target_dir(&options, AppId(4000), PublishedFileId(104_691_717)),
+            std::path::PathBuf::from("/srv/gmod/garrysmod/addons")
+        );
+    }
+
+    #[test]
+    fn flat_puts_two_items_side_by_side() {
+        // Which is the point: a collection downloaded flat is a folder of
+        // addons, not a folder of folders.
+        let options = InstallOptions {
+            install_dir: std::path::PathBuf::from("/srv/addons"),
+            workshop_layout: crate::WorkshopLayout::Flat,
+            ..InstallOptions::default()
+        };
+        let first = target_dir(&options, AppId(4000), PublishedFileId(1));
+        let second = target_dir(&options, AppId(4000), PublishedFileId(2));
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn the_default_layout_is_steamcmds() {
+        // Changing this silently would move every existing consumer's files.
+        assert_eq!(
+            InstallOptions::default().workshop_layout,
+            crate::WorkshopLayout::SteamCmd
         );
     }
 }

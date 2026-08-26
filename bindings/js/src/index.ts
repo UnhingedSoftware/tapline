@@ -330,6 +330,123 @@ export function plan(options: PlanOptions): Job<PlanReport> {
   );
 }
 
+/**
+ * Runs many installs, at most `maxConcurrent` at a time.
+ *
+ * Which number to pick is a real trade-off, not a tuning detail, because the
+ * chunk budget is shared. Three concurrent Valheim installs measured against
+ * three sequential ones:
+ *
+ * | | first ready | all ready |
+ * |---|---|---|
+ * | all three at once | 18.0 s | **18.7 s** |
+ * | one at a time | **9.5 s** | 27.2 s |
+ *
+ * Running them together finishes the batch sooner. Running them one at a time
+ * gets the first server online in less than half the time. A provisioning tool
+ * usually wants the second; a nightly sync wants the first.
+ *
+ * Defaults to all at once, which is the throughput-optimal choice and what
+ * `Promise.all` over `install` would already do.
+ *
+ * Results come back in the order the specs were given, not the order they
+ * finished.
+ */
+export function installAll(
+  specs: InstallOptions[],
+  options: {
+    /** How many may run at once. Defaults to all of them. */
+    maxConcurrent?: number;
+    /** Called as each one finishes, in completion order. */
+    onEach?: (report: InstallReport, index: number) => void;
+  } = {},
+): Batch {
+  return new Batch(specs, options.maxConcurrent ?? specs.length, options.onEach);
+}
+
+/**
+ * A set of installs running under a concurrency limit.
+ *
+ * Awaitable for all the reports, and cancellable — which cancels the ones
+ * running and never starts the ones still queued.
+ */
+export class Batch implements PromiseLike<InstallReport[]> {
+  #jobs: Job<InstallReport>[] = [];
+  #cancelled = false;
+  #result: Promise<InstallReport[]>;
+
+  constructor(
+    specs: InstallOptions[],
+    maxConcurrent: number,
+    onEach?: (report: InstallReport, index: number) => void,
+  ) {
+    this.#result = this.#run(specs, Math.max(1, maxConcurrent), onEach);
+    // Same reason as Job: a batch nobody awaits must not crash the process.
+    this.#result.catch(() => {});
+  }
+
+  async #run(
+    specs: InstallOptions[],
+    maxConcurrent: number,
+    onEach?: (report: InstallReport, index: number) => void,
+  ): Promise<InstallReport[]> {
+    const reports = new Array<InstallReport>(specs.length);
+    let next = 0;
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= specs.length) return;
+        if (this.#cancelled) throw new Error("the batch was cancelled");
+
+        const spec = specs[index];
+        if (!spec) return;
+        const job = install(spec);
+        this.#jobs.push(job);
+        const report = await job;
+        reports[index] = report;
+        onEach?.(report, index);
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(maxConcurrent, specs.length) },
+      () => worker(),
+    );
+    await Promise.all(workers);
+    return reports;
+  }
+
+  /** Cancels everything running, and everything not yet started. */
+  cancel(): void {
+    this.#cancelled = true;
+    for (const job of this.#jobs) job.cancel();
+  }
+
+  /** Whether {@link cancel} has been called. */
+  get cancelled(): boolean {
+    return this.#cancelled;
+  }
+
+  then<A = InstallReport[], B = never>(
+    onFulfilled?: ((value: InstallReport[]) => A | PromiseLike<A>) | null,
+    onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+  ): PromiseLike<A | B> {
+    return this.#result.then(onFulfilled, onRejected);
+  }
+
+  /** Node-style callback, matching {@link Job.callback}. */
+  callback(done: (error: Error | null, value?: InstallReport[]) => void): this {
+    this.#result.then(
+      (value) => done(null, value),
+      (error: unknown) =>
+        done(error instanceof Error ? error : new Error(String(error))),
+    );
+    return this;
+  }
+}
+
 /** Downloads one Workshop item. */
 export function downloadWorkshopItem(
   options: WorkshopOptions,
@@ -341,6 +458,7 @@ export function downloadWorkshopItem(
         BigInt(options.item),
         options.dir,
         options.concurrency ?? 0,
+        options.layout === "flat" ? 1 : 0,
       ),
     (events) => {
       const { kind: _kind, ...report } = lastOfKind(events, "finished");

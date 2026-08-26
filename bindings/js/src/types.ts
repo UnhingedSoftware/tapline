@@ -158,6 +158,19 @@ export interface WorkshopOptions {
   item: bigint | number | string;
   dir: string;
   concurrency?: number;
+  /**
+   * Where the item's files land.
+   *
+   * `"steamcmd"` (the default) builds
+   * `<dir>/steamapps/workshop/content/<app>/<item>/` underneath `dir`, which is
+   * what steamcmd does and where the Steam client and wings eggs look.
+   *
+   * `"flat"` writes them into `dir` itself. That is what you want when `dir` is
+   * already the right folder — a Garry's Mod addon belongs in
+   * `garrysmod/addons`, and under the steamcmd layout it would land four
+   * directories below where the server looks for it.
+   */
+  layout?: "steamcmd" | "flat";
   onEvent?: (event: TaplineEvent) => void;
   onProgress?: (progress: {
     bytesDone: number;

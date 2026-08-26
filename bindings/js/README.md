@@ -59,7 +59,50 @@ Workshop items too. Ids exceed `Number.MAX_SAFE_INTEGER`, so pass a bigint or a
 string:
 
 ```ts
-await downloadWorkshopItem({ app: 4000, item: 3790437566n, dir: "/srv/gmod" });
+await downloadWorkshopItem({ app: 4000, item: 104691717n, dir: "/srv/gmod" });
+```
+
+### Garry's Mod addons
+
+An addon is a single `.gma`, and a server looks for it in `garrysmod/addons`.
+By default items land where steamcmd puts them —
+`<dir>/steamapps/workshop/content/4000/<item>/` — which is four directories from
+where the server looks. `layout: "flat"` writes into the folder you name:
+
+```ts
+await downloadWorkshopItem({
+  app: 4000,
+  item: 104691717n,                       // PAC3
+  dir: "/srv/gmod/garrysmod/addons",
+  layout: "flat",
+});
+// /srv/gmod/garrysmod/addons/104691717.gma
+```
+
+A whole collection goes into the same folder, side by side, which is what a
+`garrysmod/addons` directory is:
+
+```ts
+await Promise.all(
+  [104691717n, 3790437566n].map((item) =>
+    downloadWorkshopItem({
+      app: 4000,
+      item,
+      dir: "/srv/gmod/garrysmod/addons",
+      layout: "flat",
+    })
+  ),
+);
+```
+
+They share the download budget, as any concurrent downloads do. The default
+stays `"steamcmd"` because that is where the Steam client and wings eggs look,
+and moving it would relocate every existing consumer's files.
+
+From the CLI it is `--flat`:
+
+```sh
+tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons --flat
 ```
 
 ## Installing
@@ -135,7 +178,30 @@ other instead of nearly seven seconds apart. Three sharing 64 also beat a single
 download at 64 (~184 MB/s) — one download cannot keep 64 requests busy on its
 own, and another download's chunks fill the gaps.
 
-Raise or lower it before starting anything:
+When you would rather they finish one at a time — a provisioning tool usually
+wants the first server online sooner, not the whole batch marginally earlier —
+`installAll` runs them under a limit:
+
+```ts
+import { installAll } from "tapline";
+
+await installAll(specs, {
+  maxConcurrent: 1,
+  onEach: (report, i) => console.log(`server ${i} ready`),
+});
+```
+
+Measured on three Valheim installs:
+
+| | first ready | all ready |
+|---|---|---|
+| `maxConcurrent: 3` | 18.0 s | **18.7 s** |
+| `maxConcurrent: 1` | **9.5 s** | 27.2 s |
+
+All at once finishes the batch sooner; one at a time gets the first server
+running in half the time. Defaults to all at once.
+
+Raise or lower the budget before starting anything:
 
 ```ts
 import { setTotalConcurrency, concurrency } from "tapline";

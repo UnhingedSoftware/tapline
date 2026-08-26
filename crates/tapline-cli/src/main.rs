@@ -29,7 +29,8 @@ Native:
       Install or update. Downloads nothing if already current.
   tapline app info APPID [--json]
       Depots, branches and sizes.
-  tapline workshop download APPID ITEMID --dir DIR [--json]
+  tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]
+                            --flat writes into DIR itself, for e.g. garrysmod/addons
       One Workshop item.
   tapline login [--qr | --account NAME]
       Sign in. Only needed for apps an account owns; dedicated servers do not.

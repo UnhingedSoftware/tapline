@@ -24,11 +24,12 @@ pub async fn execute(command: Command) -> Result<(), String> {
         } => download(app, dir, branch, validate, concurrency, json).await,
         Command::Info { app, json } => info(app, json).await,
         Command::WorkshopDownload {
+            flat,
             app,
             item,
             dir,
             json,
-        } => workshop(app, item, dir, json).await,
+        } => workshop(app, item, dir, flat, json).await,
         Command::Login { qr, account } => login(qr, account).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
@@ -105,7 +106,9 @@ async fn run_script(steps: Vec<Step>) -> Result<(), String> {
                 let session = session
                     .as_mut()
                     .ok_or("+workshop_download_item needs a +login before it")?;
-                let dir = download_item(session, app, item, install_dir.clone()).await?;
+                // The steamcmd grammar has no flag for this, and steamcmd's own
+                // layout is what a script using that grammar expects.
+                let dir = download_item(session, app, item, install_dir.clone(), false).await?;
                 println!("Success. Downloaded item {item} to \"{}\"", dir.display());
             }
 
@@ -271,10 +274,11 @@ async fn workshop(
     app: AppId,
     item: PublishedFileId,
     dir: PathBuf,
+    flat: bool,
     json: bool,
 ) -> Result<(), String> {
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
-    let target = download_item(&mut session, app, item, dir).await?;
+    let target = download_item(&mut session, app, item, dir, flat).await?;
 
     if json {
         emit(&serde_json::json!({
@@ -295,6 +299,7 @@ async fn download_item(
     app: AppId,
     item: PublishedFileId,
     dir: PathBuf,
+    flat: bool,
 ) -> Result<PathBuf, String> {
     let described = session
         .workshop_details(&[item])
@@ -309,6 +314,11 @@ async fn download_item(
 
     let options = InstallOptions {
         install_dir: dir.clone(),
+        workshop_layout: if flat {
+            tapline::WorkshopLayout::Flat
+        } else {
+            tapline::WorkshopLayout::SteamCmd
+        },
         ..InstallOptions::default()
     };
     session
@@ -317,7 +327,7 @@ async fn download_item(
         .map_err(|error| error.to_string())?;
 
     let _ = app;
-    Ok(tapline::item_dir(&dir, details.app, details.id))
+    Ok(tapline::target_dir(&options, details.app, details.id))
 }
 
 /// `login`

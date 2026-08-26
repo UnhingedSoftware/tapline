@@ -35,7 +35,13 @@ export interface Ffi {
     os: number,
     includeDlc: number,
   ): bigint;
-  workshop(app: number, item: bigint, dir: string, concurrency: number): bigint;
+  workshop(
+    app: number,
+    item: bigint,
+    dir: string,
+    concurrency: number,
+    flat: number,
+  ): bigint;
   /** Waits for the next event. Resolves to null when the job is over. */
   next(job: bigint, timeoutMs: number): Promise<string | null>;
   cancel(job: bigint): void;
@@ -215,7 +221,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       result: "i32",
     },
     tapline_workshop_download: {
-      parameters: ["u32", "u64", "buffer", "u32", "buffer"],
+      parameters: ["u32", "u64", "buffer", "u32", "u8", "buffer"],
       result: "i32",
     },
     tapline_job_next: {
@@ -264,13 +270,14 @@ async function loadDeno(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "plan");
     },
-    workshop(app, item, dir, concurrency) {
+    workshop(app, item, dir, concurrency, flat) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_workshop_download(
         app,
         item,
         cstring(dir),
         concurrency,
+        flat,
         new Uint8Array(out.buffer),
       );
       return readJobPointer(out, code, "workshop download");
@@ -330,7 +337,7 @@ async function loadBun(path: string): Promise<Ffi> {
       returns: FFIType.i32,
     },
     tapline_workshop_download: {
-      args: [FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr],
+      args: [FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.u8, FFIType.ptr],
       returns: FFIType.i32,
     },
     tapline_job_next: {
@@ -374,10 +381,10 @@ async function loadBun(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "plan");
     },
-    workshop(app, item, dir, concurrency) {
+    workshop(app, item, dir, concurrency, flat) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_workshop_download(
-        app, item, ptr(cstring(dir)), concurrency, ptr(out),
+        app, item, ptr(cstring(dir)), concurrency, flat, ptr(out),
       );
       return readJobPointer(out, code, "workshop download");
     },
@@ -439,7 +446,7 @@ async function loadNode(path: string): Promise<Ffi> {
     "int tapline_plan(uint32_t, const char*, const char*, uint8_t, uint8_t, _Out_ void**)",
   );
   const workshop = lib.func(
-    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
+    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, _Out_ void**)",
   );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
@@ -470,9 +477,9 @@ async function loadNode(path: string): Promise<Ffi> {
       if (code !== OK) throw new Error(`plan failed (code ${code})`);
       return asPointer(out);
     },
-    workshop(app, item, dir, concurrency) {
+    workshop(app, item, dir, concurrency, flat) {
       const out: unknown[] = [null];
-      const code = workshop(app, item, dir, concurrency, out);
+      const code = workshop(app, item, dir, concurrency, flat, out);
       if (code !== OK) throw new Error(`workshop download failed (code ${code})`);
       return asPointer(out);
     },

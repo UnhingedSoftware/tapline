@@ -44,8 +44,14 @@ fn expected() -> Vec<(&'static str, usize)> {
         *mut *mut TaplineJob,
     ) -> i32 = tapline_ffi::tapline_plan;
 
-    let workshop: unsafe extern "C" fn(u32, u64, *const c_char, u32, *mut *mut TaplineJob) -> i32 =
-        tapline_ffi::tapline_workshop_download;
+    let workshop: unsafe extern "C" fn(
+        u32,
+        u64,
+        *const c_char,
+        u32,
+        u8,
+        *mut *mut TaplineJob,
+    ) -> i32 = tapline_ffi::tapline_workshop_download;
 
     let next: unsafe extern "C" fn(*mut TaplineJob, u32, *mut u8, usize, *mut usize) -> i32 =
         tapline_ffi::tapline_job_next;
@@ -69,7 +75,7 @@ fn expected() -> Vec<(&'static str, usize)> {
     vec![
         ("tapline_install", 9),
         ("tapline_plan", 6),
-        ("tapline_workshop_download", 5),
+        ("tapline_workshop_download", 6),
         ("tapline_job_next", 5),
         ("tapline_job_cancel", 1),
         ("tapline_job_free", 1),

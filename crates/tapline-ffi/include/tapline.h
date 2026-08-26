@@ -72,11 +72,16 @@ int32_t tapline_plan(uint32_t app_id,
                      uint8_t include_dlc,
                      TaplineJob **out);
 
-/* Downloads one Workshop item. item_id is a published file id. */
+/* Downloads one Workshop item. item_id is a published file id.
+ *
+ * flat non-zero writes the item's files straight into dir; zero uses
+ * steamcmd's steamapps/workshop/content/<app>/<item>/ layout. A Garry's Mod
+ * addon belongs in garrysmod/addons, which is what flat is for. */
 int32_t tapline_workshop_download(uint32_t app_id,
                                   uint64_t item_id,
                                   const char *dir,
                                   uint32_t concurrency,
+                                  uint8_t flat,
                                   TaplineJob **out);
 
 /* Waits for the next event and writes it to buf as UTF-8 JSON.

@@ -37,12 +37,14 @@ mod validate;
 mod workshop;
 
 pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
-pub use install::{FileModes, InstallError, InstallOptions, InstallReport};
+pub use install::{FileModes, InstallError, InstallOptions, InstallReport, WorkshopLayout};
 pub use login::{LoginError, PendingLogin, PollOutcome};
 pub use session::Session;
 pub use shared::Shared;
 pub use validate::{Damage, ValidationReport, validate_manifest};
-pub use workshop::{WorkshopContent, WorkshopError, WorkshopItem, classify, item_dir, options_for};
+pub use workshop::{
+    WorkshopContent, WorkshopError, WorkshopItem, classify, item_dir, options_for, target_dir,
+};
 
 pub use tapline_auth::{GuardType, StoredToken, TokenStore};
 pub use tapline_event::{Event, Plan, RetryReason};
