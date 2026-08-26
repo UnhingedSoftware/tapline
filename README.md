@@ -343,7 +343,15 @@ A depot file is stored as content-addressed chunks, each carrying the offset its
 plaintext belongs at, so tapline can fetch a *range* of a file. That makes two
 things possible.
 
-**Listing.** What is in this addon, without paying for the addon:
+Two formats implement it. A GMAD says its index is in the first 64 KiB; a ZIP
+says the **last** 66 KiB, and everything downstream is identical:
+
+```rust
+workshop(app, item).gma().only("lua/**").dir("/out").run().await?;
+workshop(app, item).zip().pick("readme.txt").dir("/out").run().await?;
+```
+
+**Listing.** What is in this archive, without paying for the archive:
 
 ```rust
 let listing = workshop(4000, 104_691_717).gma().list().await?;
@@ -374,7 +382,13 @@ result would look like success.
 An earlier version of this document claimed a container with its index at the
 end could not be streamed. That is true of a socket and false here — tapline
 does not read a byte stream, it fetches chunks by offset, and reading a ZIP's
-central directory first is an ordinary read.
+central directory first is an ordinary read. The ZIP reader exists now and does
+exactly that.
+
+The ZIP support is deliberately narrow: no ZIP64, no encryption, no methods
+beyond stored and deflate. Each is refused by name rather than guessed at,
+because a reader that half-supports a format writes files that are wrong rather
+than missing.
 
 No session appears in that. One is taken from a process-wide pool and given
 back, so concurrent chains get different sessions and never wait on each other,
@@ -415,7 +429,7 @@ wire      protobuf codec          crypto   AES/RSA/SHA-1, Steam's compositions
 ids       SteamID, EResult        vdf      KeyValues and appmanifest files
 chunk     VZ, VSZ, ZIP           fs       path validation
 ext       the extension seam     gmad     Garry's Mod addons
-pipe      the typed chain
+pipe      the typed chain        zip      ZIP, read by range
 io        the IO traits           event    progress vocabulary
 proto     404 generated messages  net      CM framing, batches, job correlation
 pics      depots and branches     manifest the manifest format
@@ -451,7 +465,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 468 tests, no network
+cargo test --workspace                # 483 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

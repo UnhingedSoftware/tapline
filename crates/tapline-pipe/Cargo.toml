@@ -11,6 +11,7 @@ rust-version.workspace = true
 tapline = { workspace = true }
 tapline-ext = { workspace = true }
 tapline-gmad = { workspace = true }
+tapline-zip = { workspace = true }
 tapline-ids = { workspace = true }
 
 [dev-dependencies]

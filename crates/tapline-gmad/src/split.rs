@@ -78,10 +78,12 @@ impl<S: EntrySink> Splitter<S> {
                     self.entries = addon
                         .entries
                         .iter()
-                        .map(|entry| ArchiveEntry {
-                            path: entry.path.clone(),
-                            size: entry.size,
-                            offset: entry.offset as u64,
+                        .map(|entry| {
+                            ArchiveEntry::stored(
+                                entry.path.clone(),
+                                entry.offset as u64,
+                                entry.size,
+                            )
                         })
                         .collect();
                     self.sink.index(&self.entries)?;

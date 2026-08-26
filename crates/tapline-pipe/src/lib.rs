@@ -179,9 +179,28 @@ impl Source {
     /// exist at all.
     #[must_use]
     pub fn gma(self) -> Decoded {
+        self.decode("gma")
+    }
+
+    /// Reads the download as a ZIP.
+    ///
+    /// Distinct from [`Decoded::zip`], which *writes* one — this says what the
+    /// download already is. A ZIP keeps its index at the end, which is why this
+    /// is possible at all: the archive is read by range rather than as a
+    /// stream, so the tail is an ordinary read.
+    #[must_use]
+    pub fn zip(self) -> Decoded {
+        self.decode("zip")
+    }
+
+    /// Reads the download as a named format.
+    #[must_use]
+    pub fn decode(self, format: impl Into<String>) -> Decoded {
+        let mut pipeline = Pipeline::gma();
+        pipeline.format = format.into();
         Decoded {
             source: self,
-            pipeline: Pipeline::gma(),
+            pipeline,
         }
     }
 }
@@ -227,25 +246,21 @@ impl Decoded {
     pub async fn list_with(self, session: &mut Session) -> Result<Listing, PipeError> {
         let details = resolve(session, self.source.item).await?;
         let file = session.open_workshop_item(&details).await?;
-
-        let tapline_gmad::IndexLocation::Head(head_len) = tapline_gmad::index_location() else {
-            return Err(PipeError::Spec(SpecError::UnknownFormat(
-                self.pipeline.format.clone(),
-            )));
-        };
-        let head = file.read(0, head_len.min(file.len())).await?;
-        let entries = tapline_gmad::plan(&head)?;
-
+        let entries = read_index(&file, &self.pipeline.format).await?;
         let selected = select(&entries, &self.pipeline)?;
 
         let ranges: Vec<(u64, u64)> = selected
             .iter()
-            .map(|entry| (entry.offset, entry.size))
+            .map(|entry| (entry.offset, entry.stored_size))
             .collect();
 
         Ok(Listing {
             archive_bytes: file.len(),
-            read_bytes: head.len() as u64,
+            read_bytes: match index_location(&self.pipeline.format)? {
+                tapline_ext::IndexLocation::Head(len) | tapline_ext::IndexLocation::Tail(len) => {
+                    len.min(file.len())
+                }
+            },
             selected_bytes: file.cost_of(&ranges),
             total_bytes: file.cost_of(&[(0, file.len())]),
             selected,
@@ -430,16 +445,7 @@ async fn run_selective(
     observe: &mut (dyn FnMut(tapline::Event) + Send),
 ) -> Result<Outcome, PipeError> {
     let file = session.open_workshop_item(details).await?;
-
-    let tapline_gmad::IndexLocation::Head(head_len) = tapline_gmad::index_location() else {
-        // Only the head form exists today; a tail form would read from the end.
-        return Err(PipeError::Spec(SpecError::UnknownFormat(
-            pipeline.format.clone(),
-        )));
-    };
-    let head = file.read(0, head_len.min(file.len())).await?;
-    let entries = tapline_gmad::plan(&head)?;
-
+    let entries = read_index(&file, &pipeline.format).await?;
     let selected = select(&entries, pipeline)?;
 
     observe(tapline::Event::Planned {
@@ -447,7 +453,7 @@ async fn run_selective(
             download_bytes: file.cost_of(
                 &selected
                     .iter()
-                    .map(|entry| (entry.offset, entry.size))
+                    .map(|entry| (entry.offset, entry.stored_size))
                     .collect::<Vec<_>>(),
             ),
             reused_bytes: 0,
@@ -464,14 +470,17 @@ async fn run_selective(
     // whether or not this run wanted that file.
     sink.index(&entries)?;
 
+    // The stored size, not the unpacked one: what is on the wire.
     let ranges: Vec<(u64, u64)> = selected
         .iter()
-        .map(|entry| (entry.offset, entry.size))
+        .map(|entry| (entry.offset, entry.stored_size))
         .collect();
     let pieces = file.read_many(&ranges).await?;
 
     let mut streamed = 0_u64;
-    for (index, (entry, bytes)) in selected.iter().zip(pieces.iter()).enumerate() {
+    for (index, (entry, stored)) in selected.iter().zip(pieces.iter()).enumerate() {
+        let bytes = decode_entry(&pipeline.format, entry, stored)?;
+        let bytes = &bytes;
         sink.begin(entry, index)?;
         if !bytes.is_empty() {
             sink.data(bytes)?;
@@ -496,6 +505,79 @@ async fn run_selective(
 /// Runs a pipeline value, however it was built.
 ///
 /// The chain, the text form and any future HTTP request all end up here.
+/// Where a format keeps its index.
+fn index_location(format: &str) -> Result<tapline_ext::IndexLocation, SpecError> {
+    match format {
+        "gma" => Ok(tapline_gmad::index_location()),
+        "zip" => Ok(tapline_zip::index_location()),
+        other => Err(SpecError::UnknownFormat(other.to_owned())),
+    }
+}
+
+/// Reads a format's index, fetching whatever more it asks for.
+///
+/// The two-phase shape exists for ZIP: its central directory points at local
+/// headers whose own lengths only those headers carry, so the data offsets are
+/// one read further on. A GMAD answers in one phase and this loop runs once.
+async fn read_index(
+    file: &tapline::RemoteFile,
+    format: &str,
+) -> Result<Vec<tapline_ext::ArchiveEntry>, PipeError> {
+    let window = match index_location(format)? {
+        tapline_ext::IndexLocation::Head(len) => (0, len.min(file.len())),
+        tapline_ext::IndexLocation::Tail(len) => {
+            let len = len.min(file.len());
+            (file.len().saturating_sub(len), len)
+        }
+    };
+    let bytes = file.read(window.0, window.1).await?;
+
+    let plan = match format {
+        "gma" => tapline_ext::IndexPlan::done(tapline_gmad::plan(&bytes)?),
+        "zip" => tapline_zip::plan(&bytes, window.0)?,
+        other => return Err(SpecError::UnknownFormat(other.to_owned()).into()),
+    };
+
+    if plan.is_complete() {
+        return Ok(plan.entries);
+    }
+
+    // The index itself was outside the window: fetch exactly what was asked
+    // for and read it again.
+    let plan = if plan.entries.is_empty() {
+        let extra = file.read_many(&plan.needs).await?;
+        let directory = extra.first().cloned().unwrap_or_default();
+        match format {
+            "zip" => tapline_zip::read_directory(&directory, usize::MAX)?,
+            other => return Err(SpecError::UnknownFormat(other.to_owned()).into()),
+        }
+    } else {
+        plan
+    };
+
+    let extra = file.read_many(&plan.needs).await?;
+    match format {
+        "zip" => Ok(tapline_zip::finalize(plan.entries, &extra)?),
+        other => Err(SpecError::UnknownFormat(other.to_owned()).into()),
+    }
+}
+
+/// Unpacks an entry's stored bytes for the format they came from.
+fn decode_entry(
+    format: &str,
+    entry: &tapline_ext::ArchiveEntry,
+    stored: &[u8],
+) -> Result<Vec<u8>, PipeError> {
+    match entry.compression {
+        // Nothing was done to them, whatever the container.
+        tapline_ext::Compression::Stored => Ok(stored.to_vec()),
+        tapline_ext::Compression::Deflate => match format {
+            "zip" => Ok(tapline_zip::decode(entry, stored)?),
+            other => Err(SpecError::UnknownFormat(other.to_owned()).into()),
+        },
+    }
+}
+
 /// Which entries a pipeline takes, and why.
 ///
 /// Globs and picks are a union: anything matching either is taken. A pick that
@@ -668,11 +750,7 @@ mod tests {
     }
 
     fn entry(path: &str, offset: u64, size: u64) -> tapline_ext::ArchiveEntry {
-        tapline_ext::ArchiveEntry {
-            path: path.to_owned(),
-            size,
-            offset,
-        }
+        tapline_ext::ArchiveEntry::stored(path.to_owned(), offset, size)
     }
 
     fn archive() -> Vec<tapline_ext::ArchiveEntry> {

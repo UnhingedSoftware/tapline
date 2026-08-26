@@ -1430,6 +1430,7 @@ dependencies = [
  "tapline-ext",
  "tapline-gmad",
  "tapline-ids",
+ "tapline-zip",
  "tokio",
 ]
 
@@ -1473,6 +1474,15 @@ version = "0.1.0"
 [[package]]
 name = "tapline-wire"
 version = "0.1.0"
+
+[[package]]
+name = "tapline-zip"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+ "tapline-ext",
+]
 
 [[package]]
 name = "tempfile"

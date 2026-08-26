@@ -40,7 +40,7 @@ pub use glob::{Patterns, matches as glob_matches};
 pub use sink::{Fanout, Filtered, ToDirectory, ToZip as ZipSink};
 pub use split::Splitter;
 pub use stream::StreamingExtractor;
-pub use tapline_ext::{ArchiveEntry, Decoder, EntrySink};
+pub use tapline_ext::{ArchiveEntry, Decoder, EntrySink, IndexLocation};
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -513,19 +513,6 @@ impl StreamWriter {
     }
 }
 
-/// How much of an archive must be read before its index is known, and where.
-///
-/// A format answers this so a caller can fetch that much and no more. GMAD's
-/// index is at the front; a ZIP's central directory is at the back, and the
-/// same mechanism serves both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexLocation {
-    /// The first `n` bytes are enough to find it.
-    Head(u64),
-    /// The last `n` bytes are.
-    Tail(u64),
-}
-
 /// Where a GMAD's index lives.
 ///
 /// 64 KiB covers a real addon comfortably — PAC3's header and index for 348
@@ -543,11 +530,7 @@ pub fn plan(head: &[u8]) -> Result<Vec<tapline_ext::ArchiveEntry>, ExtensionErro
     Ok(parse_index(head)?
         .entries
         .into_iter()
-        .map(|entry| tapline_ext::ArchiveEntry {
-            path: entry.path,
-            size: entry.size,
-            offset: entry.offset as u64,
-        })
+        .map(|entry| tapline_ext::ArchiveEntry::stored(entry.path, entry.offset as u64, entry.size))
         .collect())
 }
 

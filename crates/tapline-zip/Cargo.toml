@@ -1,0 +1,18 @@
+[package]
+name = "tapline-zip"
+description = "Read a ZIP archive by range, without downloading it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tapline-ext = { workspace = true }
+miniz_oxide = { workspace = true }
+
+[dev-dependencies]
+crc32fast = { workspace = true }
+
+[lints]
+workspace = true

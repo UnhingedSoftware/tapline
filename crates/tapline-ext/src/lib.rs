@@ -143,13 +143,95 @@ pub struct ArchiveEntry {
     /// The path inside the archive, as the archive spells it. Untrusted: it is
     /// chosen by whoever published the thing.
     pub path: String,
-    /// The entry's size in bytes.
+    /// The entry's size once unpacked.
     pub size: u64,
-    /// Where the entry's bytes start in the archive.
+    /// Where the entry's stored bytes start in the archive.
     ///
-    /// What makes a selective read possible: knowing this and the size, a
-    /// caller can fetch one entry without fetching the ones around it.
+    /// What makes a selective read possible: knowing this and
+    /// [`ArchiveEntry::stored_size`], a caller can fetch one entry without
+    /// fetching the ones around it.
     pub offset: u64,
+    /// How many bytes to read at that offset.
+    ///
+    /// The same as [`ArchiveEntry::size`] for a container that stores its
+    /// entries whole, and smaller for one that compresses them.
+    pub stored_size: u64,
+    /// What was done to those bytes.
+    pub compression: Compression,
+}
+
+/// How an entry's bytes are stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Compression {
+    /// Stored as-is.
+    #[default]
+    Stored,
+    /// Deflated, as a ZIP's method 8.
+    Deflate,
+}
+
+impl ArchiveEntry {
+    /// An entry stored whole, which is what GMAD and a stored ZIP entry are.
+    #[must_use]
+    pub const fn stored(path: String, offset: u64, size: u64) -> Self {
+        Self {
+            path,
+            size,
+            offset,
+            stored_size: size,
+            compression: Compression::Stored,
+        }
+    }
+}
+
+/// How much of an archive must be read before its index is known, and where.
+///
+/// A format answers this so a caller can fetch that much and no more. GMAD's
+/// index is at the front; a ZIP's central directory is at the back, and the
+/// same mechanism serves both — which is the whole reason this is a value
+/// rather than an assumption baked into the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexLocation {
+    /// The first `n` bytes are enough to find it.
+    Head(u64),
+    /// The last `n` bytes are.
+    Tail(u64),
+}
+
+/// What a format learned from its index, and what it still needs.
+///
+/// Two phases, because not every container puts everything in one place. A
+/// GMAD's index gives each entry's offset outright. A ZIP's central directory
+/// gives the offset of a *local header*, whose own length depends on fields
+/// only that header carries — so the data offset is one more read away.
+///
+/// Rather than give a decoder its own way to fetch bytes, which would mean
+/// every format reimplementing ranged reads, a plan says which ranges it wants
+/// and gets them back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexPlan {
+    /// What is known so far.
+    pub entries: Vec<ArchiveEntry>,
+    /// Ranges needed before the entries are usable. Empty when they already
+    /// are.
+    pub needs: Vec<(u64, u64)>,
+}
+
+impl IndexPlan {
+    /// A plan that is already complete.
+    #[must_use]
+    pub const fn done(entries: Vec<ArchiveEntry>) -> Self {
+        Self {
+            entries,
+            needs: Vec::new(),
+        }
+    }
+
+    /// Whether anything more must be read.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.needs.is_empty()
+    }
 }
 
 /// What a decoder reports to as it reads an archive.
