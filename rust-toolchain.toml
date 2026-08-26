@@ -1,0 +1,5 @@
+# Stable, because this is a library other people link. The fuzz targets are the
+# one exception and ask for nightly explicitly (`cargo +nightly fuzz`).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

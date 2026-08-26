@@ -1,0 +1,98 @@
+[workspace]
+resolver = "3"
+members = []
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/UnhingedSoftware/tapline"
+rust-version = "1.85"
+
+# The dependency floor. Everything here is pure Rust with no C toolchain, and
+# adding a line is a deliberate act: `cargo deny` fails the build on anything
+# that shows up in the tree without being declared here first.
+#
+# Deliberately absent: reqwest, hyper, prost, protoc, openssl, any -sys crate.
+[workspace.dependencies]
+# internal — leaves
+tapline-wire = { path = "crates/tapline-wire" }
+tapline-ids = { path = "crates/tapline-ids" }
+tapline-crypto = { path = "crates/tapline-crypto" }
+tapline-vdf = { path = "crates/tapline-vdf" }
+tapline-lzma = { path = "crates/tapline-lzma" }
+tapline-zstd = { path = "crates/tapline-zstd" }
+tapline-event = { path = "crates/tapline-event" }
+tapline-io = { path = "crates/tapline-io" }
+
+# async + parallelism. `tokio` is a dependency of tapline-rt-tokio ALONE, so a
+# host application that already runs its own reactor never inherits ours.
+tokio = { version = "1", default-features = false }
+rayon = "1"
+bytes = "1"
+
+# transport. Verified 2026-08-26: every host returned by
+# IContentServerDirectoryService/GetServersForSteamPipe reports
+# "https_support":"mandatory", so TLS is core, not optional.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+webpki-roots = "1"
+
+# crypto. The one place we do not write it ourselves: hand-rolled block ciphers
+# and padding are how you ship a timing side channel.
+rsa = "0.9"
+aes = "0.8"
+cbc = "0.1"
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+crc32fast = "1"
+zeroize = "1"
+
+# container formats
+lzma-rs = "0.3"
+ruzstd = "0.7"
+
+# filesystem + observability
+cap-std = "3"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+# CLI-only, never in the library graph
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# The library is linked into other people's servers: a panic in tapline is a
+# panic in their process. These are denied rather than warned for that reason.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+
+# Wide DAG + many codegen units is the whole point: rustc parallelises across
+# crates whose dependencies are done, and the eight leaves have none.
+[profile.dev]
+codegen-units = 256
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Size budget: the shipped CLI is <= 4 MB static musl, against steamcmd's ~250 MB
+# tree. Checked in CI, see .github/workflows/ci.yml.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.small]
+inherits = "release"
+opt-level = "z"
+panic = "abort"

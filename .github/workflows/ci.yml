@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A dependency that fails to build is a dependency we should not have.
+  CARGO_NET_RETRY: 3
+
+jobs:
+  # Per-commit gate. clippy --all-targets type-checks every bin, test and example
+  # in the workspace, which is most of the value here; `cargo test` runs beside it
+  # rather than after, since the runners are 32-core and neither job is the
+  # bottleneck.
+  check:
+    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Network-touching tests are #[ignore]d, so this stays offline and
+      # deterministic. They are run by hand against real Steam.
+      - run: cargo test --workspace --all-features
+
+  # The dependency floor is a floor: this fails on a new licence, a yanked crate,
+  # an advisory, or anything from the deny list in deny.toml (openssl, hyper,
+  # reqwest, prost, a C build).
+  deny:
+    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+
+  # The metadata build is what a webapp links: it must not drag in rayon, cap-std,
+  # clap or serde. Asserted against the dependency graph rather than hoped for.
+  minimal-graph:
+    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: No heavy crates in the metadata build
+        run: |
+          # Nothing to assert until the facade crate exists (M6); until then this
+          # only proves the workspace resolves with default features off.
+          cargo tree --workspace --no-default-features --edges normal > /tmp/graph.txt
+          for crate in rayon cap-std clap serde_json; do
+            if grep -qE "^[^a-z]*${crate} v" /tmp/graph.txt; then
+              echo "::error::${crate} is in the default-features-off graph"
+              exit 1
+            fi
+          done

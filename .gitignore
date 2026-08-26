@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Integration tests write here. Never /tmp: it is tmpfs on the dev box, and a
+# depot test would be tens of GB of RAM.
+/.tapline-test/

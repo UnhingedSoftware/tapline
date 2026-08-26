@@ -1,0 +1,58 @@
+# cargo-deny keeps the dependency floor a floor.
+#
+# tapline is linked into other people's game-server hosts, so every crate in the
+# tree is something they inherit. The rules below make adding one a visible
+# decision rather than a side effect of reaching for a convenient API.
+
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "x86_64-unknown-linux-musl" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-musl" },
+]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# MPL-2.0 for our own crates; the rest is what the pure-Rust ecosystem uses.
+allow = [
+    "MPL-2.0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# A C toolchain in the tree breaks the static musl build and the "no build
+# dependencies you did not ask for" promise. These are the usual ways it sneaks
+# back in.
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+    { name = "cmake" },
+    { name = "cc", wrappers = ["ring"] },
+    # We ship our own HTTP/1.1 client and our own protobuf codec; if one of
+    # these appears, something pulled in a stack we deliberately do not have.
+    { name = "hyper" },
+    { name = "reqwest" },
+    { name = "prost" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
