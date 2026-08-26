@@ -333,14 +333,17 @@ tapline login --qr | tapline logout | tapline whoami
 The gate column is the milestone's test, written in the same commits as the code.
 No milestone closes on "it ran once by hand".
 
+Status as of 2026-08-26: **M0–M5 done**, each verified against live Steam where
+the gate says so. 181 offline tests; the live tests are `#[ignore]`d.
+
 | # | milestone | gate |
 |---|---|---|
-| M0 | repo, workspace, licence, CI, `cargo-deny`, dev profile | CI green on empty crates |
-| M1 | leaves: `wire`, `ids`, `crypto`, `vdf`, `event`, `io` traits + fuzz targets | codec round-trips a real captured message; ACF round-trips byte-identical |
-| M2 | `xtask` codegen → committed `tapline-proto`; `--timings` check | every Steam `.proto` compiles; no `prost`/`protoc` in the consumer tree |
-| M3 | `tapline-rt-tokio` + `tapline-net`: CM handshake (TCP + WS), mux, anon logon | `tapline whoami` on a real CM; captured-session vectors pass against an in-memory `Stream` with no network |
-| M4 | `tapline-pics` → `app info 232250 --json` | depots/branches match SteamDB |
-| M5 | depot keys + `tapline-manifest` → `app plan` | our manifest parse is byte-identical to steamcmd's `depotcache/*.manifest` |
+| M0 ✅ | repo, workspace, licence, CI, `cargo-deny`, dev profile | CI green on empty crates |
+| M1 ✅ | leaves: `wire`, `ids`, `crypto`, `vdf`, `event`, `io` traits + fuzz targets | codec round-trips a real captured message; ACF round-trips byte-identical |
+| M2 ✅ | `xtask` codegen → committed `tapline-proto`; `--timings` check | every Steam `.proto` compiles; no `prost`/`protoc` in the consumer tree |
+| M3 ✅ | `tapline-rt-tokio` + `tapline-net`: CM handshake (TCP + WS), mux, anon logon | `tapline whoami` on a real CM; captured-session vectors pass against an in-memory `Stream` with no network |
+| M4 ✅ | `tapline-pics` → `app info 232250 --json` | depots/branches match SteamDB |
+| M5 ✅ | depot keys + `tapline-manifest` → `app plan` | our manifest parse is byte-identical to steamcmd's `depotcache/*.manifest` |
 | M6 | `tapline-cdn` + `tapline-fs`: first full install | `diff -r` vs a steamcmd install of 232250 is empty |
 | M7 | `tapline-state`, delta update, resume, `validate`/repair | update across two builds touches only changed files |
 | M8 | Workshop: SteamPipe UGC + legacy UFS | `diff -r` vs steamcmd `workshop_download_item` |
