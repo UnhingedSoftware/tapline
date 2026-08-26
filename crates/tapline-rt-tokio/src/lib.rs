@@ -20,10 +20,12 @@
 //! ```
 
 mod directory;
+mod http;
 mod tls;
 mod ws;
 
 pub use directory::{CmServer, cm_list};
+pub use http::{HttpClient, SharedHttpClient};
 pub use tls::connect_tls;
 pub use ws::MAX_MESSAGE;
 

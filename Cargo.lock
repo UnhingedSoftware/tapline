@@ -613,8 +613,10 @@ version = "0.1.0"
 dependencies = [
  "rustls",
  "tapline-crypto",
+ "tapline-ids",
  "tapline-io",
  "tapline-net",
+ "tapline-pics",
  "tapline-proto",
  "tapline-wire",
  "tokio",

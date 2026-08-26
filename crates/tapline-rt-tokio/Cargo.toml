@@ -14,14 +14,16 @@ rust-version.workspace = true
 rustls = { workspace = true }
 tapline-crypto = { workspace = true }
 tapline-io = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt", "io-util", "time", "fs", "macros"] }
+tokio = { workspace = true, features = ["net", "rt", "io-util", "time", "fs", "macros", "sync"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 
 [dev-dependencies]
 # The doctest and the live tests drive a real session, which is the only way to
 # show what this crate is for.
+tapline-ids = { workspace = true }
 tapline-net = { workspace = true }
+tapline-pics = { workspace = true }
 tapline-proto = { workspace = true }
 tapline-wire = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
