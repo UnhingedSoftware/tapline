@@ -44,8 +44,17 @@ fn scratch_root() -> PathBuf {
     base
 }
 
-/// Every regular file under `root`, by relative path, with its size.
-fn walk(root: &Path) -> BTreeMap<String, u64> {
+/// What the comparison knows about one installed file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Entry {
+    /// Size in bytes.
+    size: u64,
+    /// Permission bits.
+    mode: u32,
+}
+
+/// Every regular file under `root`, by relative path.
+fn walk(root: &Path) -> BTreeMap<String, Entry> {
     let mut out = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];
 
@@ -74,7 +83,14 @@ fn walk(root: &Path) -> BTreeMap<String, u64> {
             if metadata.is_dir() {
                 stack.push(path);
             } else if metadata.is_file() {
-                out.insert(relative_str, metadata.len());
+                use std::os::unix::fs::PermissionsExt;
+                out.insert(
+                    relative_str,
+                    Entry {
+                        size: metadata.len(),
+                        mode: metadata.permissions().mode() & 0o777,
+                    },
+                );
             }
         }
     }
@@ -175,8 +191,8 @@ async fn tapline_installs_what_steamcmd_installs() {
     // Sizes, then contents. Size first because a mismatch there localises the
     // problem faster than a hash over a gigabyte does.
     let mut wrong_size = Vec::new();
-    for (path, size) in &theirs {
-        if mine.get(path) != Some(size) {
+    for (path, entry) in &theirs {
+        if mine.get(path).map(|mine| mine.size) != Some(entry.size) {
             wrong_size.push(path.clone());
         }
     }
@@ -187,6 +203,30 @@ async fn tapline_installs_what_steamcmd_installs() {
         wrong_size.is_empty(),
         "{} files differ in size",
         wrong_size.len()
+    );
+
+    // Modes, which this test did not compare until 2026-08-26 — and so did not
+    // notice that steamcmd sets 0o755 on every file it writes while tapline was
+    // applying the manifest's executable flag. 2,291 of Garry's Mod's 2,329
+    // files disagreed, with byte-identical contents throughout. A comparison
+    // that skips an attribute silently reports parity it never checked.
+    let mut wrong_mode = Vec::new();
+    for (path, entry) in &theirs {
+        if mine.get(path).map(|mine| mine.mode) != Some(entry.mode) {
+            wrong_mode.push(path.clone());
+        }
+    }
+    for path in wrong_mode.iter().take(20) {
+        println!(
+            "  MODE MISMATCH: {path}  steamcmd={:o} tapline={:o}",
+            theirs[path].mode,
+            mine.get(path).map_or(0, |entry| entry.mode)
+        );
+    }
+    assert!(
+        wrong_mode.is_empty(),
+        "{} files differ in permissions",
+        wrong_mode.len()
     );
 
     let mut wrong_content = Vec::new();

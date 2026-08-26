@@ -40,6 +40,46 @@ pub struct InstallOptions {
     /// gets throttled — the pool spreads these across hosts, but the total still
     /// matters.
     pub concurrency: usize,
+    /// What permissions to give installed files.
+    pub file_modes: FileModes,
+}
+
+/// What permissions installed files get.
+///
+/// This is a compatibility choice rather than a preference, and it was made
+/// from a measurement. Installing Garry's Mod Dedicated Server with both tools
+/// on 2026-08-26 gave two trees whose 2,329 files were byte-for-byte identical
+/// and whose modes disagreed on 2,291 of them: steamcmd had set **every** file
+/// to `0o755`, including text, models and sounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileModes {
+    /// `0o755` on everything, which is what steamcmd does.
+    ///
+    /// The default, because tapline is a drop-in replacement and the things
+    /// that shell out to steamcmd — LinuxGSM, wings eggs, a decade of Docker
+    /// images — were built against trees that look like this. A depot whose
+    /// manifest forgets the executable flag on a start script still produces a
+    /// runnable server under steamcmd, and swapping in a tool that is stricter
+    /// would break it for a reason its operator cannot see.
+    #[default]
+    SteamCmd,
+    /// `0o755` for files the manifest flags executable, `0o644` for the rest.
+    ///
+    /// What the depot actually describes, and the better answer everywhere the
+    /// blunt one is not required for compatibility.
+    Manifest,
+}
+
+impl FileModes {
+    /// The mode for a file the manifest did or did not flag executable.
+    #[must_use]
+    pub const fn mode_for(self, executable: bool) -> u32 {
+        match self {
+            Self::SteamCmd => 0o755,
+            Self::Manifest if executable => 0o755,
+            Self::Manifest => 0o644,
+        }
+    }
 }
 
 impl Default for InstallOptions {
@@ -52,6 +92,7 @@ impl Default for InstallOptions {
             resume: true,
             force: false,
             concurrency: 16,
+            file_modes: FileModes::default(),
         }
     }
 }

@@ -928,7 +928,7 @@ impl Session {
 
         for (sink, target, executable) in pending_sinks {
             sink.sync().await?;
-            set_permissions(&target, executable)?;
+            set_permissions(&target, options.file_modes.mode_for(executable))?;
         }
         report.files += files_written;
 
@@ -1023,14 +1023,12 @@ fn apply_outcome(
     Ok(())
 }
 
-/// Applies the executable bit the manifest asked for.
-fn set_permissions(path: &Path, executable: bool) -> std::io::Result<()> {
+/// Applies a mode chosen by the install's [`FileModes`] policy.
+fn set_permissions(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = std::fs::metadata(path)?.permissions();
-    // 0o755 for executables, 0o644 otherwise — what Steam itself produces, and
-    // what a server launcher expects to find.
-    permissions.set_mode(if executable { 0o755 } else { 0o644 });
+    permissions.set_mode(mode);
     std::fs::set_permissions(path, permissions)
 }
 
@@ -1064,14 +1062,36 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         std::fs::write(&path, b"#!/bin/sh\n").expect("write");
 
-        set_permissions(&path, true).expect("chmod");
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
-        assert_eq!(mode & 0o777, 0o755, "an executable must be runnable");
+        let mode_of = |policy: crate::FileModes, executable: bool| {
+            set_permissions(&path, policy.mode_for(executable)).expect("chmod");
+            std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777
+        };
 
-        set_permissions(&path, false).expect("chmod");
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
-        assert_eq!(mode & 0o777, 0o644);
+        // The manifest policy says what the depot says.
+        assert_eq!(
+            mode_of(crate::FileModes::Manifest, true),
+            0o755,
+            "an executable must be runnable"
+        );
+        assert_eq!(mode_of(crate::FileModes::Manifest, false), 0o644);
+
+        // The default matches steamcmd, which sets 0o755 on everything. A start
+        // script whose manifest forgot the flag still has to be runnable, or
+        // tapline is not a drop-in replacement for the tools that wrap it.
+        assert_eq!(mode_of(crate::FileModes::SteamCmd, false), 0o755);
+        assert_eq!(mode_of(crate::FileModes::SteamCmd, true), 0o755);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_default_mode_policy_is_the_compatible_one() {
+        // Stated as a test because changing this default silently would break
+        // installs that only fail at the moment someone tries to start a
+        // server, far away from the change that caused it.
+        assert_eq!(
+            crate::InstallOptions::default().file_modes,
+            crate::FileModes::SteamCmd
+        );
     }
 }
