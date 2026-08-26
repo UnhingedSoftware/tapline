@@ -1,0 +1,16 @@
+[package]
+name = "tapline-lzma"
+description = "The VZ chunk container: Steam's LZMA wrapper around depot content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# A leaf apart from its decoder. No IO, no async.
+[dependencies]
+crc32fast = { workspace = true }
+lzma-rs = { workspace = true }
+
+[lints]
+workspace = true

@@ -6,6 +6,8 @@ members = [
     "crates/tapline-ids",
     "crates/tapline-proto",
     "crates/tapline-io",
+    "crates/tapline-lzma",
+    "crates/tapline-fs",
     "crates/tapline-manifest",
     "crates/tapline-net",
     "crates/tapline-pics",
@@ -35,9 +37,9 @@ tapline-proto = { path = "crates/tapline-proto" }
 tapline-crypto = { path = "crates/tapline-crypto" }
 tapline-vdf = { path = "crates/tapline-vdf" }
 tapline-lzma = { path = "crates/tapline-lzma" }
-tapline-zstd = { path = "crates/tapline-zstd" }
 tapline-event = { path = "crates/tapline-event" }
 tapline-io = { path = "crates/tapline-io" }
+tapline-fs = { path = "crates/tapline-fs" }
 tapline-manifest = { path = "crates/tapline-manifest" }
 tapline-net = { path = "crates/tapline-net" }
 tapline-pics = { path = "crates/tapline-pics" }
@@ -77,8 +79,13 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # container formats. miniz_oxide is pure Rust with no C build, and is needed
 # because Steam gzips the payload of a CMsgMulti when it batches messages.
+#
+# `ruzstd` is deliberately absent. Steam's schema implies a VSZ (zstd) chunk
+# container, but probing Team Fortress 2 DS, Counter-Strike 2 DS and Valheim DS
+# on 2026-08-26 returned VZ for every chunk. A decoder for a container nothing
+# serves would be untested by construction; tapline-lzma names an unrecognised
+# magic instead, so if VSZ appears the error says so.
 lzma-rs = "0.3"
-ruzstd = "0.7"
 miniz_oxide = "0.8"
 
 # filesystem + observability

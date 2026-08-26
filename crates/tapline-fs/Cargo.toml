@@ -1,0 +1,15 @@
+[package]
+name = "tapline-fs"
+description = "The rooted writer: path validation, sparse writes, and the extraction rules that keep a download inside its install directory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tapline-io = { workspace = true }
+tapline-manifest = { workspace = true }
+
+[lints]
+workspace = true

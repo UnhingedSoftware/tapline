@@ -12,7 +12,10 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+crc32fast = "1"
 libfuzzer-sys = "0.4"
+tapline-fs = { path = "../crates/tapline-fs" }
+tapline-lzma = { path = "../crates/tapline-lzma" }
 tapline-vdf = { path = "../crates/tapline-vdf" }
 tapline-wire = { path = "../crates/tapline-wire" }
 
@@ -33,6 +36,20 @@ bench = false
 [[bin]]
 name = "vdf_parse"
 path = "fuzz_targets/vdf_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_validate"
+path = "fuzz_targets/path_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vz_decode"
+path = "fuzz_targets/vz_decode.rs"
 test = false
 doc = false
 bench = false
