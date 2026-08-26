@@ -418,6 +418,13 @@ name = "tapline-ids"
 version = "0.1.0"
 
 [[package]]
+name = "tapline-io"
+version = "0.1.0"
+dependencies = [
+ "tapline-io",
+]
+
+[[package]]
 name = "tapline-vdf"
 version = "0.1.0"
 
