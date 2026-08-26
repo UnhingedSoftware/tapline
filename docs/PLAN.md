@@ -490,6 +490,24 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
   and the server it produced reached `VAC secure mode is activated` and answered
   A2S_INFO.
 
+- **The "both tools are limited by the link" claim was wrong, and a one-line
+  sweep disproved it.** Valheim came in at 125 MB/s and Garry's Mod at 120 MB/s,
+  and the README read a gigabit ceiling into the two numbers landing close
+  together. They were close together because the default chunk concurrency was
+  16 in both runs. Sweeping it on GMod: 16 gives 29.5 s at 120 MB/s, 32 gives
+  21.1 s at 168 MB/s, 64 gives 19.5 s at 181 MB/s. The NIC is 2.5 Gb.
+
+  Two lessons, and the second is the one worth keeping. The first is that 16 was
+  never measured — it was picked as "deliberately modest" and then explained
+  after the fact. The second is that the explanation was the dangerous part: a
+  plausible story about a bottleneck stopped anyone looking for the real one, and
+  it survived precisely because it made a slow default sound like physics.
+
+  The default is now 32 rather than 64, because the last doubling buys 1.5 s for
+  twice the request rate against Steam's CDN — the plan's own rate-limit-safety
+  rule, which is also the number the plan specified before the implementation
+  chose 16. `--concurrency N` is exposed for links that have been measured.
+
 - **`tapline-lzma` and `tapline-zstd` moved from M1 to M6.** They were planned as
   leaves to build early, but the `VZ` and `VSZ` container headers around the
   compressed payload are undocumented, and the only way to know their layout is
