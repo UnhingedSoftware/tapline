@@ -6,6 +6,7 @@ members = [
     "crates/tapline-ids",
     "crates/tapline-proto",
     "crates/tapline-io",
+    "crates/tapline-net",
     "crates/tapline-vdf",
     "crates/tapline-wire",
     "xtask",
@@ -34,6 +35,7 @@ tapline-lzma = { path = "crates/tapline-lzma" }
 tapline-zstd = { path = "crates/tapline-zstd" }
 tapline-event = { path = "crates/tapline-event" }
 tapline-io = { path = "crates/tapline-io" }
+tapline-net = { path = "crates/tapline-net" }
 
 # async + parallelism. `tokio` is a dependency of tapline-rt-tokio ALONE, so a
 # host application that already runs its own reactor never inherits ours.
@@ -62,9 +64,11 @@ hmac = "0.12"
 crc32fast = "1"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
-# container formats
+# container formats. miniz_oxide is pure Rust with no C build, and is needed
+# because Steam gzips the payload of a CMsgMulti when it batches messages.
 lzma-rs = "0.3"
 ruzstd = "0.7"
+miniz_oxide = "0.8"
 
 # filesystem + observability
 cap-std = "3"

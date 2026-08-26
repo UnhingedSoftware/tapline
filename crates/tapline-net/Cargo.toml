@@ -1,0 +1,24 @@
+[package]
+name = "tapline-net"
+description = "Steam's CM message layer: framing, the protobuf header, multi-message batches and job correlation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# No socket here. This crate speaks the protocol over the Transport trait and
+# never constructs one, which is what lets the whole message layer be tested
+# against recorded bytes.
+[dependencies]
+crc32fast = { workspace = true }
+miniz_oxide = { workspace = true }
+tapline-io = { workspace = true }
+tapline-proto = { workspace = true }
+tapline-wire = { workspace = true }
+
+[dev-dependencies]
+tapline-io = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true
