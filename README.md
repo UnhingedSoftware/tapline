@@ -227,6 +227,40 @@ failure mode. See `bindings/js/README.md` for the reasoning and
 Verified on Deno 2.9.5, Bun 1.3.14 and Node 26.7.0: the same test file, 10/10
 on each, including real downloads.
 
+## Extensions
+
+Downloading a file is rarely the last step. An [`Extension`] is handed each file
+as it lands and may act on it, so tapline does not grow a special case per game:
+
+```rust
+session.register(Arc::new(tapline_gmad::Extract::new()));
+session.register(Arc::new(tapline_gmad::ToZip::new()));
+```
+
+`tapline-gmad` ships two, for Garry's Mod addons — which arrive as a single
+`.gma` container. `gmad` unpacks it, `gmad-zip` converts it to a zip. Both are
+selectable by name from the CLI and the C ABI:
+
+```sh
+tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons \
+  --flat --extensions gmad,gmad-zip
+```
+
+Names rather than function pointers, deliberately. An extension is Rust the
+operator compiled in; nothing in a manifest, a Workshop item or a CDN response
+can introduce one, which is the same line tapline draws by parsing
+`installscript.vdf` and refusing to execute it.
+
+Extensions run on a blocking thread after a file is synced, never on the loop
+that dispatches chunk fetches — the [`fsync` lesson](#is-it-fast) applies more
+strongly to unpacking an archive than it did to a sync.
+
+The GMAD format was read off a real addon rather than a description of it. On
+PAC3 (348 files, 8.69 MB): unpack 19 ms, convert to a stored zip 10 ms, convert
+to a deflated zip 39 ms. Deflate runs across every core — it was 175 ms on one,
+for byte-identical output — and the result is checked against `unzip -t`,
+because an archive only this crate can read is not a zip.
+
 ## Shape
 
 Twelve crates. Everything above the leaves is IO-free and reaches the network
@@ -238,6 +272,7 @@ library.
 wire      protobuf codec          crypto   AES/RSA/SHA-1, Steam's compositions
 ids       SteamID, EResult        vdf      KeyValues and appmanifest files
 chunk     VZ, VSZ, ZIP           fs       path validation
+ext       the extension seam     gmad     Garry's Mod addons
 io        the IO traits           event    progress vocabulary
 proto     404 generated messages  net      CM framing, batches, job correlation
 pics      depots and branches     manifest the manifest format
@@ -273,7 +308,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 355 tests, no network
+cargo test --workspace                # 384 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

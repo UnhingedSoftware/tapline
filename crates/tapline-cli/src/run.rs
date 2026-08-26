@@ -25,11 +25,12 @@ pub async fn execute(command: Command) -> Result<(), String> {
         Command::Info { app, json } => info(app, json).await,
         Command::WorkshopDownload {
             flat,
+            extensions,
             app,
             item,
             dir,
             json,
-        } => workshop(app, item, dir, flat, json).await,
+        } => workshop(app, item, dir, flat, extensions, json).await,
         Command::Login { qr, account } => login(qr, account).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
@@ -275,9 +276,13 @@ async fn workshop(
     item: PublishedFileId,
     dir: PathBuf,
     flat: bool,
+    extensions: Vec<String>,
     json: bool,
 ) -> Result<(), String> {
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    for name in &extensions {
+        session.register(extension_by_name(name)?);
+    }
     let target = download_item(&mut session, app, item, dir, flat).await?;
 
     if json {
@@ -291,6 +296,29 @@ async fn workshop(
         println!("downloaded item {item} to {}", target.display());
     }
     Ok(())
+}
+
+/// Looks up a built-in extension.
+///
+/// An unknown name is refused rather than ignored: a caller who asked for
+/// unpacking and got a directory of untouched `.gma` files has been told
+/// nothing about why.
+fn extension_by_name(name: &str) -> Result<std::sync::Arc<dyn tapline::Extension>, String> {
+    match name {
+        "gmad" => Ok(std::sync::Arc::new(tapline_gmad::Extract::new())),
+        "gmad!" => Ok(std::sync::Arc::new(
+            tapline_gmad::Extract::new().removing_original(),
+        )),
+        "gmad-zip" => Ok(std::sync::Arc::new(tapline_gmad::ToZip::new())),
+        "gmad-zip!" => Ok(std::sync::Arc::new(
+            tapline_gmad::ToZip::new().removing_original(),
+        )),
+        "gmad-zip-stored" => Ok(std::sync::Arc::new(tapline_gmad::ToZip::new().stored())),
+        other => Err(format!(
+            "unknown extension {other:?}; known: gmad, gmad!, gmad-zip, gmad-zip!, \
+             gmad-zip-stored (a trailing ! deletes the original)"
+        )),
+    }
 }
 
 /// Downloads one Workshop item and returns where it landed.

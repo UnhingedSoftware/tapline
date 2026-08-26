@@ -76,12 +76,19 @@ int32_t tapline_plan(uint32_t app_id,
  *
  * flat non-zero writes the item's files straight into dir; zero uses
  * steamcmd's steamapps/workshop/content/<app>/<item>/ layout. A Garry's Mod
- * addon belongs in garrysmod/addons, which is what flat is for. */
+ * addon belongs in garrysmod/addons, which is what flat is for.
+ *
+ * extensions is a comma-separated list of built-in names, or NULL. Known:
+ * "gmad" unpacks a .gma beside itself, "gmad-zip" converts it to a .zip,
+ * "gmad-zip-stored" does so without deflating, and a trailing "!" on either
+ * gmad name deletes the original once it has been processed. An unknown name
+ * is an error rather than a no-op. */
 int32_t tapline_workshop_download(uint32_t app_id,
                                   uint64_t item_id,
                                   const char *dir,
                                   uint32_t concurrency,
                                   uint8_t flat,
+                                  const char *extensions,
                                   TaplineJob **out);
 
 /* Waits for the next event and writes it to buf as UTF-8 JSON.

@@ -1,0 +1,21 @@
+[package]
+name = "tapline-gmad"
+description = "Read and extract Garry's Mod addon archives (GMAD)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tapline-ext = { workspace = true }
+tapline-fs = { workspace = true }
+crc32fast = { workspace = true }
+miniz_oxide = { workspace = true }
+tapline-ids = { workspace = true }
+
+[dev-dependencies]
+crc32fast = { workspace = true }
+
+[lints]
+workspace = true

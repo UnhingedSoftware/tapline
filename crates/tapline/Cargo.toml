@@ -12,6 +12,7 @@ tapline-auth = { workspace = true }
 tapline-cdn = { workspace = true }
 tapline-crypto = { workspace = true }
 tapline-event = { workspace = true }
+tapline-ext = { workspace = true }
 tapline-fs = { workspace = true }
 tapline-ids = { workspace = true }
 tapline-io = { workspace = true }

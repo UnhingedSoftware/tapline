@@ -1,0 +1,14 @@
+[package]
+name = "tapline-ext"
+description = "The extension seam: what tapline lets you do to a file once it lands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tapline-ids = { workspace = true }
+
+[lints]
+workspace = true

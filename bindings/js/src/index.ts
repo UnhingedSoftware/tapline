@@ -459,6 +459,7 @@ export function downloadWorkshopItem(
         options.dir,
         options.concurrency ?? 0,
         options.layout === "flat" ? 1 : 0,
+        options.extensions?.length ? options.extensions.join(",") : null,
       ),
     (events) => {
       const { kind: _kind, ...report } = lastOfKind(events, "finished");

@@ -48,5 +48,6 @@ pub use workshop::{
 
 pub use tapline_auth::{GuardType, StoredToken, TokenStore};
 pub use tapline_event::{Event, Plan, RetryReason};
+pub use tapline_ext::{Extension, ExtensionError, Landed, Produced};
 pub use tapline_ids::{AppId, DepotId, ManifestId, PublishedFileId};
 pub use tapline_pics::{AppInfo, Branch, Depot, DepotFilter, Os};

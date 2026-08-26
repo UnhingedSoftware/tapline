@@ -54,6 +54,16 @@ pub fn encode(event: &Event) -> String {
             push_str_field(&mut out, "reason", reason_name(reason));
             push_u64(&mut out, "attempt", u64::from(*attempt));
         }
+        Event::Extended {
+            extension,
+            path,
+            produced,
+        } => {
+            push_str_field(&mut out, "kind", "extended");
+            push_str_field(&mut out, "extension", extension);
+            push_str_field(&mut out, "path", path);
+            push_u64(&mut out, "produced", *produced);
+        }
         Event::Verifying { path } => {
             push_str_field(&mut out, "kind", "verifying");
             push_str_field(&mut out, "path", path);
@@ -211,6 +221,11 @@ mod tests {
             },
             Event::Verifying {
                 path: "srcds_run".to_owned(),
+            },
+            Event::Extended {
+                extension: "gmad".to_owned(),
+                path: "addons/x.gma".to_owned(),
+                produced: 348,
             },
             Event::Completed {
                 app: AppId(4020),

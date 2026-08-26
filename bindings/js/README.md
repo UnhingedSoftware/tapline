@@ -105,6 +105,62 @@ From the CLI it is `--flat`:
 tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons --flat
 ```
 
+### Unpacking and converting addons
+
+A `.gma` is a container. `extensions` runs post-processing on each file as it
+lands:
+
+```ts
+await downloadWorkshopItem({
+  app: 4000,
+  item: 104691717n,
+  dir: "/srv/gmod/garrysmod/addons",
+  layout: "flat",
+  extensions: ["gmad", "gmad-zip"],
+});
+// 104691717.gma   the download
+// 104691717/      348 files, unpacked
+// 104691717.zip   the same, as a zip
+```
+
+| name | what it does |
+|---|---|
+| `gmad` | unpacks the `.gma` into a directory beside it |
+| `gmad-zip` | converts it to a `.zip` beside it |
+| `gmad-zip-stored` | the same without deflating — 4× faster, for hosts that compress on the wire |
+| `gmad!` / `gmad-zip!` | as above, then delete the `.gma` |
+
+Measured on PAC3 (348 files, 8.69 MB unpacked):
+
+| | time | throughput |
+|---|---|---|
+| unpack | 19 ms | 429 MB/s |
+| convert to zip, stored | 10 ms | 805 MB/s |
+| convert to zip, deflated | 39 ms | 213 MB/s |
+
+Deflating is the expensive part, so it runs across every core — it was 175 ms
+single-threaded, for byte-identical output. The zip is checked against `unzip -t`
+in the test suite, because an archive only this crate can read is not a zip.
+
+These are **names, not functions**. No callback crosses the FFI boundary, and an
+extension is Rust compiled into the library rather than code you supply — the
+same reason tapline parses `installscript.vdf` and refuses to run it. An unknown
+name is an error, not a silent no-op.
+
+They run on a blocking thread after the file is synced, never on the loop that
+dispatches downloads. `onEvent` reports each one:
+
+```ts
+{ kind: "extended", extension: "gmad", path: "104691717.gma", produced: 348 }
+```
+
+From the CLI:
+
+```sh
+tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons \
+  --flat --extensions gmad,gmad-zip
+```
+
 ## Installing
 
 ```sh

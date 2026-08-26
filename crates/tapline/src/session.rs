@@ -39,6 +39,8 @@ pub struct Session {
     /// The connection pool and chunk budget, shared with any other session
     /// built on the same [`Shared`].
     shared: Arc<crate::Shared>,
+    /// Extensions run against each file as it lands.
+    extensions: Arc<Vec<Arc<dyn tapline_ext::Extension>>>,
     pool: HostPool,
     cell_id: u32,
     /// Depot keys, cached for the life of the session.
@@ -106,6 +108,7 @@ impl Session {
         let mut session = Self {
             cm,
             shared,
+            extensions: Arc::new(Vec::new()),
             pool: HostPool::new(Vec::new()),
             cell_id: outcome.cell_id,
             keys: HashMap::new(),
@@ -346,6 +349,28 @@ impl Session {
         Ok(plan)
     }
 
+    /// Adds an extension, which runs against every file this session writes.
+    ///
+    /// Extensions are code the operator chose and compiled in. Nothing in a
+    /// manifest, a Workshop item or a CDN response can introduce one — the same
+    /// line tapline draws by parsing `installscript.vdf` and refusing to run
+    /// it.
+    ///
+    /// ```ignore
+    /// // tapline-gmad is a separate crate, so this is not compiled here.
+    /// let mut session = Session::anonymous().await?;
+    /// session.register(std::sync::Arc::new(tapline_gmad::Extract::new()));
+    /// ```
+    pub fn register(&mut self, extension: Arc<dyn tapline_ext::Extension>) {
+        Arc::make_mut(&mut self.extensions).push(extension);
+    }
+
+    /// The extensions registered on this session.
+    #[must_use]
+    pub fn extensions(&self) -> &[Arc<dyn tapline_ext::Extension>] {
+        &self.extensions
+    }
+
     /// Installs or updates an app.
     ///
     /// Reads the existing install record first. A depot already at the manifest
@@ -424,8 +449,15 @@ impl Session {
                 manifest: entry.depot.manifest,
                 bytes: entry.manifest.total_size,
             });
-            self.install_depot(entry, options, &mut report, observe, planned.total_bytes)
-                .await?;
+            self.install_depot(
+                entry,
+                options,
+                &mut report,
+                observe,
+                planned.total_bytes,
+                app,
+            )
+            .await?;
             observe(Event::DepotCompleted {
                 depot: entry.depot.id,
             });
@@ -778,7 +810,7 @@ impl Session {
                     manifest: *manifest,
                     bytes: bytes_total,
                 });
-                self.install_depot(&entry, &target, &mut report, observe, bytes_total)
+                self.install_depot(&entry, &target, &mut report, observe, bytes_total, item.app)
                     .await?;
                 observe(Event::DepotCompleted { depot: *depot });
             }
@@ -876,6 +908,7 @@ impl Session {
         report: &mut InstallReport,
         observe: &mut (dyn FnMut(Event) + Send),
         bytes_total: u64,
+        app: AppId,
     ) -> Result<(), InstallError> {
         // Directories first, so a file never races the directory it lives in.
         for file in &entry.manifest.files {
@@ -915,7 +948,7 @@ impl Session {
 
         // Finalisations run here rather than inline, so an fsync never stops the
         // loop from dispatching the next chunk.
-        let mut finalizing: tokio::task::JoinSet<Result<(String, u64), InstallError>> =
+        let mut finalizing: tokio::task::JoinSet<Result<Finished, InstallError>> =
             tokio::task::JoinSet::new();
 
         let mut files_written = 0_u64;
@@ -1070,6 +1103,9 @@ impl Session {
                 target,
                 path: file.path.clone(),
                 size: file.size,
+                root: options.install_dir.clone(),
+                app,
+                extensions: Arc::clone(&self.extensions),
                 mode: options.file_modes.mode_for(file.flags.executable),
                 outstanding,
             };
@@ -1246,6 +1282,12 @@ struct PendingFile {
     path: String,
     /// Its size, so a completion event can report it without a stat.
     size: u64,
+    /// The install root. An extension must not write outside it.
+    root: std::path::PathBuf,
+    /// The app this file belongs to, for the extension's context.
+    app: AppId,
+    /// The extensions to offer this file to.
+    extensions: Arc<Vec<Arc<dyn tapline_ext::Extension>>>,
     /// The mode to apply once it is complete.
     mode: u32,
     /// How many of its chunks have not finished yet.
@@ -1266,27 +1308,83 @@ const MAX_OPEN_FILES: usize = 64;
 /// those seconds was time the dispatch loop spent not starting new fetches,
 /// draining all sixteen slots to idle. Off the critical path it overlaps with
 /// the downloads instead.
-fn finalize_file(file: PendingFile) -> Result<(String, u64), InstallError> {
+fn finalize_file(file: PendingFile) -> Result<Finished, InstallError> {
     file.sink
         .sync_blocking()
         .map_err(|error| InstallError::Io(error.to_string()))?;
     set_permissions(&file.target, file.mode)?;
-    // Explicit, because the descriptor closing here is the point.
+    // Before the extensions, not after: an extension reads the file back from
+    // disk, and until the sync returns there is no guarantee of what is there.
     drop(file.sink);
-    Ok((file.path, file.size))
+
+    let mut extended = Vec::new();
+    if !file.extensions.is_empty() {
+        let landed = tapline_ext::Landed {
+            app: file.app,
+            root: &file.root,
+            path: &file.path,
+            full_path: &file.target,
+            bytes: file.size,
+        };
+        for extension in file.extensions.iter() {
+            if !extension.claims(&landed) {
+                continue;
+            }
+            // An extension that was asked for and could not run has left the
+            // install in a state the caller did not ask for, so this fails the
+            // install rather than leaving a quietly half-processed tree.
+            let produced = extension
+                .run(&landed)
+                .map_err(|error| InstallError::Io(error.to_string()))?;
+            if produced.remove_original {
+                std::fs::remove_file(&file.target)?;
+            }
+            extended.push((extension.name().to_owned(), produced.files.len() as u64));
+        }
+    }
+
+    Ok(Finished {
+        path: file.path,
+        bytes: file.size,
+        extended,
+    })
+}
+
+/// What finalising a file produced.
+struct Finished {
+    /// The file's path, as the manifest spells it.
+    path: String,
+    /// Its size.
+    bytes: u64,
+    /// Extensions that ran, and how many files each produced.
+    extended: Vec<(String, u64)>,
 }
 
 /// Unwraps a finished finalisation and reports the file it completed.
 fn collect_finalize(
-    joined: Result<Result<(String, u64), InstallError>, tokio::task::JoinError>,
+    joined: Result<Result<Finished, InstallError>, tokio::task::JoinError>,
     observe: &mut (dyn FnMut(Event) + Send),
 ) -> Result<(), InstallError> {
-    let (path, bytes) = joined
+    let Finished {
+        path,
+        bytes,
+        extended,
+    } = joined
         .map_err(|error| InstallError::Io(format!("a file could not be finalised: {error}")))??;
     // Emitted here rather than when the last chunk lands: until the sync
     // returns, the file is not on disk, and a consumer acting on this event
     // (hashing it, launching it) would be acting on a file that is not there.
-    observe(Event::FileCompleted { path, bytes });
+    observe(Event::FileCompleted {
+        path: path.clone(),
+        bytes,
+    });
+    for (extension, produced) in extended {
+        observe(Event::Extended {
+            extension,
+            path: path.clone(),
+            produced,
+        });
+    }
     Ok(())
 }
 
@@ -1295,7 +1393,7 @@ fn apply_outcome(
     report: &mut InstallReport,
     pool: &mut HostPool,
     pending: &mut std::collections::BTreeMap<usize, PendingFile>,
-    finalizing: &mut tokio::task::JoinSet<Result<(String, u64), InstallError>>,
+    finalizing: &mut tokio::task::JoinSet<Result<Finished, InstallError>>,
 ) -> Result<(), InstallError> {
     let (index, outcome) =
         joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))?;

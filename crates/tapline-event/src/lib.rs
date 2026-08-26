@@ -133,6 +133,15 @@ pub enum Event {
         /// Which attempt this was.
         attempt: u32,
     },
+    /// An extension acted on a file it claimed.
+    Extended {
+        /// Which extension.
+        extension: String,
+        /// The file it was given, relative to the install root.
+        path: String,
+        /// How many files it produced.
+        produced: u64,
+    },
     /// An existing file is being checked during `validate`.
     Verifying {
         /// Path relative to the install root.

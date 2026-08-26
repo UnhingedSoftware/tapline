@@ -168,6 +168,42 @@ pub extern "C" fn tapline_available_concurrency() -> u32 {
     shared().map_or(0, |shared| shared.available() as u32)
 }
 
+/// Builds the extensions named in a comma-separated list.
+///
+/// Names, not function pointers. The C ABI deliberately carries no callbacks —
+/// see the module docs — and an extension is code compiled into this library
+/// rather than supplied by the caller, so selecting one by name is the whole
+/// interface. An unknown name is an error: silently running nothing is how a
+/// caller ends up with a directory of `.gma` files it thought were unpacked.
+fn build_extensions(
+    names: Option<&str>,
+) -> Result<Vec<std::sync::Arc<dyn tapline::Extension>>, String> {
+    let Some(names) = names else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<std::sync::Arc<dyn tapline::Extension>> = Vec::new();
+    for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        match name {
+            "gmad" => out.push(std::sync::Arc::new(tapline_gmad::Extract::new())),
+            "gmad!" => out.push(std::sync::Arc::new(
+                tapline_gmad::Extract::new().removing_original(),
+            )),
+            "gmad-zip" => out.push(std::sync::Arc::new(tapline_gmad::ToZip::new())),
+            "gmad-zip!" => out.push(std::sync::Arc::new(
+                tapline_gmad::ToZip::new().removing_original(),
+            )),
+            "gmad-zip-stored" => out.push(std::sync::Arc::new(tapline_gmad::ToZip::new().stored())),
+            other => {
+                return Err(format!(
+                    "unknown extension {other:?}; known: gmad, gmad!, gmad-zip, gmad-zip!, \
+                     gmad-zip-stored (a trailing ! deletes the original)"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Reads a C string, or `None` if it is null or not UTF-8.
 ///
 /// # Safety
@@ -377,16 +413,21 @@ pub unsafe extern "C" fn tapline_plan(
 /// `flat` non-zero writes the item's files straight into `dir`; zero uses
 /// steamcmd's `steamapps/workshop/content/<app>/<item>/` layout.
 ///
+/// `extensions` is a comma-separated list of built-in extension names, or null
+/// for none. See [`build_extensions`] for what is known.
+///
 /// # Safety
 ///
 /// Same as [`tapline_install`].
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn tapline_workshop_download(
     app_id: u32,
     item_id: u64,
     dir: *const c_char,
     concurrency: u32,
     flat: u8,
+    extensions: *const c_char,
     out: *mut *mut TaplineJob,
 ) -> i32 {
     let Some(dir) = (unsafe { read_str(dir) }) else {
@@ -406,6 +447,16 @@ pub unsafe extern "C" fn tapline_workshop_download(
     } else {
         WorkshopLayout::Flat
     };
+
+    // Resolved before the job starts, so a typo is reported now rather than
+    // after a download has already run.
+    let extensions = match build_extensions(unsafe { read_str(extensions) }) {
+        Ok(extensions) => extensions,
+        Err(message) => {
+            set_error(message);
+            return TAPLINE_BAD_ARGUMENT;
+        }
+    };
     let _ = app_id;
 
     let shared_handle = shared().cloned();
@@ -418,6 +469,9 @@ pub unsafe extern "C" fn tapline_workshop_download(
             match Session::anonymous_shared(shared_handle).await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => {
+                    for extension in extensions {
+                        session.register(extension);
+                    }
                     let item = PublishedFileId(item_id);
                     let described = match session.workshop_details(&[item]).await {
                         Ok(described) => described,

@@ -98,6 +98,8 @@ pub enum Command {
         /// Write the item's files straight into `--dir`, with no
         /// `steamapps/workshop/content/...` path built underneath it.
         flat: bool,
+        /// Extensions to run on each file, by name.
+        extensions: Vec<String>,
         /// The app.
         app: AppId,
         /// The item.
@@ -370,6 +372,16 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 .ok_or_else(|| ArgError::new("an item id is required"))?;
             Ok(Command::WorkshopDownload {
                 flat: options.flag("flat"),
+                extensions: options
+                    .value("extensions")
+                    .map(|list| {
+                        list.split(',')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 app: app_id(positional.get(2))?,
                 item: PublishedFileId(
                     item.parse()

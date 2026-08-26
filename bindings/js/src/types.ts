@@ -57,6 +57,17 @@ export interface VerifyingEvent {
   path: string;
 }
 
+/** An extension acted on a file it claimed. */
+export interface ExtendedEvent {
+  kind: "extended";
+  /** Which extension ran. */
+  extension: string;
+  /** The file it was given. */
+  path: string;
+  /** How many files it produced. */
+  produced: number;
+}
+
 export interface CompletedEvent {
   kind: "completed";
   app: number;
@@ -99,6 +110,7 @@ export type TaplineEvent =
   | RetryingEvent
   | VerifyingEvent
   | CompletedEvent
+  | ExtendedEvent
   | FinishedEvent
   | ErrorEvent
   | UnknownEvent;
@@ -171,6 +183,20 @@ export interface WorkshopOptions {
    * directories below where the server looks for it.
    */
   layout?: "steamcmd" | "flat";
+  /**
+   * Post-processing to run on each file as it lands.
+   *
+   * - `"gmad"` unpacks a `.gma` into a directory beside it.
+   * - `"gmad-zip"` converts it to a `.zip` beside it.
+   * - `"gmad-zip-stored"` does so without deflating — faster, and the right
+   *   choice when the result goes to a host that compresses on the wire.
+   * - a trailing `!` on either gmad name deletes the `.gma` afterwards.
+   *
+   * These are names, not functions. No callback crosses the FFI boundary; an
+   * extension is Rust compiled into the library, and an unknown name is an
+   * error rather than a silent no-op.
+   */
+  extensions?: string[];
   onEvent?: (event: TaplineEvent) => void;
   onProgress?: (progress: {
     bytesDone: number;

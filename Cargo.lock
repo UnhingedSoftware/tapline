@@ -1245,6 +1245,7 @@ dependencies = [
  "tapline-chunk",
  "tapline-crypto",
  "tapline-event",
+ "tapline-ext",
  "tapline-fs",
  "tapline-ids",
  "tapline-io",
@@ -1305,6 +1306,7 @@ dependencies = [
  "serde_json",
  "tapline",
  "tapline-auth",
+ "tapline-gmad",
  "tapline-ids",
  "tokio",
 ]
@@ -1331,10 +1333,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-ext"
+version = "0.1.0"
+dependencies = [
+ "tapline-ids",
+]
+
+[[package]]
 name = "tapline-ffi"
 version = "0.1.0"
 dependencies = [
  "tapline",
+ "tapline-gmad",
  "tapline-ids",
  "tokio",
 ]
@@ -1345,6 +1355,17 @@ version = "0.1.0"
 dependencies = [
  "tapline-io",
  "tapline-manifest",
+]
+
+[[package]]
+name = "tapline-gmad"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+ "tapline-ext",
+ "tapline-fs",
+ "tapline-ids",
 ]
 
 [[package]]
