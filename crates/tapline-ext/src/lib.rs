@@ -145,6 +145,11 @@ pub struct ArchiveEntry {
     pub path: String,
     /// The entry's size in bytes.
     pub size: u64,
+    /// Where the entry's bytes start in the archive.
+    ///
+    /// What makes a selective read possible: knowing this and the size, a
+    /// caller can fetch one entry without fetching the ones around it.
+    pub offset: u64,
 }
 
 /// What a decoder reports to as it reads an archive.

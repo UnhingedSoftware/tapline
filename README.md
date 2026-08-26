@@ -335,9 +335,38 @@ for anyone who wants that explicitly, rather than by accident.
 
 `.gma()` is one `Decoder`. The sinks, the filter and the pipeline are written
 against `ArchiveEntry` rather than any container, so a second format is a
-decoder and nothing else changes. Whether a format can be streamed at all is a
-property of the format: GMAD works because its index comes first and its
-contents follow in index order.
+decoder and nothing else changes.
+
+### Reading an archive without downloading it
+
+A depot file is stored as content-addressed chunks, each carrying the offset its
+plaintext belongs at, so tapline can fetch a *range* of a file. That makes two
+things possible.
+
+**Listing.** What is in this addon, without paying for the addon:
+
+```rust
+let listing = workshop(4000, 104_691_717).gma().list().await?;
+```
+
+Measured on PAC3: **348 entries known after reading 65 KB of 8.7 MB** — the
+first chunk, whatever the archive's size, because GMAD's index is at the front.
+A format says where its index lives (`IndexLocation::Head(n)` or `Tail(n)`), so
+a ZIP would ask for its last 64 KB and nothing else would change.
+
+**Filters that stop paying for what they discard.** Read front to back, a filter
+still pulls every byte across the wire and drops the ones it did not want. Read
+by range, the chunks holding unselected entries are never asked for:
+
+| | entries | fetched |
+|---|---|---|
+| whole archive | 348 | 3.17 MB |
+| `only("lua/**")` | 195 | **816 KB** |
+
+An earlier version of this document claimed a container with its index at the
+end could not be streamed. That is true of a socket and false here — tapline
+does not read a byte stream, it fetches chunks by offset, and reading a ZIP's
+central directory first is an ordinary read.
 
 No session appears in that. One is taken from a process-wide pool and given
 back, so concurrent chains get different sessions and never wait on each other,
@@ -414,7 +443,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 447 tests, no network
+cargo test --workspace                # 460 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

@@ -513,6 +513,44 @@ impl StreamWriter {
     }
 }
 
+/// How much of an archive must be read before its index is known, and where.
+///
+/// A format answers this so a caller can fetch that much and no more. GMAD's
+/// index is at the front; a ZIP's central directory is at the back, and the
+/// same mechanism serves both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexLocation {
+    /// The first `n` bytes are enough to find it.
+    Head(u64),
+    /// The last `n` bytes are.
+    Tail(u64),
+}
+
+/// Where a GMAD's index lives.
+///
+/// 64 KiB covers a real addon comfortably — PAC3's header and index for 348
+/// files is under 20 KiB — and costs at most one chunk to read.
+#[must_use]
+pub const fn index_location() -> IndexLocation {
+    IndexLocation::Head(64 * 1024)
+}
+
+/// Reads an index out of the bytes [`index_location`] asked for.
+///
+/// Returns the entries in the format-neutral vocabulary, with the offsets a
+/// selective read needs.
+pub fn plan(head: &[u8]) -> Result<Vec<tapline_ext::ArchiveEntry>, ExtensionError> {
+    Ok(parse_index(head)?
+        .entries
+        .into_iter()
+        .map(|entry| tapline_ext::ArchiveEntry {
+            path: entry.path,
+            size: entry.size,
+            offset: entry.offset as u64,
+        })
+        .collect())
+}
+
 /// Case-insensitive extension check.
 fn has_extension(path: &str, extension: &str) -> bool {
     Path::new(path)

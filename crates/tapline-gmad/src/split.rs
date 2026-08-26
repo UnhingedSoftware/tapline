@@ -81,6 +81,7 @@ impl<S: EntrySink> Splitter<S> {
                         .map(|entry| ArchiveEntry {
                             path: entry.path.clone(),
                             size: entry.size,
+                            offset: entry.offset as u64,
                         })
                         .collect();
                     self.sink.index(&self.entries)?;

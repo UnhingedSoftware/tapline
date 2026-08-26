@@ -100,7 +100,10 @@ async fn a_filter_selects_a_subset() {
         .await
         .expect("run");
 
-    println!("{} of 348 entries matched lua/**", outcome.entries);
+    println!(
+        "{} of 348 entries matched lua/**: {} bytes fetched, {} written",
+        outcome.entries, outcome.bytes_downloaded, outcome.bytes_streamed
+    );
     assert!(outcome.entries > 0, "the filter matched nothing");
     assert!(
         outcome.entries < 348,
@@ -113,9 +116,17 @@ async fn a_filter_selects_a_subset() {
         "materials/ was written despite the filter"
     );
 
-    // The whole item is still downloaded: a filter selects what is written, not
-    // what is fetched, because the archive is a single stream.
-    assert!(outcome.bytes_streamed > 8_000_000, "the stream was short");
+    // The point of reading by range: a filter now stops paying for what it
+    // discards. The whole archive is 3.17 MB compressed; lua/** is a fraction.
+    assert!(
+        outcome.bytes_downloaded < 2_000_000,
+        "a filtered run fetched {} bytes, which is most of the archive",
+        outcome.bytes_downloaded
+    );
+    assert!(
+        outcome.bytes_streamed < 8_000_000,
+        "the filter wrote everything"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -168,4 +179,72 @@ where
         out.push(handle.await.expect("a chain task panicked"));
     }
     out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn an_archive_can_be_listed_without_downloading_it() {
+    // The question this answers: what is in this addon? Without paying for the
+    // addon to find out.
+    let listing = tapline_pipe::workshop(APP, ITEM)
+        .gma()
+        .list()
+        .await
+        .expect("list");
+
+    println!(
+        "{} entries known after reading {} of {} bytes",
+        listing.entries.len(),
+        listing.read_bytes,
+        listing.archive_bytes
+    );
+    assert_eq!(listing.entries.len(), 348);
+    assert!(
+        listing.read_bytes < listing.archive_bytes / 10,
+        "listing read {} of {} bytes, which is not much of a saving",
+        listing.read_bytes,
+        listing.archive_bytes
+    );
+
+    // Entries carry what a selective read needs.
+    let first = listing.entries.first().expect("an entry");
+    assert!(!first.path.is_empty());
+    assert!(first.size > 0);
+
+    // With no filter, everything is selected and costs the whole archive.
+    assert_eq!(listing.selected.len(), listing.entries.len());
+    assert_eq!(listing.selected_bytes, listing.total_bytes);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn a_listing_prices_a_filter_before_running_it() {
+    let listing = tapline_pipe::workshop(APP, ITEM)
+        .gma()
+        .only("lua/**")
+        .list()
+        .await
+        .expect("list");
+
+    println!(
+        "{} of {} entries selected: {} bytes to fetch against {}",
+        listing.selected.len(),
+        listing.entries.len(),
+        listing.selected_bytes,
+        listing.total_bytes
+    );
+
+    assert!(listing.selected.len() < listing.entries.len(), "no filtering");
+    assert!(
+        listing.selected_bytes < listing.total_bytes,
+        "the filter does not reduce what would be fetched"
+    );
+    // Every selected entry actually matches.
+    for entry in &listing.selected {
+        assert!(
+            entry.path.starts_with("lua/"),
+            "{} was selected by lua/**",
+            entry.path
+        );
+    }
 }
