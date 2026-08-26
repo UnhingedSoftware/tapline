@@ -236,15 +236,7 @@ impl Decoded {
         let head = file.read(0, head_len.min(file.len())).await?;
         let entries = tapline_gmad::plan(&head)?;
 
-        let mut patterns = tapline_gmad::Patterns::all();
-        for filter in &self.pipeline.filters {
-            patterns = patterns.with(filter.clone());
-        }
-        let selected: Vec<_> = entries
-            .iter()
-            .filter(|entry| patterns.selects(&entry.path))
-            .cloned()
-            .collect();
+        let selected = select(&entries, &self.pipeline)?;
 
         let ranges: Vec<(u64, u64)> = selected
             .iter()
@@ -262,9 +254,43 @@ impl Decoded {
     }
 
     /// Keeps only entries matching a glob. Repeatable; any match selects.
+    ///
+    /// A pattern matching nothing is not an error: asking what is there and
+    /// finding nothing is a legitimate answer. Use [`Decoded::pick`] when you
+    /// know the name.
     #[must_use]
     pub fn only(mut self, pattern: impl Into<String>) -> Self {
         self.pipeline.filters.push(pattern.into());
+        self
+    }
+
+    /// Takes one named file, exactly.
+    ///
+    /// No pattern matching, so a file called `weapons/ak[47].lua` is asked for
+    /// by that name rather than by something that happens to match it. Matching
+    /// ignores case, because Workshop authors name files by hand.
+    ///
+    /// Unlike [`Decoded::only`], a name that is not in the archive is an
+    /// **error**. A caller who named a file was making a claim about what is
+    /// in there, and quietly producing an empty result would look like success.
+    ///
+    /// The natural companion to [`Decoded::list`]: list, choose, pick.
+    #[must_use]
+    pub fn pick(mut self, path: impl Into<String>) -> Self {
+        self.pipeline.picks.push(path.into());
+        self
+    }
+
+    /// Takes several named files.
+    #[must_use]
+    pub fn pick_all<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<String>,
+    {
+        self.pipeline
+            .picks
+            .extend(paths.into_iter().map(Into::into));
         self
     }
 
@@ -414,15 +440,7 @@ async fn run_selective(
     let head = file.read(0, head_len.min(file.len())).await?;
     let entries = tapline_gmad::plan(&head)?;
 
-    let mut patterns = tapline_gmad::Patterns::all();
-    for filter in &pipeline.filters {
-        patterns = patterns.with(filter.clone());
-    }
-    let selected: Vec<_> = entries
-        .iter()
-        .filter(|entry| patterns.selects(&entry.path))
-        .cloned()
-        .collect();
+    let selected = select(&entries, pipeline)?;
 
     observe(tapline::Event::Planned {
         plan: tapline::Plan {
@@ -478,6 +496,49 @@ async fn run_selective(
 /// Runs a pipeline value, however it was built.
 ///
 /// The chain, the text form and any future HTTP request all end up here.
+/// Which entries a pipeline takes, and why.
+///
+/// Globs and picks are a union: anything matching either is taken. A pick that
+/// matches nothing fails here rather than at the end, so the caller is told
+/// what is wrong before any content is fetched.
+fn select(
+    entries: &[tapline_ext::ArchiveEntry],
+    pipeline: &Pipeline,
+) -> Result<Vec<tapline_ext::ArchiveEntry>, SpecError> {
+    let mut patterns = tapline_gmad::Patterns::all();
+    for filter in &pipeline.filters {
+        patterns = patterns.with(filter.clone());
+    }
+
+    for pick in &pipeline.picks {
+        if !entries
+            .iter()
+            .any(|entry| entry.path.eq_ignore_ascii_case(pick))
+        {
+            return Err(SpecError::NoSuchEntry {
+                path: pick.clone(),
+                available: entries.len(),
+            });
+        }
+    }
+
+    // With picks and no globs, only the picks. With globs and no picks, only
+    // the matches. With both, either.
+    let take_all_patterns = pipeline.filters.is_empty() && !pipeline.picks.is_empty();
+    Ok(entries
+        .iter()
+        .filter(|entry| {
+            let picked = pipeline
+                .picks
+                .iter()
+                .any(|pick| entry.path.eq_ignore_ascii_case(pick));
+            let matched = !take_all_patterns && patterns.selects(&entry.path);
+            picked || matched
+        })
+        .cloned()
+        .collect())
+}
+
 /// Resolves a Workshop item to the details every path here needs.
 async fn resolve(
     session: &mut Session,
@@ -514,7 +575,7 @@ pub async fn run_pipeline(
 
     // With a filter, fetch only what it selects. Without one there is nothing
     // to skip, and a front-to-back stream is simpler and costs the same.
-    if !pipeline.filters.is_empty() {
+    if pipeline.is_selective() {
         return run_selective(session, &details, pipeline, observe).await;
     }
 
@@ -606,11 +667,111 @@ mod tests {
         assert_eq!(ready.source.window.size, 4);
     }
 
+    fn entry(path: &str, offset: u64, size: u64) -> tapline_ext::ArchiveEntry {
+        tapline_ext::ArchiveEntry {
+            path: path.to_owned(),
+            size,
+            offset,
+        }
+    }
+
+    fn archive() -> Vec<tapline_ext::ArchiveEntry> {
+        vec![
+            entry("lua/a.lua", 0, 10),
+            entry("lua/deep/b.lua", 10, 20),
+            entry("materials/c.vmt", 30, 30),
+            entry("weapons/ak[47].lua", 60, 40),
+        ]
+    }
+
+    #[test]
+    fn no_selection_takes_everything() {
+        let pipeline = Pipeline::gma();
+        let selected = select(&archive(), &pipeline).expect("select");
+        assert_eq!(selected.len(), 4);
+    }
+
+    #[test]
+    fn a_pick_takes_exactly_that_file() {
+        let mut pipeline = Pipeline::gma();
+        pipeline.picks.push("materials/c.vmt".to_owned());
+        let selected = select(&archive(), &pipeline).expect("select");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected.first().map(|e| e.path.as_str()),
+            Some("materials/c.vmt")
+        );
+    }
+
+    #[test]
+    fn a_pick_is_not_a_pattern() {
+        // The reason picks exist. As a glob, the brackets would be a character
+        // class and this file would be unreachable by its own name.
+        let mut pipeline = Pipeline::gma();
+        pipeline.picks.push("weapons/ak[47].lua".to_owned());
+        let selected = select(&archive(), &pipeline).expect("select");
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn a_pick_that_is_not_there_is_an_error() {
+        // Unlike a pattern. Naming a file is a claim about the archive, and a
+        // silently empty result would look like success.
+        let mut pipeline = Pipeline::gma();
+        pipeline.picks.push("lua/nope.lua".to_owned());
+        let error = select(&archive(), &pipeline).expect_err("must refuse");
+        let text = error.to_string();
+        assert!(text.contains("lua/nope.lua"), "{text}");
+        assert!(text.contains("4 entries"), "{text}");
+    }
+
+    #[test]
+    fn a_pattern_matching_nothing_is_not_an_error() {
+        let mut pipeline = Pipeline::gma();
+        pipeline.filters.push("nothing/**".to_owned());
+        let selected = select(&archive(), &pipeline).expect("select");
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn picks_and_patterns_are_a_union() {
+        let mut pipeline = Pipeline::gma();
+        pipeline.filters.push("materials/**".to_owned());
+        pipeline.picks.push("lua/a.lua".to_owned());
+        let selected = select(&archive(), &pipeline).expect("select");
+        let paths: Vec<_> = selected.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["lua/a.lua", "materials/c.vmt"]);
+    }
+
+    #[test]
+    fn a_pick_ignores_case() {
+        // Workshop authors name files by hand, and the glob matcher already
+        // does the same.
+        let mut pipeline = Pipeline::gma();
+        pipeline.picks.push("LUA/A.LUA".to_owned());
+        let selected = select(&archive(), &pipeline).expect("select");
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn picks_alone_do_not_pull_in_everything() {
+        // With no globs the pattern set is empty, and an empty pattern set
+        // matches everything — so a pick would have selected the whole archive
+        // if the two were simply or-ed.
+        let mut pipeline = Pipeline::gma();
+        pipeline.picks.push("lua/a.lua".to_owned());
+        assert_eq!(select(&archive(), &pipeline).expect("select").len(), 1);
+    }
+
     #[test]
     fn the_chain_round_trips_through_its_text_form() {
         // The property the C ABI depends on: what the chain built and what the
         // bindings send must be the same pipeline.
-        let ready = workshop(4000, 1).gma().only("lua/**").zip("/srv/out.zip");
+        let ready = workshop(4000, 1)
+            .gma()
+            .only("lua/**")
+            .pick("lua/exact.lua")
+            .zip("/srv/out.zip");
         let text = ready.pipeline().to_text();
         let parsed = Pipeline::parse(&text).expect("must parse");
         assert_eq!(&parsed, ready.pipeline());

@@ -234,7 +234,10 @@ async fn a_listing_prices_a_filter_before_running_it() {
         listing.total_bytes
     );
 
-    assert!(listing.selected.len() < listing.entries.len(), "no filtering");
+    assert!(
+        listing.selected.len() < listing.entries.len(),
+        "no filtering"
+    );
     assert!(
         listing.selected_bytes < listing.total_bytes,
         "the filter does not reduce what would be fetched"
@@ -247,4 +250,92 @@ async fn a_listing_prices_a_filter_before_running_it() {
             entry.path
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn named_files_can_be_taken_out_of_an_archive() {
+    // List, choose, fetch just those. The workflow the listing exists for.
+    let listing = tapline_pipe::workshop(APP, ITEM)
+        .gma()
+        .list()
+        .await
+        .expect("list");
+
+    // Three real entries, chosen from what the archive actually holds.
+    let wanted: Vec<String> = listing
+        .entries
+        .iter()
+        .filter(|entry| entry.path.ends_with(".lua"))
+        .take(3)
+        .map(|entry| entry.path.clone())
+        .collect();
+    assert_eq!(wanted.len(), 3, "the archive should hold lua files");
+
+    let root = scratch("pick");
+    let _scratch = Scratch(root.clone());
+    std::fs::create_dir_all(&root).expect("mkdir");
+
+    let outcome = tapline_pipe::workshop(APP, ITEM)
+        .gma()
+        .pick_all(wanted.clone())
+        .dir(root.to_string_lossy())
+        .run()
+        .await
+        .expect("run");
+
+    println!(
+        "took {} named files, fetching {} bytes of a {} byte archive",
+        outcome.entries, outcome.bytes_downloaded, listing.total_bytes
+    );
+
+    assert_eq!(outcome.entries, 3, "wrong number of files taken");
+    assert!(
+        outcome.bytes_downloaded < listing.total_bytes / 2,
+        "taking three files fetched {} of {} bytes",
+        outcome.bytes_downloaded,
+        listing.total_bytes
+    );
+
+    // Exactly those three, and nothing else.
+    let mut written = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .expect("read")
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(relative) = path.strip_prefix(&root) {
+                written.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    written.sort();
+    let mut expected = wanted;
+    expected.sort();
+    assert_eq!(written, expected, "the wrong files were written");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn naming_a_file_that_is_not_there_is_refused() {
+    let root = scratch("nopick");
+    let _scratch = Scratch(root.clone());
+    std::fs::create_dir_all(&root).expect("mkdir");
+
+    let error = tapline_pipe::workshop(APP, ITEM)
+        .gma()
+        .pick("lua/definitely/not/here.lua")
+        .dir(root.to_string_lossy())
+        .run()
+        .await
+        .expect_err("must refuse");
+
+    let text = error.to_string();
+    println!("{text}");
+    assert!(text.contains("no entry"), "{text}");
+    assert!(text.contains("348 entries"), "{text}");
 }

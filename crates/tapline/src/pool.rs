@@ -62,6 +62,17 @@ const MAX_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
 struct Idle {
     session: Session,
     since: std::time::Instant,
+    /// Which runtime built it.
+    ///
+    /// A session owns sockets and timers belonging to the runtime it was
+    /// created on. Handing it to a caller on a different one produces "A Tokio
+    /// 1.x context was found, but it is being shutdown" at the first fetch —
+    /// which says nothing about the actual mistake.
+    ///
+    /// One process usually has one runtime and this never matters. A test
+    /// binary has one per test, and the pool is process-wide, so it matters
+    /// immediately: that is how this was found.
+    runtime: tokio::runtime::Id,
 }
 
 /// Hands out sessions and takes them back.
@@ -149,20 +160,30 @@ impl SessionPool {
         })
     }
 
-    /// Pops a session that has not been idle too long.
+    /// Pops a session usable from the current runtime and not idle too long.
     fn take_fresh(&self) -> Option<Session> {
+        let here = tokio::runtime::Handle::try_current().ok()?.id();
         let mut idle = self.idle.lock().ok()?;
-        while let Some(entry) = idle.pop() {
-            if entry.since.elapsed() < MAX_IDLE {
-                return Some(entry.session);
-            }
-            // Too old to trust. Dropped, and the next one tried.
-        }
-        None
+
+        // Searched rather than popped: the newest session may belong to another
+        // runtime while an older one here is fine.
+        let found = idle
+            .iter()
+            .rposition(|entry| entry.runtime == here && entry.since.elapsed() < MAX_IDLE)?;
+        let entry = idle.remove(found);
+
+        // Anything left from a runtime that no longer exists is dead weight.
+        idle.retain(|entry| entry.since.elapsed() < MAX_IDLE);
+        Some(entry.session)
     }
 
     /// Takes a session back.
     fn give_back(&self, session: Session) {
+        // Without a runtime there is nothing to record it against, and a
+        // session that cannot be attributed cannot be safely reused.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let Ok(mut idle) = self.idle.lock() else {
             return;
         };
@@ -172,6 +193,7 @@ impl SessionPool {
         idle.push(Idle {
             session,
             since: std::time::Instant::now(),
+            runtime: handle.id(),
         });
     }
 
@@ -205,9 +227,19 @@ impl SessionPool {
             Err(_) => return,
         };
 
+        let here = tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|handle| handle.id());
         let mut keep = Vec::with_capacity(taken.len());
         for mut entry in taken {
             if entry.since.elapsed() >= MAX_IDLE {
+                continue;
+            }
+            // Only the ones this runtime can touch. Heartbeating a session
+            // belonging to a shut-down runtime is the very error this is meant
+            // to avoid.
+            if here != Some(entry.runtime) {
+                keep.push(entry);
                 continue;
             }
             if entry.session.keep_alive().await.is_ok() {

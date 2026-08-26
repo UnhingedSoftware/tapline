@@ -44,6 +44,13 @@ pub enum SpecError {
     UnknownFormat(String),
     /// There was nothing to write to.
     NoSinks,
+    /// A named file is not in the archive.
+    NoSuchEntry {
+        /// What was asked for.
+        path: String,
+        /// How many entries the archive does have, for context.
+        available: usize,
+    },
 }
 
 impl std::fmt::Display for SpecError {
@@ -51,7 +58,8 @@ impl std::fmt::Display for SpecError {
         match self {
             Self::UnknownDirective { directive, line } => write!(
                 f,
-                "line {line}: unknown directive {directive:?}; known: decode, only, dir, zip, zip-stored"
+                "line {line}: unknown directive {directive:?}; \
+                 known: decode, only, pick, dir, zip, zip-stored"
             ),
             Self::MissingValue { directive, line } => {
                 write!(f, "line {line}: {directive} needs a value")
@@ -60,6 +68,11 @@ impl std::fmt::Display for SpecError {
                 write!(f, "unknown format {format:?}; known: gma")
             }
             Self::NoSinks => write!(f, "the pipeline has no destination; add a dir or a zip"),
+            Self::NoSuchEntry { path, available } => write!(
+                f,
+                "the archive has no entry {path:?}; it has {available} entries — \
+                 list it first, or use `only` for a pattern that may match nothing"
+            ),
         }
     }
 }
@@ -102,6 +115,14 @@ pub struct Pipeline {
     pub format: String,
     /// Globs selecting entries. Empty selects everything.
     pub filters: Vec<String>,
+    /// Exact paths to take, whatever the globs say.
+    ///
+    /// Separate from [`Pipeline::filters`] because the two mean different
+    /// things. A pattern that matches nothing is a legitimate answer — you
+    /// asked what was there and nothing was. A named file that is not in the
+    /// archive means the caller is wrong about the archive, and running anyway
+    /// would produce an empty result that looks like success.
+    pub picks: Vec<String>,
     /// Where to write. Exactly one.
     ///
     /// One destination, not a list. A stream has a direction: writing it to two
@@ -119,8 +140,15 @@ impl Pipeline {
         Self {
             format: "gma".to_owned(),
             filters: Vec::new(),
+            picks: Vec::new(),
             sink: None,
         }
+    }
+
+    /// Whether anything narrows what is taken.
+    #[must_use]
+    pub fn is_selective(&self) -> bool {
+        !self.filters.is_empty() || !self.picks.is_empty()
     }
 
     /// Checks the pipeline can run.
@@ -140,6 +168,9 @@ impl Pipeline {
         let mut out = format!("decode {}\n", self.format);
         for filter in &self.filters {
             out.push_str(&format!("only {filter}\n"));
+        }
+        for pick in &self.picks {
+            out.push_str(&format!("pick {pick}\n"));
         }
         for sink in self.sink.iter() {
             match sink {
@@ -162,6 +193,7 @@ impl Pipeline {
         let mut pipeline = Self {
             format: "gma".to_owned(),
             filters: Vec::new(),
+            picks: Vec::new(),
             sink: None,
         };
 
@@ -190,6 +222,7 @@ impl Pipeline {
             match directive {
                 "decode" => pipeline.format = need(value)?,
                 "only" => pipeline.filters.push(need(value)?),
+                "pick" => pipeline.picks.push(need(value)?),
                 // Last one wins rather than accumulating: the pipeline has one
                 // destination, and silently writing to two because a line was
                 // repeated is not something a caller asked for.
@@ -228,6 +261,7 @@ mod tests {
         let original = Pipeline {
             format: "gma".to_owned(),
             filters: vec!["lua/**".to_owned(), "*.txt".to_owned()],
+            picks: vec!["lua/autorun/init.lua".to_owned()],
             sink: Some(Sink::Zip {
                 path: "/srv/out.zip".to_owned(),
                 compress: true,

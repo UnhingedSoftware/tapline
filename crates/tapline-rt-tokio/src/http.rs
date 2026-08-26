@@ -28,6 +28,16 @@ use tokio::sync::Mutex;
 
 /// A pooled connection.
 struct Connection {
+    /// Which runtime opened it.
+    ///
+    /// A socket belongs to the runtime that created it. Reusing one from
+    /// another produces "A Tokio 1.x context was found, but it is being
+    /// shutdown" at the next read, which names the symptom and not the cause.
+    ///
+    /// One process usually has one runtime and this never matters. A test
+    /// binary has one per test while this pool is process-wide, so it matters
+    /// at once — which is how it was found.
+    runtime: tokio::runtime::Id,
     stream: crate::tls::TlsStream,
     /// Bytes read past the end of the last response, if any.
     ///
@@ -77,14 +87,25 @@ impl HttpClient {
 
     /// Takes a pooled connection to `host`, or opens one.
     async fn acquire(&self, host: &str, port: u16) -> Result<Connection, FetchError> {
-        if let Some(connection) = self.pools.lock().await.get_mut(host).and_then(Vec::pop) {
-            return Ok(connection);
+        let here = tokio::runtime::Handle::try_current()
+            .map_err(|error| FetchError::Transport(error.to_string()))?
+            .id();
+
+        if let Some(pool) = self.pools.lock().await.get_mut(host) {
+            // Only one this runtime can use. Anything else is dropped rather
+            // than kept: a socket from a runtime that has gone is never coming
+            // back to life.
+            pool.retain(|connection| connection.runtime == here);
+            if let Some(connection) = pool.pop() {
+                return Ok(connection);
+            }
         }
 
         let stream = connect_tls(host, port)
             .await
             .map_err(|e| FetchError::Transport(e.to_string()))?;
         Ok(Connection {
+            runtime: here,
             stream,
             leftover: Vec::new(),
         })

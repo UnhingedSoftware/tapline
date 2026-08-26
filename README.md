@@ -362,6 +362,14 @@ by range, the chunks holding unselected entries are never asked for:
 |---|---|---|
 | whole archive | 348 | 3.17 MB |
 | `only("lua/**")` | 195 | **816 KB** |
+| `pick_all([three files])` | 3 | **204 KB** |
+
+`only(..)` takes a glob; `pick(..)` takes an exact name, so a file called
+`weapons/ak[47].lua` can be asked for by its own name rather than by something
+that happens to match it. They differ in one more way: a pattern matching
+nothing is a legitimate answer, while a **named** file that is not in the
+archive is an error — naming it was a claim about the archive, and an empty
+result would look like success.
 
 An earlier version of this document claimed a container with its index at the
 end could not be streamed. That is true of a socket and false here — tapline
@@ -443,7 +451,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 460 tests, no network
+cargo test --workspace                # 468 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 
