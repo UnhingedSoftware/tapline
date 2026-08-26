@@ -98,6 +98,33 @@ unused, and the sentence explaining that it could not go faster was reasoning
 from two coincidentally similar numbers. The default is 64, where the curve
 turns over.
 
+## Several downloads at once
+
+A process that installs more than one app shares one budget of chunks in flight
+and one connection pool, through `Shared`. It is the default; concurrent
+`install()` calls need nothing.
+
+The reason is the curve above. Throughput turns over past 64, so N downloads
+each taking a full 64 is slower than N splitting one 64. Three concurrent
+Valheim installs, 4.40 GB total:
+
+| total budget | wall clock | throughput | spread between finishes |
+|---|---|---|---|
+| **64 (shared, the default)** | **18.3–21.3 s** | **197–230 MB/s** | 0.9 s |
+| 96 | 18.5–19.3 s | 218–227 MB/s | — |
+| 128 | 22.9 s | 184 MB/s | — |
+| 192 (a full budget each) | 24.7 s | 170 MB/s | 6.7 s |
+
+Faster and fairer: the three finish within a second of each other rather than
+nearly seven seconds apart. 64 and 96 are inside each other's run-to-run
+variance — 64 produced both 197 and 230 MB/s — so the default did not move; the
+gain is from sharing, not from a different number.
+
+Worth noting against the single-download table above: three downloads sharing 64
+beat *one* download at 64, which peaks near 184 MB/s. One download cannot keep
+64 requests busy, because it stalls on its own per-file and per-depot ordering,
+and another download's chunks fill those gaps.
+
 ## Where the ceiling actually is
 
 Around **184 MB/s**, and it does not appear to be ours. Everything below was
@@ -246,7 +273,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 350 tests, no network
+cargo test --workspace                # 355 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

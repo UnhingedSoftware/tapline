@@ -55,11 +55,15 @@ fn expected() -> Vec<(&'static str, usize)> {
     let last_error: unsafe extern "C" fn(*mut u8, usize, *mut usize) -> i32 =
         tapline_ffi::tapline_last_error;
     let version: extern "C" fn() -> *const c_char = tapline_ffi::tapline_version;
+    let set_total: extern "C" fn(u32) -> i32 = tapline_ffi::tapline_set_total_concurrency;
+    let total: extern "C" fn() -> u32 = tapline_ffi::tapline_total_concurrency;
+    let available: extern "C" fn() -> u32 = tapline_ffi::tapline_available_concurrency;
 
     // Referenced so the bindings above are not dead code; the ascriptions are
     // what this function exists for.
     let _ = (
-        install, plan, workshop, next, cancel, free, last_error, version,
+        install, plan, workshop, next, cancel, free, last_error, version, set_total, total,
+        available,
     );
 
     vec![
@@ -71,6 +75,9 @@ fn expected() -> Vec<(&'static str, usize)> {
         ("tapline_job_free", 1),
         ("tapline_last_error", 3),
         ("tapline_version", 0),
+        ("tapline_set_total_concurrency", 1),
+        ("tapline_total_concurrency", 0),
+        ("tapline_available_concurrency", 0),
     ]
 }
 

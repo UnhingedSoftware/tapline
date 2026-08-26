@@ -32,6 +32,7 @@ mod delta;
 mod install;
 mod login;
 mod session;
+mod shared;
 mod validate;
 mod workshop;
 
@@ -39,6 +40,7 @@ pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
 pub use install::{FileModes, InstallError, InstallOptions, InstallReport};
 pub use login::{LoginError, PendingLogin, PollOutcome};
 pub use session::Session;
+pub use shared::Shared;
 pub use validate::{Damage, ValidationReport, validate_manifest};
 pub use workshop::{WorkshopContent, WorkshopError, WorkshopItem, classify, item_dir, options_for};
 

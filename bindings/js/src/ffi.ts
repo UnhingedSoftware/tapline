@@ -41,6 +41,12 @@ export interface Ffi {
   cancel(job: bigint): void;
   free(job: bigint): void;
   version(): string;
+  /** Sets the process-wide chunk budget. Must precede the first job. */
+  setTotalConcurrency(chunks: number): number;
+  /** The process-wide chunk budget. */
+  totalConcurrency(): number;
+  /** How much of it is free right now. */
+  availableConcurrency(): number;
   /** True when `next` genuinely suspends rather than polling. */
   readonly nativeAsync: boolean;
 }
@@ -222,6 +228,9 @@ async function loadDeno(path: string): Promise<Ffi> {
     tapline_job_cancel: { parameters: ["pointer"], result: "void" },
     tapline_job_free: { parameters: ["pointer"], result: "void" },
     tapline_version: { parameters: [], result: "pointer" },
+    tapline_set_total_concurrency: { parameters: ["u32"], result: "i32" },
+    tapline_total_concurrency: { parameters: [], result: "u32" },
+    tapline_available_concurrency: { parameters: [], result: "u32" },
   });
 
   const ptr = (value: bigint) => Deno.UnsafePointer.create(value);
@@ -298,6 +307,9 @@ async function loadDeno(path: string): Promise<Ffi> {
       const raw = lib.symbols.tapline_version();
       return new Deno.UnsafePointerView(raw).getCString();
     },
+    setTotalConcurrency: (chunks) => lib.symbols.tapline_set_total_concurrency(chunks),
+    totalConcurrency: () => Number(lib.symbols.tapline_total_concurrency()),
+    availableConcurrency: () => Number(lib.symbols.tapline_available_concurrency()),
   };
 }
 
@@ -328,6 +340,9 @@ async function loadBun(path: string): Promise<Ffi> {
     tapline_job_cancel: { args: [FFIType.ptr], returns: FFIType.void },
     tapline_job_free: { args: [FFIType.ptr], returns: FFIType.void },
     tapline_version: { args: [], returns: FFIType.ptr },
+    tapline_set_total_concurrency: { args: [FFIType.u32], returns: FFIType.i32 },
+    tapline_total_concurrency: { args: [], returns: FFIType.u32 },
+    tapline_available_concurrency: { args: [], returns: FFIType.u32 },
   });
 
   // Bun's FFI has no async form, so a blocking call would block the only
@@ -397,6 +412,9 @@ async function loadBun(path: string): Promise<Ffi> {
     version() {
       return new CString(lib.symbols.tapline_version()).toString();
     },
+    setTotalConcurrency: (chunks) => lib.symbols.tapline_set_total_concurrency(chunks),
+    totalConcurrency: () => Number(lib.symbols.tapline_total_concurrency()),
+    availableConcurrency: () => Number(lib.symbols.tapline_available_concurrency()),
   };
 }
 
@@ -429,6 +447,9 @@ async function loadNode(path: string): Promise<Ffi> {
   const cancel = lib.func("void tapline_job_cancel(void*)");
   const free = lib.func("void tapline_job_free(void*)");
   const version = lib.func("const char* tapline_version()");
+  const setTotal = lib.func("int tapline_set_total_concurrency(uint32_t)");
+  const total = lib.func("uint32_t tapline_total_concurrency()");
+  const available = lib.func("uint32_t tapline_available_concurrency()");
 
   const asPointer = (out: unknown[]): bigint => {
     const value = out[0];
@@ -500,5 +521,8 @@ async function loadNode(path: string): Promise<Ffi> {
     version() {
       return version();
     },
+    setTotalConcurrency: (chunks) => setTotal(chunks),
+    totalConcurrency: () => Number(total()),
+    availableConcurrency: () => Number(available()),
   };
 }

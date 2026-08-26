@@ -109,6 +109,44 @@ real promise from a nonblocking native call; Bun polls with a zero timeout becau
 its FFI is synchronous only. All three then present the same promises, iterators
 and callbacks, in JavaScript, where that machinery belongs.
 
+## Several downloads at once
+
+Downloads started from one process share a single budget of chunks in flight and
+a single connection pool. Nothing to opt into — just start them:
+
+```ts
+const [gmod, valheim] = await Promise.all([
+  install({ app: 4020, dir: "/srv/gmod" }),
+  install({ app: 896660, dir: "/srv/valheim" }),
+]);
+```
+
+That matters because throughput turns over past ~64 chunks in flight, so N
+downloads each taking a full budget is slower than N sharing one. Three
+concurrent Valheim installs, 4.40 GB total:
+
+| total budget | wall clock | throughput | spread between finishes |
+|---|---|---|---|
+| **64 (shared, the default)** | **18.3–21.3 s** | **197–230 MB/s** | 0.9 s |
+| 192 (a full budget each) | 24.7 s | 170 MB/s | 6.7 s |
+
+Sharing is both faster and fairer: the three finish within a second of each
+other instead of nearly seven seconds apart. Three sharing 64 also beat a single
+download at 64 (~184 MB/s) — one download cannot keep 64 requests busy on its
+own, and another download's chunks fill the gaps.
+
+Raise or lower it before starting anything:
+
+```ts
+import { setTotalConcurrency, concurrency } from "tapline";
+
+await setTotalConcurrency(96);
+console.log(await concurrency()); // { total: 96, available: 96 }
+```
+
+It is fixed once a download starts, because moving it underneath running
+downloads is not something you could reason about.
+
 ## Events
 
 Every job emits a stream, discriminated by `kind`:

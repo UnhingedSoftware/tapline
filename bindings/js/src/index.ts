@@ -57,6 +57,36 @@ export async function version(): Promise<string> {
   return (await library()).version();
 }
 
+/**
+ * Sets how many chunks may be in flight across *all* downloads in this process.
+ *
+ * Downloads share one budget rather than taking one each. Two installs at 64
+ * chunks each is measurably slower than two splitting 64, because throughput
+ * turns over past 64 — and sharing also lets one download use connections the
+ * other already warmed.
+ *
+ * Must be called before the first job starts; after that the budget is fixed,
+ * because moving it underneath running downloads is not something a caller can
+ * reason about. Throws if it is already in use.
+ */
+export async function setTotalConcurrency(chunks: number): Promise<void> {
+  const code = (await library()).setTotalConcurrency(chunks);
+  if (code !== 0) {
+    throw new Error(
+      "the concurrency budget is already in use; set it before starting any download",
+    );
+  }
+}
+
+/** How the shared budget currently stands. */
+export async function concurrency(): Promise<{
+  total: number;
+  available: number;
+}> {
+  const ffi = await library();
+  return { total: ffi.totalConcurrency(), available: ffi.availableConcurrency() };
+}
+
 function osCode(os: TargetOs | undefined): number {
   switch (os) {
     case "linux":

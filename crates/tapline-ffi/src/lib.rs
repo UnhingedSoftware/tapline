@@ -33,7 +33,7 @@ mod json;
 
 use std::ffi::{CStr, c_char};
 use std::sync::OnceLock;
-use tapline::{FileModes, InstallOptions, Os, PublishedFileId, Session};
+use tapline::{FileModes, InstallOptions, Os, PublishedFileId, Session, Shared};
 use tapline_ids::AppId;
 
 /// An event was written to the buffer.
@@ -114,6 +114,60 @@ fn runtime() -> Option<&'static tokio::runtime::Runtime> {
         .as_ref()
 }
 
+/// The chunk budget every job in this process draws from.
+///
+/// Set once, on first use. Two downloads started from JavaScript are two jobs
+/// in one process, and without this they would take a full budget each — which
+/// is measurably slower than sharing one, because the throughput curve turns
+/// over after 64 chunks in flight. Sharing also means a connection warmed by
+/// one download is warm for the next.
+static TOTAL_CONCURRENCY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn shared() -> Option<&'static std::sync::Arc<Shared>> {
+    static SHARED: OnceLock<std::sync::Arc<Shared>> = OnceLock::new();
+    Some(SHARED.get_or_init(|| {
+        let configured = TOTAL_CONCURRENCY.load(std::sync::atomic::Ordering::Relaxed) as usize;
+        if configured == 0 {
+            Shared::new(InstallOptions::default().concurrency)
+        } else {
+            Shared::new(configured)
+        }
+    }))
+}
+
+/// Sets the total chunks in flight across every job in this process.
+///
+/// Must be called before the first job starts; afterwards the budget is fixed
+/// and this returns [`TAPLINE_BAD_ARGUMENT`], because moving it underneath
+/// downloads already drawing on it is not something a caller can reason about.
+///
+/// 0 restores the default.
+#[unsafe(no_mangle)]
+pub extern "C" fn tapline_set_total_concurrency(chunks: u32) -> i32 {
+    TOTAL_CONCURRENCY.store(chunks, std::sync::atomic::Ordering::Relaxed);
+    // If a job already built the budget, saying so is better than pretending.
+    if STARTED.load(std::sync::atomic::Ordering::Relaxed) {
+        set_error("the concurrency budget is already in use and cannot be resized");
+        return TAPLINE_BAD_ARGUMENT;
+    }
+    TAPLINE_OK
+}
+
+/// Whether any job has been started, which fixes the budget.
+static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The total chunks in flight allowed across the process.
+#[unsafe(no_mangle)]
+pub extern "C" fn tapline_total_concurrency() -> u32 {
+    shared().map_or(0, |shared| shared.concurrency() as u32)
+}
+
+/// How much of that budget is free right now.
+#[unsafe(no_mangle)]
+pub extern "C" fn tapline_available_concurrency() -> u32 {
+    shared().map_or(0, |shared| shared.available() as u32)
+}
+
 /// Reads a C string, or `None` if it is null or not UTF-8.
 ///
 /// # Safety
@@ -177,6 +231,9 @@ where
         return TAPLINE_BAD_ARGUMENT;
     };
 
+    // Fixes the budget: from here on it is in use.
+    STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
+
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let handle = runtime.spawn(build(sender));
 
@@ -234,9 +291,14 @@ pub unsafe extern "C" fn tapline_install(
     };
     let install = unsafe { options.into_install_options(dir) };
 
+    let shared_handle = shared().cloned();
     spawn_job(
         move |sender| async move {
-            match Session::anonymous().await {
+            let Some(shared_handle) = shared_handle else {
+                send_error(&sender, "the tapline runtime could not be started");
+                return;
+            };
+            match Session::anonymous_shared(shared_handle).await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => {
                     let forward = sender.clone();
@@ -289,9 +351,14 @@ pub unsafe extern "C" fn tapline_plan(
     };
     let install = unsafe { options.into_install_options(dir) };
 
+    let shared_handle = shared().cloned();
     spawn_job(
         move |sender| async move {
-            match Session::anonymous().await {
+            let Some(shared_handle) = shared_handle else {
+                send_error(&sender, "the tapline runtime could not be started");
+                return;
+            };
+            match Session::anonymous_shared(shared_handle).await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => match session.plan(AppId(app_id), &install).await {
                     Ok(plan) => {
@@ -329,9 +396,14 @@ pub unsafe extern "C" fn tapline_workshop_download(
     let install = unsafe { options.into_install_options(dir) };
     let _ = app_id;
 
+    let shared_handle = shared().cloned();
     spawn_job(
         move |sender| async move {
-            match Session::anonymous().await {
+            let Some(shared_handle) = shared_handle else {
+                send_error(&sender, "the tapline runtime could not be started");
+                return;
+            };
+            match Session::anonymous_shared(shared_handle).await {
                 Err(error) => send_error(&sender, &error.to_string()),
                 Ok(mut session) => {
                     let item = PublishedFileId(item_id);

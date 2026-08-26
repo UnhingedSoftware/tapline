@@ -106,6 +106,22 @@ void tapline_job_free(TaplineJob *job);
  * after a call that returned a negative code. Pass NULL to query the length. */
 int32_t tapline_last_error(uint8_t *buf, size_t cap, size_t *out_len);
 
+/* Sets the total chunks in flight across every job in this process.
+ *
+ * Downloads started from one process share one budget: two at 64 each is
+ * measurably slower than two splitting 64, because the throughput curve turns
+ * over after 64. Sharing also reuses warm connections between them.
+ *
+ * Must be called before the first job starts. Afterwards the budget is fixed
+ * and this returns TAPLINE_BAD_ARGUMENT. 0 restores the default. */
+int32_t tapline_set_total_concurrency(uint32_t chunks);
+
+/* The total chunks in flight allowed across this process. */
+uint32_t tapline_total_concurrency(void);
+
+/* How much of that budget is free right now. Moves as you read it. */
+uint32_t tapline_available_concurrency(void);
+
 /* The library version, as a static NUL-terminated string. Do not free. */
 const char *tapline_version(void);
 

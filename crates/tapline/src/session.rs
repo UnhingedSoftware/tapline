@@ -26,7 +26,7 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
     CContentServerDirectory_GetServersForSteamPipe_Request,
 };
 use tapline_proto::steammessages_publishedfile_steamclient::CPublishedFile_GetDetails_Request;
-use tapline_rt_tokio::{CmTransport, FileSink, HttpClient, cm_list};
+use tapline_rt_tokio::{CmTransport, FileSink, cm_list};
 use tapline_state::AppState;
 use tapline_wire::Message;
 
@@ -36,7 +36,9 @@ const RESULT_OK: i32 = 1;
 /// A logged-on Steam session.
 pub struct Session {
     cm: CmSession<CmTransport>,
-    http: Arc<HttpClient>,
+    /// The connection pool and chunk budget, shared with any other session
+    /// built on the same [`Shared`].
+    shared: Arc<crate::Shared>,
     pool: HostPool,
     cell_id: u32,
     /// Depot keys, cached for the life of the session.
@@ -72,6 +74,19 @@ impl Session {
     /// credentials are read, none are stored, and Steam grants keys for
     /// anonymously accessible content — which is every dedicated server.
     pub async fn anonymous() -> Result<Self, InstallError> {
+        Self::anonymous_shared(crate::Shared::new(InstallOptions::default().concurrency)).await
+    }
+
+    /// Connects and logs on anonymously, sharing resources with other sessions.
+    ///
+    /// Use this when a process runs more than one download at a time. Sessions
+    /// built on the same [`Shared`] draw from one chunk budget instead of each
+    /// taking a full one, and reuse each other's warm connections. Three
+    /// downloads that each take 64 chunks in flight are measurably slower than
+    /// three that split 64 — see the [`Shared`] docs for the curve.
+    ///
+    /// [`Shared`]: crate::Shared
+    pub async fn anonymous_shared(shared: Arc<crate::Shared>) -> Result<Self, InstallError> {
         let servers = cm_list(0)
             .await
             .map_err(|e| InstallError::Io(format!("could not reach the CM directory: {e}")))?;
@@ -90,7 +105,7 @@ impl Session {
 
         let mut session = Self {
             cm,
-            http: Arc::new(HttpClient::new()),
+            shared,
             pool: HostPool::new(Vec::new()),
             cell_id: outcome.cell_id,
             keys: HashMap::new(),
@@ -277,7 +292,7 @@ impl Session {
 
             let host = self.pool.acquire()?;
             let manifest = fetch_manifest(
-                self.http.as_ref(),
+                self.shared.http.as_ref(),
                 &host.host,
                 depot.id,
                 depot.manifest.get(),
@@ -721,7 +736,7 @@ impl Session {
 
                 let host = self.pool.acquire()?;
                 let content = fetch_manifest(
-                    self.http.as_ref(),
+                    self.shared.http.as_ref(),
                     &host.host,
                     *depot,
                     manifest.get(),
@@ -779,7 +794,7 @@ impl Session {
                 })?;
 
                 let response = tapline_io::Fetch::get(
-                    self.http.as_ref(),
+                    self.shared.http.as_ref(),
                     tapline_io::Request::get(url.clone()),
                     item.size.max(1) + 4096,
                 )
@@ -881,7 +896,19 @@ impl Session {
             return Err(InstallError::Pool(tapline_cdn::PoolError::Empty));
         }
 
-        let limit = Arc::new(tokio::sync::Semaphore::new(options.concurrency.max(1)));
+        // Two bounds, and both are needed.
+        //
+        // The shared one is the process's total: every session built on the
+        // same `Shared` draws from it, so three downloads split 64 chunks in
+        // flight rather than taking 64 each. Past 64 the throughput curve turns
+        // over, so multiplying it by the number of downloads makes all of them
+        // slower.
+        //
+        // The local one stops a single download from holding the whole budget
+        // while another waits behind it. With one download running they are the
+        // same number and it costs nothing.
+        let shared_limit = Arc::clone(&self.shared.limit);
+        let local_limit = Arc::new(tokio::sync::Semaphore::new(options.concurrency.max(1)));
         let next_host = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut tasks: tokio::task::JoinSet<(usize, Result<ChunkOutcome, InstallError>)> =
             tokio::task::JoinSet::new();
@@ -939,13 +966,21 @@ impl Session {
                 // sit here past the deadline without touching the CM.
                 self.maybe_heartbeat().await?;
 
-                let permit = Arc::clone(&limit)
+                // Local before shared, always in that order. Two semaphores
+                // taken in a consistent order cannot deadlock against each
+                // other; taken in different orders by different downloads they
+                // could.
+                let local_permit = Arc::clone(&local_limit)
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| InstallError::Io(e.to_string()))?;
+                let shared_permit = Arc::clone(&shared_limit)
                     .acquire_owned()
                     .await
                     .map_err(|e| InstallError::Io(e.to_string()))?;
 
                 let sink = Arc::clone(&sink);
-                let http = Arc::clone(&self.http);
+                let http = Arc::clone(&self.shared.http);
                 let hosts = hosts.clone();
                 let next_host = Arc::clone(&next_host);
                 let chunk = chunk.clone();
@@ -953,9 +988,9 @@ impl Session {
                 let depot = entry.depot.id;
 
                 tasks.spawn(async move {
-                    // The permit is held for the life of the task, which is what
-                    // bounds the concurrency.
-                    let _permit = permit;
+                    // Held for the life of the task, which is what bounds the
+                    // concurrency — released on the error paths too.
+                    let _permits = (local_permit, shared_permit);
                     let outcome = async move {
                         if resuming
                             && let Ok(bytes) =

@@ -16,7 +16,14 @@
  */
 
 import { detectRuntime } from "../src/ffi.ts";
-import { downloadWorkshopItem, install, Job, plan, version } from "../src/index.ts";
+import {
+  concurrency,
+  downloadWorkshopItem,
+  install,
+  Job,
+  plan,
+  version,
+} from "../src/index.ts";
 
 let failures = 0;
 let ran = 0;
@@ -142,6 +149,40 @@ if (process_env("TAPLINE_LIVE") === "1") {
       kinds.push(event.kind);
     }
     assert(kinds.includes("planned"), `no planned event: ${kinds.join(",")}`);
+  });
+
+  await test("concurrent downloads share one budget", async () => {
+    // The property, not the throughput: two downloads must draw from one pool
+    // rather than taking a full one each. Two at 64 is measurably slower than
+    // two splitting 64, because throughput turns over past 64.
+    const before = await concurrency();
+    assert(before.total > 0, "no budget reported");
+    assertEquals(before.available, before.total, "budget not idle at rest");
+
+    let lowest = before.total;
+    const watch = async () => {
+      for (let i = 0; i < 40; i += 1) {
+        const now = await concurrency();
+        if (now.available < lowest) lowest = now.available;
+        assert(
+          now.total === before.total,
+          `the budget changed mid-download: ${before.total} -> ${now.total}`,
+        );
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+
+    const a = install({ app: 896660, dir: scratch("multi-a") });
+    const b = install({ app: 896660, dir: scratch("multi-b") });
+    await watch();
+    a.cancel();
+    b.cancel();
+    await Promise.allSettled([a, b]);
+
+    assert(
+      lowest < before.total,
+      "two concurrent downloads never drew on the shared budget",
+    );
   });
 
   await test("cancelling a real install stops it", async () => {
