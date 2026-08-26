@@ -5,6 +5,7 @@
 //!
 //! * **`VZ`** — LZMA, footer magic `zv`.
 //! * **`VSZ`** — zstd, footer magic `zsv`.
+//! * **ZIP** — `PK\x03\x04`, one deflated entry named `z`, no Steam footer.
 //!
 //! Both were read off real chunks rather than from a description, and both
 //! carry the CRC-32 of their decompressed bytes twice, in the header and again
@@ -27,9 +28,27 @@
 //! saying "malformed chunk" — five seconds to diagnose instead of an afternoon.
 //! That is the argument for reporting unknown input rather than skipping it,
 //! stated by example.
+//!
+//! # And then it happened again
+//!
+//! Installing Garry's Mod Dedicated Server failed outright on `PK\x03\x04`: a
+//! third container, plain ZIP. The probe that had found `VSZ` sampled depot
+//! 1006 — which contains no ZIP chunks at all — and stopped there. A census
+//! across every GMod depot afterwards:
+//!
+//! | depot | ZIP | VSZ | VZ  |
+//! |-------|-----|-----|-----|
+//! | 1006  |   0 |  32 |   8 |
+//! | 4021  |  14 |  36 |  30 |
+//! | 4023  |  18 |  53 |  49 |
+//!
+//! Twice now, a sample of one depot has given a confident wrong answer about a
+//! whole app. All three containers coexist within a single depot, so the choice
+//! is per chunk and the dispatch below cannot be hoisted out of the loop.
 
 mod vsz;
 mod vz;
+mod zip;
 
 use std::fmt;
 
@@ -77,6 +96,8 @@ pub enum ChunkError {
         /// The footer's copy.
         footer: u32,
     },
+    /// A ZIP entry used a compression method Steam does not use.
+    UnsupportedZipMethod(u16),
     /// The claimed size exceeds the cap.
     TooLarge {
         /// What was claimed.
@@ -115,6 +136,9 @@ impl fmt::Display for ChunkError {
                 f,
                 "header CRC {header:#010x} disagrees with footer CRC {footer:#010x}"
             ),
+            Self::UnsupportedZipMethod(method) => {
+                write!(f, "unsupported ZIP compression method {method}")
+            }
             Self::TooLarge { claimed } => write!(f, "chunk claims {claimed} bytes"),
         }
     }
@@ -141,6 +165,9 @@ pub fn decode_with_limit(input: &[u8], max_output: usize) -> Result<Vec<u8>, Chu
     }
     if vz::matches(input) {
         return vz::decode(input, max_output);
+    }
+    if zip::matches(input) {
+        return zip::decode(input, max_output);
     }
 
     Err(ChunkError::UnknownContainer(

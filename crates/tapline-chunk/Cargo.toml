@@ -11,7 +11,11 @@ rust-version.workspace = true
 [dependencies]
 crc32fast = { workspace = true }
 lzma-rs = { workspace = true }
+miniz_oxide = { workspace = true }
 ruzstd = { workspace = true }
+
+[dev-dependencies]
+sha1 = { workspace = true }
 
 [lints]
 workspace = true
