@@ -1,0 +1,24 @@
+[package]
+name = "tapline-crypto"
+description = "The cipher primitives Steam's protocol needs, and Steam's own composition of them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# The one leaf with external dependencies, and deliberately so: hand-rolled
+# block ciphers and padding are how a project ships a timing side channel. Every
+# line here is RustCrypto, pure Rust, no C.
+[dependencies]
+aes = { workspace = true }
+cbc = { workspace = true }
+hmac = { workspace = true }
+rand_core = { workspace = true }
+rsa = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+
+[lints]
+workspace = true

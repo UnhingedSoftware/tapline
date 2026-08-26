@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tapline-ids", "crates/tapline-wire"]
+members = ["crates/tapline-crypto", "crates/tapline-ids", "crates/tapline-wire"]
 
 [workspace.package]
 version = "0.1.0"
@@ -41,12 +41,16 @@ webpki-roots = "1"
 # and padding are how you ship a timing side channel.
 rsa = "0.9"
 aes = "0.8"
-cbc = "0.1"
+cbc = { version = "0.1", features = ["alloc"] }
+# The RNG behind the session key and every CBC IV. Pinned to the rand_core line
+# that `rsa` speaks, so there is one source of randomness in the tree rather
+# than two that disagree.
+rand_core = { version = "0.6", features = ["getrandom"] }
 sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 crc32fast = "1"
-zeroize = "1"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # container formats
 lzma-rs = "0.3"
