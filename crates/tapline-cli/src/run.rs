@@ -19,8 +19,9 @@ pub async fn execute(command: Command) -> Result<(), String> {
             dir,
             branch,
             validate,
+            concurrency,
             json,
-        } => download(app, dir, branch, validate, json).await,
+        } => download(app, dir, branch, validate, concurrency, json).await,
         Command::Info { app, json } => info(app, json).await,
         Command::WorkshopDownload {
             app,
@@ -153,14 +154,17 @@ async fn download(
     dir: PathBuf,
     branch: String,
     validate: bool,
+    concurrency: Option<usize>,
     json: bool,
 ) -> Result<(), String> {
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let defaults = InstallOptions::default();
     let options = InstallOptions {
         install_dir: dir,
         branch,
         force: validate,
-        ..InstallOptions::default()
+        concurrency: concurrency.unwrap_or(defaults.concurrency),
+        ..defaults
     };
 
     let started = std::time::Instant::now();

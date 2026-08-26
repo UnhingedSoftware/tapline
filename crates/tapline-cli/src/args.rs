@@ -81,6 +81,8 @@ pub enum Command {
         branch: String,
         /// Verify every chunk on disk rather than trusting the install record.
         validate: bool,
+        /// How many chunks to fetch at once, or `None` for the default.
+        concurrency: Option<usize>,
         /// Emit newline-delimited JSON.
         json: bool,
     },
@@ -312,6 +314,25 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
         .collect();
 
     let dir = || PathBuf::from(options.value("dir").unwrap_or("."));
+    // A bad number is refused rather than silently falling back to the default:
+    // someone passing --concurrency wants that value, and quietly using another
+    // one turns a typo into a mystery about why the download is slow.
+    let concurrency = || -> Result<Option<usize>, ArgError> {
+        match options.value("concurrency") {
+            // Present but valueless: `--concurrency` on its own asked for
+            // something and would otherwise get the default silently.
+            None if options.flag("concurrency") => Err(ArgError::new(
+                "--concurrency needs a number, like --concurrency 32",
+            )),
+            None => Ok(None),
+            Some(raw) => match raw.parse::<usize>() {
+                Ok(0) | Err(_) => Err(ArgError::new(format!(
+                    "{raw:?} is not a chunk concurrency; give a positive number"
+                ))),
+                Ok(value) => Ok(Some(value)),
+            },
+        }
+    };
     let branch = || options.value("branch").unwrap_or("public").to_owned();
 
     let app_id = |value: Option<&&str>| -> Result<AppId, ArgError> {
@@ -333,6 +354,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
             dir: dir(),
             branch: branch(),
             validate: options.flag("validate"),
+            concurrency: concurrency()?,
             json,
         }),
         (Some("app"), Some("info")) => Ok(Command::Info {
@@ -491,6 +513,7 @@ mod tests {
                 dir: PathBuf::from("/srv/tf2"),
                 branch: "prerelease".to_owned(),
                 validate: true,
+                concurrency: None,
                 json: false,
             }
         );
@@ -524,5 +547,27 @@ mod tests {
     fn an_unknown_native_command_names_itself() {
         let error = parse(&args("frobnicate 1")).expect_err("must refuse");
         assert!(error.message.contains("frobnicate"), "{}", error.message);
+    }
+
+    #[test]
+    fn the_chunk_concurrency_can_be_overridden() {
+        let parsed = parse(&args("app download 232250 --dir /srv/tf2 --concurrency 64"))
+            .expect("must parse");
+        match parsed {
+            Command::Download { concurrency, .. } => assert_eq!(concurrency, Some(64)),
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unusable_concurrency_is_refused_rather_than_ignored() {
+        // Falling back to the default here would turn a typo into a mystery
+        // about why the download is slower than the flag asked for.
+        for bad in ["abc", "0", "-4", ""] {
+            let parsed = parse(&args(&format!(
+                "app download 232250 --dir /srv/tf2 --concurrency {bad}"
+            )));
+            assert!(parsed.is_err(), "--concurrency {bad:?} was accepted");
+        }
     }
 }

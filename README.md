@@ -17,7 +17,7 @@ tapline +login anonymous +force_install_dir /srv/valheim +app_update 896660 +qui
 
 # or the native one, with machine-readable output
 tapline app plan 896660 --dir /srv/valheim --json
-tapline app download 896660 --dir /srv/valheim
+tapline app download 896660 --dir /srv/valheim --concurrency 32
 tapline workshop download 4000 3790437566 --dir /srv/gmod
 ```
 
@@ -59,29 +59,55 @@ default.
 
 ## Is it fast?
 
-Same install, same machine, same link, both starting cold:
+Same machine, same link, both starting cold:
 
-| | wall clock |
-|---|---|
-| steamcmd | 19.0 s |
-| tapline | **11.7 s** |
+| app | downloaded | steamcmd | tapline |
+|---|---|---|---|
+| Valheim DS (896660) | 1.47 GB | 19.0 s | **9.3 s** |
+| Garry's Mod DS (4020) | 3.54 GB | 29.5 s | **21.1 s** |
 
-That is 1.47 GB of downloaded content at roughly 125 MB/s, which is close enough
-to a gigabit link's ceiling that **both tools are probably limited by the network
-rather than by themselves**. The honest reading is "at least as fast as
-steamcmd, on a link where neither can go faster" — not a 1.6× claim that would
-generalise.
+GMod is the more interesting measurement because tapline lost it first, at
+41.3 s against 29.5 s. Instrumenting the stages, aggregated across the sixteen
+concurrent slots:
 
-The number worth quoting is the one before the concurrency work: the same
+```
+fetch=331s  decode=93s  write=17s  fsync=13.5s
+```
+
+Only one of those was not overlapping with anything. `fsync` was being awaited
+inline in the loop that dispatches chunk fetches, so for 13.5 seconds of a
+41-second install nothing new was started and all sixteen slots drained to idle.
+Moving finalisation onto its own blocking tasks gave back 11.8 s, which brought
+GMod level with steamcmd at 29.5 s.
+
+Level is where it stayed until the default concurrency was questioned. It had
+been 16, chosen as "deliberately modest" with nothing measured behind it, and
+documented with a claim that both tools were saturating the link. Sweeping it
+says otherwise:
+
+| concurrency | wall clock | throughput |
+|---|---|---|
+| 16 | 29.5 s | 120 MB/s |
+| **32** | **21.1 s** | 168 MB/s |
+| 64 | 19.5 s | 181 MB/s |
+
+There was no link ceiling at 120 MB/s; 16 was leaving 40% of the throughput
+unused, and the sentence explaining that it could not go faster was reasoning
+from two coincidentally similar numbers. The default is now 32. 64 is left on
+the table on purpose: it buys 1.5 s for twice the request rate against Steam's
+CDN, and a throttled account costs more than a slow download. `--concurrency N`
+is there for anyone who has measured their own link.
+
+An update that finds nothing changed re-checks 6.8 GB across 2,329 files in
+**2.1 s** and downloads 0 bytes.
+
+The number worth quoting is the one before the concurrency work: the Valheim
 install took **238 seconds** when chunks were fetched one at a time. Most of
 that was not the network. `#[tokio::test]` defaults to a current-thread runtime,
 so sixteen "concurrent" tasks were sixteen tasks taking turns on one thread,
 each blocking the others while it decompressed a megabyte of LZMA. Moving the
 decode to `spawn_blocking` and using a real runtime took it to 18 s in the test
 harness and 11.7 s in a release build.
-
-An update that finds nothing changed downloads **0 bytes** and rewrites **0
-files**.
 
 ## Ready to run, not merely correct
 
