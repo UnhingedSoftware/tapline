@@ -16,7 +16,7 @@ jobs:
   # rather than after, since the runners are 32-core and neither job is the
   # bottleneck.
   check:
-    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +41,7 @@ jobs:
   # an advisory, or anything from the deny list in deny.toml (openssl, hyper,
   # reqwest, prost, a C build).
   deny:
-    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,7 +56,7 @@ jobs:
   # Also proves the static musl build works, which needs a musl-targeting C
   # compiler because rustls's `ring` backend compiles C for the target.
   binary-size:
-    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -97,7 +97,7 @@ jobs:
   # The metadata build is what a webapp links: it must not drag in rayon, cap-std,
   # clap or serde. Asserted against the dependency graph rather than hoped for.
   minimal-graph:
-    runs-on: [self-hosted, Linux, X64, selfhosted-32c]
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
