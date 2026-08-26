@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/tapline-crypto", "crates/tapline-ids", "crates/tapline-wire"]
+members = [
+    "crates/tapline-crypto",
+    "crates/tapline-ids",
+    "crates/tapline-vdf",
+    "crates/tapline-wire",
+]
 
 [workspace.package]
 version = "0.1.0"

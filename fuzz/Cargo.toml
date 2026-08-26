@@ -13,6 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+tapline-vdf = { path = "../crates/tapline-vdf" }
 tapline-wire = { path = "../crates/tapline-wire" }
 
 [[bin]]
@@ -25,6 +26,13 @@ bench = false
 [[bin]]
 name = "wire_roundtrip"
 path = "fuzz_targets/wire_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vdf_parse"
+path = "fuzz_targets/vdf_parse.rs"
 test = false
 doc = false
 bench = false

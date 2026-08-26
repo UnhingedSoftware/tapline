@@ -418,6 +418,10 @@ name = "tapline-ids"
 version = "0.1.0"
 
 [[package]]
+name = "tapline-vdf"
+version = "0.1.0"
+
+[[package]]
 name = "tapline-wire"
 version = "0.1.0"
 
