@@ -1,0 +1,30 @@
+[package]
+name = "tapline-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Not a workspace member: the fuzz targets need nightly and a sanitizer, and
+# dragging that into the main workspace would put both on every `cargo build`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tapline-wire = { path = "../crates/tapline-wire" }
+
+[[bin]]
+name = "wire_decode"
+path = "fuzz_targets/wire_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_roundtrip"
+path = "fuzz_targets/wire_roundtrip.rs"
+test = false
+doc = false
+bench = false

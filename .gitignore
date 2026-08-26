@@ -2,6 +2,13 @@
 **/*.rs.bk
 *.pdb
 
+# Fuzzing: the targets are committed, the corpus and crash artifacts are not.
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+/fuzz/Cargo.lock
+
 # Integration tests write here. Never /tmp: it is tmpfs on the dev box, and a
 # depot test would be tens of GB of RAM.
 /.tapline-test/

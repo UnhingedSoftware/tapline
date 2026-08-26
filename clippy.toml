@@ -1,0 +1,12 @@
+# The workspace denies unwrap/expect/panic/indexing because tapline is linked
+# into other people's game-server hosts: a panic in the library is a panic in
+# their process. Tests are the exception — an assertion that fires there is the
+# point, and threading Results through test bodies obscures what is being
+# tested.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Steam's own naming, so it does not get flagged as a typo.
+doc-valid-idents = ["SteamPipe", "SteamKit", "SteamID", "SteamCache", "..", "steamcmd", "lancache"]

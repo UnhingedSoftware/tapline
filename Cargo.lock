@@ -5,3 +5,7 @@ version = 4
 [[package]]
 name = "tapline-ids"
 version = "0.1.0"
+
+[[package]]
+name = "tapline-wire"
+version = "0.1.0"
