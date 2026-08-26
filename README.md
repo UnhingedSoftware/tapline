@@ -41,11 +41,21 @@ same machine and link:
 | | result |
 |---|---|
 | Files installed | **793, byte-for-byte identical to steamcmd** |
-| Differences of any kind | none |
 | Workshop item 3790437566 | **byte-identical to `+workshop_download_item`** |
 
 The comparison is a test, not a one-off: `cargo test -p tapline --test
-differential` walks both trees and compares every file's contents.
+differential` walks both trees and compares every file's name, size, contents
+and mode.
+
+Modes are in that list because they were not always. Installing Garry's Mod
+Dedicated Server (app 4020, 6.8 GB, 2,329 files) with both tools produced trees
+whose contents matched on every single file and whose **permissions disagreed on
+2,291 of them**: steamcmd sets `0o755` on everything it writes, including text,
+models and sounds, while tapline was applying the manifest's executable flag.
+The differential test had compared sizes and contents and never modes, so it
+reported parity it had not checked — which is the more useful finding of the
+two. See `FileModes` for which behaviour you get and why the blunt one is the
+default.
 
 ## Is it fast?
 
@@ -73,6 +83,30 @@ harness and 11.7 s in a release build.
 An update that finds nothing changed downloads **0 bytes** and rewrites **0
 files**.
 
+## Ready to run, not merely correct
+
+A dedicated server that installs perfectly and will not start is not installed.
+Two things that byte-comparison cannot see turned out to matter:
+
+- **Permissions.** `InstallOptions::file_modes` defaults to `FileModes::SteamCmd`
+  — `0o755` on everything, which is what steamcmd does. It is not the tidier
+  choice; it is the compatible one. LinuxGSM, wings eggs and a decade of Docker
+  images were built against trees that look like this, and a depot whose manifest
+  forgets the executable flag on a start script still yields a runnable server
+  under steamcmd. `FileModes::Manifest` gives the strict alternative for callers
+  who want what the depot actually describes.
+- **File descriptors.** An install held one open descriptor per file for the
+  whole depot. Under the default 1,024 limit, Garry's Mod's 2,329 files failed
+  with `Too many open files` — while succeeding on the interactive shell that
+  first tested it, which happened to have the limit raised. Files are now synced
+  and closed as their own last chunk lands, with a hard ceiling of 64 open at
+  once regardless of how a depot distributes chunks.
+
+Verified end to end: a GMod server installed by tapline and one installed by
+steamcmd were both started with the same command line, both reached `VAC secure
+mode is activated`, and both answered an A2S_INFO query as
+`gm_construct / Sandbox / 0-4 players`.
+
 ## What it does not do
 
 tapline downloads content the signed-in account is entitled to, exactly as the
@@ -95,7 +129,7 @@ library.
 ```
 wire      protobuf codec          crypto   AES/RSA/SHA-1, Steam's compositions
 ids       SteamID, EResult        vdf      KeyValues and appmanifest files
-chunk     VZ (LZMA), VSZ (zstd)   fs       path validation
+chunk     VZ, VSZ, ZIP           fs       path validation
 io        the IO traits           event    progress vocabulary
 proto     404 generated messages  net      CM framing, batches, job correlation
 pics      depots and branches     manifest the manifest format
@@ -131,7 +165,7 @@ the process that linked it.
 
 ```sh
 cargo build --release                 # needs no extra toolchain
-cargo test --workspace                # 301 tests, no network
+cargo test --workspace                # 322 tests, no network
 cargo test --workspace -- --ignored   # the live tests, against real Steam
 ```
 

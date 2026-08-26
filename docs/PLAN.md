@@ -455,6 +455,41 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
   The two crates became one, `tapline-chunk`, since the choice is per chunk and
   the dispatch has to live somewhere.
 
+- **There is a third chunk container, and the same sampling mistake found it.**
+  Garry's Mod Dedicated Server would not install at all: a chunk arrived with
+  `PK\x03\x04`, a plain ZIP wrapper — one deflated entry named `z`, no Steam
+  footer, CRC-32 in the header. The census that matters is that all three
+  containers coexist inside a single depot (4021: 14 ZIP, 36 `VSZ`, 30 `VZ`), so
+  the choice is per chunk and cannot be hoisted. The earlier probe had sampled
+  depot 1006, which contains no ZIP chunks at all. That is twice now that one
+  depot's sample gave a confident wrong answer about a whole app, so the probe
+  censuses every depot rather than stopping at the first interesting find.
+
+- **"Installs correctly" and "installs runnably" are different claims, and only
+  the first was being tested.** Two defects sat behind the second, and neither
+  was visible to a byte comparison:
+
+  * *Permissions.* steamcmd sets `0o755` on **every** file it writes; tapline was
+    applying the manifest's executable flag. On GMod that is 2,291 of 2,329 files
+    differing, with identical contents throughout. The differential test compared
+    names, sizes and contents and never modes — so it had been reporting a parity
+    it did not check, which is worse than the divergence it missed. Modes are now
+    compared, and `InstallOptions::file_modes` defaults to steamcmd's behaviour
+    because tapline is a drop-in replacement for a tool whose output shape
+    LinuxGSM and wings eggs already depend on.
+  * *File descriptors.* The install held one open descriptor per file until the
+    depot finished — 2,329 of them for GMod, against a 1,024 default limit. It
+    passed on the interactive shell that first ran it, which had the limit raised
+    to 1,048,576, and failed immediately under `systemd-run`'s ordinary 1,024.
+    Files are now synced and closed as their own last chunk lands, capped at 64
+    open at once. **A test rig with looser limits than production is a test rig
+    that certifies bugs**, and this one nearly shipped.
+
+  Verified after the fixes: a fresh install under `LimitNOFILE=1024` produced
+  2,329 files with **zero** differences from steamcmd in name, content or mode,
+  and the server it produced reached `VAC secure mode is activated` and answered
+  A2S_INFO.
+
 - **`tapline-lzma` and `tapline-zstd` moved from M1 to M6.** They were planned as
   leaves to build early, but the `VZ` and `VSZ` container headers around the
   compressed payload are undocumented, and the only way to know their layout is
@@ -478,7 +513,7 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
   licence-free depots only) so CI needs no Steam access. Network tests are
   `#[ignore]`d and run manually.
 - **Fuzzing** (`cargo-fuzz`): wire codec, manifest parser, VDF/ACF parser, and the
-  `VZ`/`VSZ` decoders — every one of them eats untrusted bytes.
+  `VZ`/`VSZ`/ZIP decoders — every one of them eats untrusted bytes.
 - **Path-traversal corpus**: hand-built manifests with `../`, absolute paths,
   escaping symlinks, and `..` hidden behind a symlinked directory. Each must fail
   the install, with a test asserting nothing was written outside the root.
