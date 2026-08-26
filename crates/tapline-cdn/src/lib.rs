@@ -27,7 +27,7 @@
 
 mod pool;
 
-pub use pool::{Host, HostPool, PoolError};
+pub use pool::{Host, HostPool, PoolError, usable_over_tls};
 
 use std::fmt;
 use tapline_ids::DepotId;

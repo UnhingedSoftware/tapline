@@ -26,6 +26,29 @@ pub struct Host {
     pub https_required: bool,
 }
 
+/// Whether a host Steam offered can be used, given that every fetch is TLS.
+///
+/// Steam's directory mixes its own caches with third-party CDN entries, and one
+/// of those declares `https_support: "unavailable"`. It is not a hostname with a
+/// missing certificate — it is a hostname that resolves into CloudFront,
+/// CacheFly or Alibaba depending on the lookup, none of which present a
+/// certificate for `steamcontent.com`. Connecting to it over TLS fails
+/// verification, correctly, and takes the whole install with it.
+///
+/// Asking Steam for 20 servers never surfaced this. Asking for 100 did.
+///
+/// Such a host is skipped rather than fetched over plaintext. Chunk integrity
+/// would survive the downgrade — every chunk is checked against the SHA-1 that
+/// names it — but this is one host out of eighty-three, and a plaintext path
+/// that exists for a 1.2% widening of the pool is a plaintext path that will
+/// eventually be used for something else.
+#[must_use]
+pub fn usable_over_tls(https_support: Option<&str>) -> bool {
+    // Absent means an older directory response that predates the field; those
+    // hosts spoke TLS fine, so absence is not a reason to drop one.
+    !matches!(https_support, Some("unavailable"))
+}
+
 /// Why the pool could not serve a host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PoolError {
@@ -235,5 +258,21 @@ mod tests {
     #[test]
     fn an_empty_pool_is_reported_as_empty() {
         assert_eq!(HostPool::new(Vec::new()).acquire(), Err(PoolError::Empty));
+    }
+
+    #[test]
+    fn a_host_without_https_is_not_offered_to_a_tls_only_client() {
+        assert!(!usable_over_tls(Some("unavailable")));
+    }
+
+    #[test]
+    fn https_hosts_and_older_responses_are_kept() {
+        assert!(usable_over_tls(Some("mandatory")));
+        assert!(usable_over_tls(Some("optional")));
+        // A field Steam has not sent is not a refusal.
+        assert!(usable_over_tls(None));
+        // An unrecognised value is not assumed hostile: the connection either
+        // verifies or it does not, and that check is the real gate.
+        assert!(usable_over_tls(Some("something-new")));
     }
 }

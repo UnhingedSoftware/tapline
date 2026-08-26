@@ -42,6 +42,14 @@ struct Connection {
 /// pool is per-host because that is the unit the CDN rate-limits on.
 pub struct HttpClient {
     pools: Mutex<HashMap<String, Vec<Connection>>>,
+    /// How many idle connections to keep across all hosts.
+    ///
+    /// Per-host alone is not a bound: with a wide host list it multiplies. At
+    /// 84 hosts and 8 idle each, an install could sit on 672 idle sockets on
+    /// top of the ones actually in flight and the files being written — enough
+    /// to run a 1,024-descriptor process out of descriptors without a single
+    /// one of them doing any work.
+    idle_total: usize,
     /// How many idle connections to keep per host.
     ///
     /// Small: an idle TLS connection costs memory on both ends, and the
@@ -63,6 +71,7 @@ impl HttpClient {
         Self {
             pools: Mutex::new(HashMap::new()),
             idle_per_host: 8,
+            idle_total: 96,
         }
     }
 
@@ -84,6 +93,13 @@ impl HttpClient {
     /// Returns a connection to the pool, dropping it if the pool is full.
     async fn release(&self, host: &str, connection: Connection) {
         let mut pools = self.pools.lock().await;
+        // Both bounds, because either alone lets the other run away: per-host
+        // keeps one cache from hoarding the pool, and the total keeps a wide
+        // host list from exhausting the process's descriptors.
+        let idle: usize = pools.values().map(Vec::len).sum();
+        if idle >= self.idle_total {
+            return;
+        }
         let pool = pools.entry(host.to_owned()).or_default();
         if pool.len() < self.idle_per_host {
             pool.push(connection);

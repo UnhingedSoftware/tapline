@@ -116,13 +116,38 @@ impl Session {
         self.cell_id
     }
 
+    /// How many CDN hosts to ask Steam for.
+    ///
+    /// 20, and widening it is a trap worth documenting. Steam offers 83 for this
+    /// cell, and the guess was that ~184 MB/s across 20 of them meant a per-host
+    /// cap that more hosts would lift. Measured on Garry's Mod:
+    ///
+    /// | hosts | chunks in flight | throughput |
+    /// |---|---|---|
+    /// | 20 | 64  | 184 MB/s |
+    /// | 20 | 96  | 164 MB/s |
+    /// | 40 | 128 |  60 MB/s |
+    /// | 60 | 192 |  59 MB/s |
+    ///
+    /// The last two hold chunks-per-host constant at 3.2 and still collapse, so
+    /// it is not contention for a fixed number of caches. It is connection
+    /// reuse: chunks round-robin across the whole list, so a wider list means a
+    /// given host is revisited less often, its pooled connection is evicted
+    /// before it is wanted again, and the request pays a fresh TLS handshake
+    /// instead of riding a warm socket. Twenty hosts stay warm; sixty do not.
+    ///
+    /// Raising this without also making host selection sticky per in-flight
+    /// slot makes downloads three times slower. That work is worth doing — it
+    /// would let a fat link use the whole fleet — and until it exists, 20.
+    const MAX_CDN_HOSTS: u32 = 20;
+
     /// Fetches the CDN host list for this cell.
     async fn refresh_hosts(&mut self) -> Result<(), InstallError> {
         let directory = self
             .cm
             .call(&CContentServerDirectory_GetServersForSteamPipe_Request {
                 cell_id: Some(self.cell_id),
-                max_servers: Some(20),
+                max_servers: Some(Self::MAX_CDN_HOSTS),
                 ..CContentServerDirectory_GetServersForSteamPipe_Request::default()
             })
             .await?;
@@ -131,6 +156,9 @@ impl Session {
             .servers
             .iter()
             .filter_map(|server| {
+                if !tapline_cdn::usable_over_tls(server.https_support.as_deref()) {
+                    return None;
+                }
                 let host = server.host.clone()?;
                 Some(Host {
                     vhost: server.vhost.clone().unwrap_or_else(|| host.clone()),
