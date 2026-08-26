@@ -7,6 +7,7 @@ members = [
     "crates/tapline-proto",
     "crates/tapline-io",
     "crates/tapline-net",
+    "crates/tapline-rt-tokio",
     "crates/tapline-vdf",
     "crates/tapline-wire",
     "xtask",
@@ -36,6 +37,7 @@ tapline-zstd = { path = "crates/tapline-zstd" }
 tapline-event = { path = "crates/tapline-event" }
 tapline-io = { path = "crates/tapline-io" }
 tapline-net = { path = "crates/tapline-net" }
+tapline-rt-tokio = { path = "crates/tapline-rt-tokio" }
 
 # async + parallelism. `tokio` is a dependency of tapline-rt-tokio ALONE, so a
 # host application that already runs its own reactor never inherits ours.
@@ -47,6 +49,11 @@ bytes = "1"
 # IContentServerDirectoryService/GetServersForSteamPipe reports
 # "https_support":"mandatory", so TLS is core, not optional.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+# The async adapter around rustls. Driving rustls's state machine by hand over a
+# TcpStream is about 120 lines, and it is 120 lines where a mistake is a security
+# bug rather than a wrong answer — the same reason the cipher primitives are not
+# hand-rolled either. This is the rustls team's own adapter.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
 
 # crypto. The one place we do not write it ourselves: hand-rolled block ciphers

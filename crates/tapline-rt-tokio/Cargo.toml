@@ -1,0 +1,28 @@
+[package]
+name = "tapline-rt-tokio"
+description = "The tokio runtime: a WebSocket transport to Steam's CMs, an HTTP client for the CDN, and a positional file sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# The only crate in the workspace that opens a socket, and therefore the only one
+# that depends on tokio. A service with its own reactor links `tapline` without
+# inheriting ours.
+[dependencies]
+rustls = { workspace = true }
+tapline-crypto = { workspace = true }
+tapline-io = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "io-util", "time", "fs", "macros"] }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+
+[dev-dependencies]
+# The doctest and the live tests drive a real session, which is the only way to
+# show what this crate is for.
+tapline-net = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

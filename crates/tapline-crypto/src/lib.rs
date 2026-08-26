@@ -53,6 +53,20 @@ pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
     mac.finalize().into_bytes().into()
 }
 
+/// Fills an array from the operating system's RNG.
+///
+/// Every random value in the workspace comes from here so there is one place to
+/// look when asking "is this actually random". Used for session keys and for
+/// WebSocket frame masks — the latter looks cosmetic but is not, since a
+/// predictable mask defeats the cache-poisoning defence the mask exists for.
+#[must_use]
+pub fn random_bytes<const N: usize>() -> [u8; N] {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0_u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
 /// Compares two byte strings in time independent of their contents.
 ///
 /// Used for MAC comparison. A short-circuiting `==` would leak how many leading
