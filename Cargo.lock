@@ -414,6 +414,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapline-event"
+version = "0.1.0"
+dependencies = [
+ "tapline-ids",
+]
+
+[[package]]
 name = "tapline-ids"
 version = "0.1.0"
 

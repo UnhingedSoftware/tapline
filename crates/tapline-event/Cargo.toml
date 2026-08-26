@@ -1,0 +1,17 @@
+[package]
+name = "tapline-event"
+description = "The progress and event vocabulary a download reports to its caller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# The one internal dependency a leaf takes, and only because an event carrying a
+# bare u32 where a DepotId belongs would put the type confusion in the public
+# API. tapline-ids has no dependencies of its own, so the DAG stays two deep.
+[dependencies]
+tapline-ids = { workspace = true }
+
+[lints]
+workspace = true

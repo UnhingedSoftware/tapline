@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/tapline-crypto",
+    "crates/tapline-event",
     "crates/tapline-ids",
     "crates/tapline-io",
     "crates/tapline-vdf",
