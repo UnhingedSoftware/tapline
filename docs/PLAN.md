@@ -333,7 +333,7 @@ tapline login --qr | tapline logout | tapline whoami
 The gate column is the milestone's test, written in the same commits as the code.
 No milestone closes on "it ran once by hand".
 
-Status as of 2026-08-26: **M0–M7 done**, each verified against live Steam where
+Status as of 2026-08-26: **M0–M8 done**, each verified against live Steam where
 the gate says so. 237 offline tests; the live tests are `#[ignore]`d.
 
 M6's differential passed: a 1.7 GB Valheim Dedicated Server install is
@@ -342,6 +342,9 @@ M6's differential passed: a 1.7 GB Valheim Dedicated Server install is
 M7's gate passed: a second install into the same directory downloads 0 bytes
 and rewrites 0 files, and the install record round-trips byte-identically
 against one steamcmd wrote.
+
+M8's gate passed: a Garry's Mod Workshop item is byte-identical to what
+`steamcmd +workshop_download_item` produces, in the same directory layout.
 
 | # | milestone | gate |
 |---|---|---|
@@ -353,7 +356,7 @@ against one steamcmd wrote.
 | M5 ✅ | depot keys + `tapline-manifest` → `app plan` | our manifest parse is byte-identical to steamcmd's `depotcache/*.manifest` |
 | M6 ✅ | `tapline-cdn` + `tapline-fs`: first full install | `diff -r` vs a steamcmd install of 232250 is empty |
 | M7 ✅ | `tapline-state`, delta update, resume, `validate`/repair | update across two builds touches only changed files |
-| M8 | Workshop: SteamPipe UGC + legacy UFS | `diff -r` vs steamcmd `workshop_download_item` |
+| M8 ✅ | Workshop: SteamPipe UGC + legacy UFS | `diff -r` vs steamcmd `workshop_download_item` |
 | M9 | credentialed login (password/QR/Guard), token store, owned-app download | login once, re-login from stored token |
 | M10 | perf pass, steamcmd grammar, musl release, size budgets in CI, docs, publish | benchmark + size table in README; `cargo tree` test on the metadata build |
 

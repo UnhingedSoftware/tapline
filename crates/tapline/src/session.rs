@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tapline_cdn::{Host, HostPool, fetch_chunk, fetch_manifest};
 use tapline_event::Plan;
 use tapline_fs::validate_path;
-use tapline_ids::{AppId, DepotId};
+use tapline_ids::{AppId, DepotId, PublishedFileId};
 use tapline_io::Sink;
 use tapline_manifest::Manifest;
 use tapline_net::{EMsg, Frame, Session as CmSession};
@@ -20,6 +20,7 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
     CContentServerDirectory_GetManifestRequestCode_Request,
     CContentServerDirectory_GetServersForSteamPipe_Request,
 };
+use tapline_proto::steammessages_publishedfile_steamclient::CPublishedFile_GetDetails_Request;
 use tapline_rt_tokio::{CmTransport, FileSink, HttpClient, cm_list};
 use tapline_state::AppState;
 use tapline_wire::Message;
@@ -360,6 +361,179 @@ impl Session {
         state
             .write(&options.install_dir, app)
             .map_err(|e| InstallError::Io(e.to_string()))?;
+
+        Ok(report)
+    }
+
+    /// Makes a unified-message call on the session's CM connection.
+    ///
+    /// Exposed so a caller can reach a service this facade does not wrap —
+    /// `PublishedFile.QueryFiles`, say — without opening a second session.
+    pub async fn call_raw<R: tapline_wire::Rpc>(
+        &mut self,
+        request: &R,
+    ) -> Result<R::Response, InstallError> {
+        Ok(self.cm.call(request).await?)
+    }
+
+    /// Describes Workshop items.
+    ///
+    /// Items Steam refuses, or describes with nothing fetchable, come back as
+    /// errors in place rather than being dropped: asking for five items and
+    /// getting three back silently is worse than being told which two failed.
+    pub async fn workshop_details(
+        &mut self,
+        ids: &[PublishedFileId],
+    ) -> Result<Vec<Result<crate::WorkshopItem, crate::WorkshopError>>, InstallError> {
+        let response = self
+            .cm
+            .call(&CPublishedFile_GetDetails_Request {
+                publishedfileids: ids.iter().map(|id| id.get()).collect(),
+                includechildren: Some(true),
+                short_description: Some(true),
+                ..CPublishedFile_GetDetails_Request::default()
+            })
+            .await?;
+
+        // Each item needs its app's workshop depot, and several items usually
+        // share an app — so PICS is asked once per app rather than once per
+        // item.
+        let mut depots: HashMap<AppId, Option<DepotId>> = HashMap::new();
+        let mut out = Vec::with_capacity(ids.len());
+
+        for details in &response.publishedfiledetails {
+            let app = AppId(details.consumer_appid.unwrap_or(0));
+
+            let workshop_depot = match depots.get(&app) {
+                Some(cached) => *cached,
+                None => {
+                    let resolved = if app.get() == 0 {
+                        None
+                    } else {
+                        tapline_pics::product_info(&mut self.cm, app)
+                            .await
+                            .ok()
+                            .and_then(|info| info.workshop_depot())
+                    };
+                    depots.insert(app, resolved);
+                    resolved
+                }
+            };
+
+            out.push(crate::classify(details, workshop_depot));
+        }
+
+        // An item Steam did not return at all is still an answer the caller
+        // asked for.
+        for id in ids {
+            let mentioned = response
+                .publishedfiledetails
+                .iter()
+                .any(|d| d.publishedfileid == Some(id.get()));
+            if !mentioned {
+                out.push(Err(crate::WorkshopError::NotReturned { id: *id }));
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Downloads one Workshop item.
+    ///
+    /// SteamPipe items go through the same path as depot content — request
+    /// code, manifest, chunks, verify — because that is literally what they
+    /// are. Legacy items are a single HTTPS fetch.
+    pub async fn download_workshop_item(
+        &mut self,
+        item: &crate::WorkshopItem,
+        options: &InstallOptions,
+    ) -> Result<InstallReport, InstallError> {
+        let target = crate::options_for(options, item.app, item.id);
+        std::fs::create_dir_all(&target.install_dir)?;
+
+        let mut report = InstallReport {
+            app: item.app,
+            ..InstallReport::default()
+        };
+
+        match &item.content {
+            crate::WorkshopContent::SteamPipe { depot, manifest } => {
+                let key = self.depot_key(item.app, *depot).await?;
+
+                let code = self
+                    .cm
+                    .call(&CContentServerDirectory_GetManifestRequestCode_Request {
+                        app_id: Some(item.app.get()),
+                        depot_id: Some(depot.get()),
+                        manifest_id: Some(manifest.get()),
+                        app_branch: Some("public".to_owned()),
+                        branch_password_hash: None,
+                    })
+                    .await?
+                    .manifest_request_code
+                    .unwrap_or(0);
+
+                let host = self.pool.acquire()?;
+                let content = fetch_manifest(
+                    self.http.as_ref(),
+                    &host.host,
+                    *depot,
+                    manifest.get(),
+                    code,
+                    Some(&key),
+                )
+                .await?;
+
+                let entry = ResolvedDepot {
+                    depot: tapline_pics::Depot {
+                        id: *depot,
+                        manifest: *manifest,
+                        size: content.total_size,
+                        download_size: 0,
+                        owner: item.app,
+                    },
+                    manifest: content,
+                    key,
+                };
+                report.depots.push(*depot);
+                self.install_depot(&entry, &target, &mut report).await?;
+            }
+
+            crate::WorkshopContent::Legacy { url, filename } => {
+                // No chunking, no encryption, no manifest — just the blob. The
+                // filename comes from the item, and is validated like any other
+                // path from a manifest because it is just as attacker-authored.
+                let name = filename.as_deref().unwrap_or("contents.bin");
+                let safe = validate_path(name).map_err(|reason| InstallError::UnsafePath {
+                    path: name.to_owned(),
+                    reason,
+                })?;
+
+                let response = tapline_io::Fetch::get(
+                    self.http.as_ref(),
+                    tapline_io::Request::get(url.clone()),
+                    item.size.max(1) + 4096,
+                )
+                .await
+                .map_err(|e| InstallError::Io(e.to_string()))?;
+
+                if !response.is_success() {
+                    return Err(InstallError::Io(format!(
+                        "the Workshop CDN answered {} for {url}",
+                        response.status
+                    )));
+                }
+
+                let path = safe.resolve(&target.install_dir);
+                let sink = FileSink::create(&path)?;
+                sink.write_at(0, &response.body).await?;
+                sink.sync().await?;
+
+                report.files = 1;
+                report.bytes_written = response.body.len() as u64;
+                report.bytes_downloaded = response.body.len() as u64;
+            }
+        }
 
         Ok(report)
     }
