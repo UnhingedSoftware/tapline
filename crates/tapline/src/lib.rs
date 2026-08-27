@@ -36,6 +36,7 @@ mod remote;
 mod session;
 mod shared;
 mod streaming;
+pub mod tuning;
 mod validate;
 mod workshop;
 
@@ -47,6 +48,7 @@ pub use remote::RemoteFile;
 pub use session::Session;
 pub use shared::Shared;
 pub use streaming::{Consumer, Reorderer, StreamReport, Window};
+pub use tuning::retune;
 pub use validate::{Damage, ValidationReport, validate_manifest};
 pub use workshop::{
     WorkshopContent, WorkshopError, WorkshopItem, classify, item_dir, options_for, target_dir,

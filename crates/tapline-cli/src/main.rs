@@ -25,7 +25,9 @@ Native:
   tapline app plan APPID --dir DIR [--branch NAME] [--json]
       What an install would cost. Fetches no content.
   tapline app download APPID --dir DIR [--branch NAME] [--validate] [--json]
-                            [--concurrency N]   chunks in flight; default 64
+                            [--concurrency N]   chunks in flight; default 10.
+                              Peak memory is about 15 + 1.1N MB; 24 is ~25%
+                              faster and costs ~41 MB.
       Install or update. Downloads nothing if already current.
   tapline app info APPID [--json]
       Depots, branches and sizes.
@@ -46,7 +48,20 @@ Options:
   --version   version
 ";
 
+/// How many threads may be blocked on the filesystem at once.
+///
+/// Well under tokio's default of 512, and deliberately: the blocking pool here
+/// does one thing, which is `fsync` on a finished file. Measured on a 1.5 GB
+/// install, four against the default is 22.5–23.2 MB and 18.2–18.6 s against
+/// 24.7–25.1 MB and 18.2–21.7 s — cheaper on both axes, because a thread that
+/// only waits on a disk does not go faster for having company.
+const BLOCKING_THREADS: usize = 4;
+
 fn main() -> ExitCode {
+    // First statement, before the runtime or anything worth keeping: this
+    // replaces the process. Roughly halves peak memory; see `tapline::tuning`.
+    tapline::retune();
+
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     let command = match args::parse(&arguments) {
@@ -72,6 +87,7 @@ fn main() -> ExitCode {
             // --help and --version cost nothing.
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                .max_blocking_threads(BLOCKING_THREADS)
                 .build()
             {
                 Ok(runtime) => runtime,
