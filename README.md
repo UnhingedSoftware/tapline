@@ -158,10 +158,20 @@ and another download's chunks fill those gaps.
 
 ## Where the ceiling actually is
 
-A single install tops out around **1.45 Gb/s** on a 2.5 Gb link, and that limit
-**is ours** — two connection pools in one process reach 1.83 Gb/s together, so
-neither the link nor Steam is the constraint. What that limit *is* has not been
-identified yet, and the honest list below is mostly of things it is not.
+A single install tops out around **1.45 Gb/s**, and this machine can pull
+**2.03 Gb/s** from Steam in total — measured by running 1, 2, 3 and 4 installs at
+once (1.39, 1.73, 1.95, 2.03), which flattens out well below the 2.5 Gb link. So
+one install gets about 70% of what is there, and the missing 30% needs a second
+download stream to reach, not a bigger number anywhere.
+
+Where a request's time goes, measured over 2,406 of them: **24.9 ms waiting for
+headers, 72.6 ms reading the body, 97.5 ms total**. Multiply that out and the
+average number in flight is 27, not the 48 the budget allows — a slot is held for
+the whole chunk, so it is not fetching while its chunk decodes. Releasing the
+slot the moment the bytes are down raises the average to 31 and changes
+throughput not at all: each request simply gets slower. That is what a per-stream
+cap looks like from the inside, and it is why the list below is mostly things
+that are *not* the constraint.
 
 | change | result |
 |---|---|
@@ -171,16 +181,25 @@ identified yet, and the honest list below is mostly of things it is not.
 | fewer CDN hosts (4, 8, 12) | no change within noise |
 | bigger idle connection pool (32/256, 64/512) | no change beyond noise |
 | sticky host affinity per slot | **40–55% slower** |
-| a second connection pool in the same process | **1.42 → 1.83 Gb/s** |
+| sharding one install across 2, 4, 8 connection pools | no change: 1.28-1.46 Gb/s |
+| releasing the chunk slot after the fetch instead of after the write | no change |
+| a second, third, fourth concurrent install | **1.39 → 1.73 → 1.95 → 2.03 Gb/s** |
 
 The decode row is the one that mattered, and it was a self-inflicted wound: the
 pool was capped at four threads in an earlier commit here, on a measurement
 taken while `--concurrency` was itself silently capped at 8. Four decode threads
 really were enough for eight chunks in flight. At 48 they cost 40% of the link.
 
-CPU sits at 3.6–4.1 cores of 32 and the disk writes at 1.9 GB/s, so neither is
-close. Sharding one install across several pools is the obvious next experiment,
-with 1.83 Gb/s as its measured upper bound so far.
+CPU sits at 3.6–4.1 cores of 32, the disk writes at 1.9 GB/s, per-file setup is
+0.03 s of an 8 s install, and 96% of requests reuse a pooled connection (2,313
+against 93 fresh). None of those is close to being the constraint.
+
+What is left, and is not yet explained: several installs beat one, while every
+way of making a single install *look* like several — more slots, more pools,
+more hosts, earlier slot release — does not. The next thing worth testing is
+sticky host assignment per slot, which was tried once and lost badly; that
+measurement was taken while chunk decode was capped at four threads, so it
+deserves a rerun for the same reason the concurrency tables did.
 
 The sticky experiment is the informative failure. Chunks round-robin across the
 host list, so a host's pooled connection can go cold between visits and pay a
