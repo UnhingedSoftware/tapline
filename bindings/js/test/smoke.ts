@@ -23,6 +23,7 @@ import {
   Job,
   plan,
   version,
+  workshop,
 } from "../src/index.ts";
 
 let failures = 0;
@@ -99,7 +100,86 @@ await test("a callback-style consumer gets the same failure", async () => {
   assert(message.includes("cancelled"), `unexpected: ${message}`);
 });
 
+await test("the chain compiles to the text form the ABI takes", () => {
+  // The chain is a Rust API that cannot cross a C ABI, so what actually travels
+  // is this text. If the two disagree the failure is a parse error from inside
+  // the native library, which says nothing about the chain that produced it.
+  const text = workshop(4000, 104691717)
+    .gma()
+    .only("lua/**")
+    .pick("lua/autorun/init.lua")
+    .text("zip", "/srv/out.zip");
+  assert(
+    text === "decode gma\nonly lua/**\npick lua/autorun/init.lua\nzip /srv/out.zip\n",
+    `unexpected text form:\n${text}`,
+  );
+});
+
+await test("a chain step returns a new chain rather than mutating one", () => {
+  // Reusing a partly-built chain is the obvious thing to do with a builder, and
+  // it is only safe if each step is a copy.
+  const base = workshop(4000, 104691717).gma().only("lua/**");
+  const a = base.pick("a.lua").text("dir", "/x");
+  const b = base.pick("b.lua").text("dir", "/x");
+  assert(a.includes("a.lua") && !a.includes("b.lua"), `leaked into a:\n${a}`);
+  assert(b.includes("b.lua") && !b.includes("a.lua"), `leaked into b:\n${b}`);
+});
+
+await test("a bad directive fails before anything downloads", async () => {
+  let message = "";
+  try {
+    await workshop(4000, 104691717).decode("rar").dir(scratch("bad-format"));
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assert(message.includes("rar"), `unexpected: ${message}`);
+  assert(message.includes("gma"), `the refusal should list what works: ${message}`);
+});
+
 if (process_env("TAPLINE_LIVE") === "1") {
+  await test("a filtered chain downloads less than the whole archive", async () => {
+    // The capability the chain exists for: a selection makes the *download*
+    // selective, rather than fetching everything and discarding on arrival.
+    const whole = await workshop(4000, 104691717)
+      .gma()
+      .dir(scratch("chain-all"));
+
+    const part = await workshop(4000, 104691717)
+      .gma()
+      .only("lua/**")
+      .dir(scratch("chain-lua"));
+
+    assert(whole.entries > part.entries, `no narrowing: ${whole.entries} vs ${part.entries}`);
+    assert(
+      part.bytesDownloaded < whole.bytesDownloaded,
+      `a filter fetched no less: ${part.bytesDownloaded} of ${whole.bytesDownloaded}`,
+    );
+    console.log(
+      `    ${part.entries}/${whole.entries} entries, ` +
+        `${part.bytesDownloaded} of ${whole.bytesDownloaded} bytes`,
+    );
+  });
+
+  await test("a chain writes a zip and reports what went into it", async () => {
+    const out = `${scratch("chain-zip")}/out.zip`;
+    const report = await workshop(4000, 104691717).gma().only("lua/**").zip(out);
+    assert(report.entries > 0, "the zip got no entries");
+    assert(report.bytesDownloaded > 0, "nothing was downloaded");
+  });
+
+  await test("picking a file that is not there is an error, not an empty result", async () => {
+    let message = "";
+    try {
+      await workshop(4000, 104691717)
+        .gma()
+        .pick("definitely/not/here.lua")
+        .dir(scratch("chain-missing"));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assert(message.length > 0, "a missing pick succeeded silently");
+  });
+
   await test("plan reports a real app's cost without downloading it", async () => {
     const report = await plan({ app: 4020, dir: scratch("plan-only") });
     assert(report.totalBytes > 1_000_000_000, `too small: ${report.totalBytes}`);

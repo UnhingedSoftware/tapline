@@ -17,6 +17,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 tapline = { workspace = true }
 tapline-ids = { workspace = true }
 tapline-gmad = { workspace = true }
+tapline-pipe = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
 # Not `workspace = true`. The workspace forbids unsafe, and `forbid` cannot be

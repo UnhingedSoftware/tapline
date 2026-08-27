@@ -551,6 +551,107 @@ pub unsafe extern "C" fn tapline_workshop_download(
     )
 }
 
+/// Runs a pipeline given in its text form.
+///
+/// The chain in `tapline-pipe` is a Rust API and cannot cross a C ABI, so what
+/// travels is the text form it builds — one directive per line:
+///
+/// ```text
+/// decode gma
+/// only lua/**
+/// zip /srv/out.zip
+/// ```
+///
+/// This is the entry point every binding's chain compiles down to. It is also
+/// what makes a filtered download cheap from JavaScript: a pipeline that
+/// selects part of an archive fetches only the chunks that part lives in,
+/// which the existing `tapline_workshop_download` has no way to express.
+///
+/// # Safety
+///
+/// `spec` must be a null-terminated UTF-8 string or null, and `out` must be a
+/// valid pointer to write the job handle to.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tapline_pipeline(
+    app_id: u32,
+    item_id: u64,
+    spec: *const c_char,
+    concurrency: u32,
+    out: *mut *mut TaplineJob,
+) -> i32 {
+    let Some(spec) = (unsafe { read_str(spec) }) else {
+        set_error("the pipeline was null or not UTF-8");
+        return TAPLINE_BAD_ARGUMENT;
+    };
+
+    // Parsed and validated before the job starts, so a bad directive is a
+    // synchronous error rather than a failure delivered through the event
+    // queue after a download has already begun.
+    let pipeline = match tapline_pipe::Pipeline::parse(spec) {
+        Ok(pipeline) => pipeline,
+        Err(error) => {
+            set_error(error.to_string());
+            return TAPLINE_BAD_ARGUMENT;
+        }
+    };
+    if let Err(error) = pipeline.validate() {
+        set_error(error.to_string());
+        return TAPLINE_BAD_ARGUMENT;
+    }
+
+    let window = if concurrency == 0 {
+        tapline::Window::default()
+    } else {
+        tapline::Window::new(concurrency as usize)
+    };
+
+    let pool_handle = pool().cloned();
+    spawn_job(
+        move |sender| async move {
+            let Some(pool_handle) = pool_handle else {
+                send_error(&sender, "the tapline runtime could not be started");
+                return;
+            };
+            match pool_handle.acquire().await {
+                Err(error) => send_error(&sender, &error.to_string()),
+                Ok(mut session) => {
+                    let forward = sender.clone();
+                    let result = tapline_pipe::run_pipeline(
+                        &mut session,
+                        AppId(app_id),
+                        PublishedFileId(item_id),
+                        window,
+                        &pipeline,
+                        &mut |event| {
+                            let _ = forward.send(event::encode(&event));
+                        },
+                    )
+                    .await;
+
+                    match result {
+                        Err(error) => send_error(&sender, &error.to_string()),
+                        Ok(outcome) => {
+                            let mut out = String::from("{");
+                            json::push_str_field(&mut out, "kind", "piped");
+                            json::push_u64(&mut out, "entries", outcome.entries as u64);
+                            json::push_u64(&mut out, "bytesDownloaded", outcome.bytes_downloaded);
+                            json::push_u64(&mut out, "bytesStreamed", outcome.bytes_streamed);
+                            json::push_u64(
+                                &mut out,
+                                "peakBufferedChunks",
+                                outcome.peak_buffered as u64,
+                            );
+                            out.push('}');
+                            let _ = sender.send(out);
+                        }
+                    }
+                }
+            }
+        },
+        out,
+    )
+}
+
 /// Streams a Workshop item into a Garry's Mod extractor.
 ///
 /// Kept out of the job body because the borrow of the extractor by the consumer

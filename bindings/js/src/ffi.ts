@@ -45,6 +45,13 @@ export interface Ffi {
     extensions: string | null,
     stream: number,
   ): bigint;
+  /** Runs a pipeline given in its text form. */
+  pipeline(
+    app: number,
+    item: bigint,
+    spec: string,
+    concurrency: number,
+  ): bigint;
   /** Waits for the next event. Resolves to null when the job is over. */
   next(job: bigint, timeoutMs: number): Promise<string | null>;
   cancel(job: bigint): void;
@@ -240,6 +247,10 @@ async function loadDeno(path: string): Promise<Ffi> {
       parameters: ["u32", "u64", "buffer", "u32", "u8", "buffer", "u8", "buffer"],
       result: "i32",
     },
+    tapline_pipeline: {
+      parameters: ["u32", "u64", "buffer", "u32", "buffer"],
+      result: "i32",
+    },
     tapline_job_next: {
       parameters: ["pointer", "u32", "buffer", "usize", "buffer"],
       result: "i32",
@@ -316,6 +327,17 @@ async function loadDeno(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "workshop download", lastError);
     },
+    pipeline(app, item, spec, concurrency) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_pipeline(
+        app,
+        item,
+        cstring(spec),
+        concurrency,
+        new Uint8Array(out.buffer),
+      );
+      return readJobPointer(out, code, "pipeline", lastError);
+    },
     async next(job, timeoutMs) {
       let buffer = new Uint8Array(INITIAL_BUFFER);
       for (;;) {
@@ -375,6 +397,10 @@ async function loadBun(path: string): Promise<Ffi> {
         FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32,
         FFIType.u8, FFIType.ptr, FFIType.u8, FFIType.ptr,
       ],
+      returns: FFIType.i32,
+    },
+    tapline_pipeline: {
+      args: [FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr],
       returns: FFIType.i32,
     },
     tapline_job_next: {
@@ -442,6 +468,13 @@ async function loadBun(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "workshop download", lastError);
     },
+    pipeline(app, item, spec, concurrency) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_pipeline(
+        app, item, ptr(cstring(spec)), concurrency, ptr(out),
+      );
+      return readJobPointer(out, code, "pipeline", lastError);
+    },
     async next(job, timeoutMs) {
       let buffer = new Uint8Array(INITIAL_BUFFER);
       const deadline = Date.now() + timeoutMs;
@@ -502,6 +535,9 @@ async function loadNode(path: string): Promise<Ffi> {
   const workshop = lib.func(
     "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, uint8_t, _Out_ void**)",
   );
+  const pipelineFn = lib.func(
+    "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
+  );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
   );
@@ -551,6 +587,12 @@ async function loadNode(path: string): Promise<Ffi> {
       if (code !== OK) {
         throw new Error(`workshop download: ${lastError() || `code ${code}`}`);
       }
+      return asPointer(out);
+    },
+    pipeline(app, item, spec, concurrency) {
+      const out: unknown[] = [null];
+      const code = pipelineFn(app, item, spec, concurrency, out);
+      if (code !== OK) throw new Error(`pipeline: ${lastError() || `code ${code}`}`);
       return asPointer(out);
     },
     next(job, timeoutMs) {

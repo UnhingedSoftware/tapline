@@ -1347,6 +1347,7 @@ dependencies = [
  "tapline",
  "tapline-gmad",
  "tapline-ids",
+ "tapline-pipe",
  "tokio",
 ]
 

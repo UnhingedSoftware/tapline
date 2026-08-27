@@ -193,6 +193,66 @@ saving scales with the addon.
 `stream: true` implies the flat layout and ignores `extensions`, since the
 archive those act on never exists. From the CLI it is `--stream`.
 
+## Pipelines
+
+`downloadWorkshopItem` writes an item somewhere. When you want *part* of one, or
+want it converted as it lands, there is a chain:
+
+```ts
+import { workshop } from "tapline";
+
+const report = await workshop(4000, 104691717)
+  .gma()                       // read it as a Garry's Mod addon
+  .only("lua/**")              // take the Lua, leave the models
+  .zip("/srv/addons/out.zip"); // one destination, and it ends the chain
+
+console.log(`${report.entries} entries, ${report.bytesDownloaded} bytes fetched`);
+```
+
+**A selection makes the download selective.** This is the point, not a
+convenience: the chunks holding entries you did not ask for are never requested,
+rather than fetched and thrown away on arrival. Measured on a real 8.4 MB addon,
+`only("lua/**")` fetched **816 KB of 3.17 MB** and produced 195 of 348 entries.
+
+| step | does |
+|---|---|
+| `.gma()` / `.zip()` / `.decode(name)` | how to read the download |
+| `.only(glob)` | take matching entries; repeatable, matching nothing is fine |
+| `.pick(path)` | take one exact path; missing it is an **error** |
+| `.window(chunks)` | how many chunks to hold while reordering |
+| `.onProgress(fn)` / `.onEvent(fn)` | watch it run |
+| `.dir(p)` / `.zip(p)` / `.zipStored(p)` | where it goes — ends the chain |
+
+`only` and `pick` differ deliberately. A pattern that matches nothing is a
+legitimate answer: you asked what was there and nothing was. A named file that
+is not in the archive means you are wrong about the archive, and running anyway
+would produce an empty result that looks like success.
+
+**One destination.** A stream has a direction, so writing the same download to
+two places would mean buffering for whichever sink is behind — a different
+operation with different costs, not a flag.
+
+Every step returns a new chain, so a half-built one is safe to reuse:
+
+```ts
+const lua = workshop(4000, 104691717).gma().only("lua/**");
+await lua.dir("/srv/a");
+await lua.zip("/srv/b.zip");   // the first call did not consume it
+```
+
+The chain is TypeScript and cannot cross a C ABI, so it compiles to a small text
+form which is what actually travels — the same one the Rust chain produces:
+
+```
+decode gma
+only lua/**
+zip /srv/addons/out.zip
+```
+
+`.text(sink, path)` returns it, which is worth having when a pipeline misbehaves
+and you want to see what was actually sent. A bad directive is refused
+synchronously, before anything downloads.
+
 ## Installing
 
 ```sh

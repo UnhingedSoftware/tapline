@@ -62,6 +62,11 @@ export interface StreamedEvent extends StreamReport {
   kind: "streamed";
 }
 
+/** The last event of a successful pipeline run. */
+export interface PipedEvent extends PipeReport {
+  kind: "piped";
+}
+
 /** An extension acted on a file it claimed. */
 export interface ExtendedEvent {
   kind: "extended";
@@ -117,6 +122,7 @@ export type TaplineEvent =
   | CompletedEvent
   | ExtendedEvent
   | StreamedEvent
+  | PipedEvent
   | FinishedEvent
   | ErrorEvent
   | UnknownEvent;
@@ -233,6 +239,22 @@ export interface WorkshopOptions {
 }
 
 /** What a streamed download produced. */
+/** What a pipeline produced. */
+export interface PipeReport {
+  /** Entries written to the destination. */
+  entries: number;
+  /** Bytes fetched from the CDN.
+   *
+   * With a selection this is less than the archive's size: the chunks holding
+   * unselected entries are never requested.
+   */
+  bytesDownloaded: number;
+  /** Bytes handed to the decoder. */
+  bytesStreamed: number;
+  /** The most chunks held back at once, waiting on an earlier one. */
+  peakBufferedChunks: number;
+}
+
 export interface StreamReport {
   /** Files written. */
   files: number;

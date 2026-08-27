@@ -32,6 +32,7 @@ import { type Ffi, load } from "./ffi.ts";
 import type {
   InstallOptions,
   InstallReport,
+  PipeReport,
   PlanOptions,
   PlanReport,
   StreamReport,
@@ -496,4 +497,170 @@ export function downloadWorkshopItem(
     },
     progressBridge(options.onEvent, options.onProgress),
   );
+}
+
+
+/** A pipeline destination. One only — see {@link Decoded.dir}. */
+type Sink =
+  | { readonly directive: "dir"; readonly path: string }
+  | { readonly directive: "zip"; readonly path: string }
+  | { readonly directive: "zip-stored"; readonly path: string };
+
+/** What a chain has accumulated. Immutable; every step returns a new one. */
+interface Spec {
+  readonly app: number;
+  readonly item: bigint;
+  readonly format: string;
+  readonly filters: readonly string[];
+  readonly picks: readonly string[];
+  readonly concurrency: number;
+  readonly onEvent?: (event: TaplineEvent) => void;
+  readonly onProgress?: WorkshopOptions["onProgress"];
+}
+
+/** Renders a spec as the text form the C ABI takes. */
+function toText(spec: Spec, sink: Sink): string {
+  const lines = [`decode ${spec.format}`];
+  for (const filter of spec.filters) lines.push(`only ${filter}`);
+  for (const pick of spec.picks) lines.push(`pick ${pick}`);
+  lines.push(`${sink.directive} ${sink.path}`);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * A Workshop item that has been given a format, and can now be narrowed and
+ * pointed somewhere.
+ */
+class Decoded {
+  readonly #spec: Spec;
+
+  constructor(spec: Spec) {
+    this.#spec = spec;
+  }
+
+  /**
+   * Takes only entries matching a glob. Repeatable; the matches are a union.
+   *
+   * Selecting makes the download itself selective — the chunks holding the
+   * entries you did not ask for are never fetched, rather than fetched and
+   * discarded. A pattern matching nothing is a legitimate answer.
+   */
+  only(pattern: string): Decoded {
+    return new Decoded({
+      ...this.#spec,
+      filters: [...this.#spec.filters, pattern],
+    });
+  }
+
+  /**
+   * Takes one exact path, whatever the globs say.
+   *
+   * Unlike {@link Decoded.only}, a path that is not in the archive is an error:
+   * you are asserting something about the archive, and running anyway would
+   * produce an empty result that looks like success.
+   */
+  pick(path: string): Decoded {
+    return new Decoded({ ...this.#spec, picks: [...this.#spec.picks, path] });
+  }
+
+  /** Reports progress while it runs. */
+  onProgress(handler: NonNullable<WorkshopOptions["onProgress"]>): Decoded {
+    return new Decoded({ ...this.#spec, onProgress: handler });
+  }
+
+  /** Receives every event while it runs. */
+  onEvent(handler: (event: TaplineEvent) => void): Decoded {
+    return new Decoded({ ...this.#spec, onEvent: handler });
+  }
+
+  /** Unpacks into a directory. */
+  dir(path: string): Job<PipeReport> {
+    return this.#run({ directive: "dir", path });
+  }
+
+  /** Writes a zip, deflating entries that get smaller for it. */
+  zip(path: string): Job<PipeReport> {
+    return this.#run({ directive: "zip", path });
+  }
+
+  /** Writes a zip without deflating: bigger, and faster to produce. */
+  zipStored(path: string): Job<PipeReport> {
+    return this.#run({ directive: "zip-stored", path });
+  }
+
+  /** The text form this chain compiles to. Exposed for debugging and tests. */
+  text(sink: Sink["directive"], path: string): string {
+    return toText(this.#spec, { directive: sink, path } as Sink);
+  }
+
+  #run(sink: Sink): Job<PipeReport> {
+    const spec = this.#spec;
+    const text = toText(spec, sink);
+    return new Job<PipeReport>(
+      (ffi) => ffi.pipeline(spec.app, spec.item, text, spec.concurrency),
+      (events) => {
+        const { kind: _kind, ...report } = lastOfKind(events, "piped");
+        return report;
+      },
+      progressBridge(spec.onEvent, spec.onProgress),
+    );
+  }
+}
+
+/** A Workshop item, before it has been given a meaning. */
+class Source {
+  readonly #spec: Spec;
+
+  constructor(spec: Spec) {
+    this.#spec = spec;
+  }
+
+  /** Reads it as a Garry's Mod addon. */
+  gma(): Decoded {
+    return new Decoded({ ...this.#spec, format: "gma" });
+  }
+
+  /** Reads it as a ZIP. */
+  zip(): Decoded {
+    return new Decoded({ ...this.#spec, format: "zip" });
+  }
+
+  /** Reads it as a named format. */
+  decode(format: string): Decoded {
+    return new Decoded({ ...this.#spec, format });
+  }
+
+  /** How many chunks to hold while reordering. 0 takes the default. */
+  window(chunks: number): Source {
+    return new Source({ ...this.#spec, concurrency: chunks });
+  }
+}
+
+/**
+ * Starts a pipeline over one Workshop item.
+ *
+ * The chain mirrors the Rust one and compiles to the same text form, which is
+ * what actually crosses the C ABI:
+ *
+ * ```ts
+ * const report = await workshop(4000, 104691717)
+ *   .gma()
+ *   .only("lua/**")
+ *   .zip("/srv/out.zip");
+ * ```
+ *
+ * A stream has one direction, so there is one destination and it ends the
+ * chain. Writing the same download to two places would mean buffering for
+ * whichever sink is behind, which is a different operation with different
+ * costs — not a flag.
+ */
+export function workshop(app: number, item: number | bigint): Source {
+  return new Source({
+    app,
+    item: BigInt(item),
+    format: "gma",
+    filters: [],
+    picks: [],
+    concurrency: 0,
+  });
 }

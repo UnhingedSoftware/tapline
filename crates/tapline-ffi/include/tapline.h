@@ -99,6 +99,35 @@ int32_t tapline_workshop_download(uint32_t app_id,
                                   uint8_t stream,
                                   TaplineJob **out);
 
+/* Runs a pipeline over one Workshop item, given in its text form.
+ *
+ * The typed chain in the Rust crate cannot cross a C ABI, so what travels is
+ * the text it builds: one directive per line, the keyword then the rest of the
+ * line, so a path needs no quoting.
+ *
+ *   decode gma        the format to read it as; "gma" or "zip"
+ *   only lua/**       a glob selecting entries; repeatable, matching nothing is
+ *                     a legitimate answer
+ *   pick lua/init.lua an exact path; repeatable, and missing it is an error
+ *   dir /srv/addons   unpack into a directory
+ *   zip /srv/out.zip  write a zip; zip-stored to skip deflating
+ *
+ * Exactly one destination. A stream has a direction, so writing to two places
+ * at once is a different operation with different costs, not a flag.
+ *
+ * Any selection makes the download selective: only the chunks holding the
+ * selected entries are fetched, rather than fetching everything and discarding
+ * on arrival. That is the capability tapline_workshop_download cannot express.
+ *
+ * concurrency is the reorder window in chunks; 0 takes the default. The spec is
+ * parsed and validated before the job starts, so a bad directive comes back
+ * here rather than through the event queue. */
+int32_t tapline_pipeline(uint32_t app_id,
+                         uint64_t item_id,
+                         const char *spec,
+                         uint32_t concurrency,
+                         TaplineJob **out);
+
 /* Waits for the next event and writes it to buf as UTF-8 JSON.
  *
  * timeout_ms of 0 polls without blocking, which is what a runtime with no
