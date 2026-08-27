@@ -162,13 +162,21 @@ async fn download(
     concurrency: Option<usize>,
     json: bool,
 ) -> Result<(), String> {
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
     let defaults = InstallOptions::default();
+    let concurrency = concurrency.unwrap_or(defaults.concurrency);
+
+    // The budget is per process and a download draws from it as well as from
+    // its own limit, so a session built with the default budget caps
+    // `--concurrency` at the default however high the flag is set. This process
+    // runs one download, so the two are the same number.
+    let mut session = Session::anonymous_shared(tapline::Shared::new(concurrency))
+        .await
+        .map_err(|e| e.to_string())?;
     let options = InstallOptions {
         install_dir: dir,
         branch,
         force: validate,
-        concurrency: concurrency.unwrap_or(defaults.concurrency),
+        concurrency,
         ..defaults
     };
 
