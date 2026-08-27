@@ -56,8 +56,10 @@ Native:
       One Workshop item.
   tapline login [--qr | --account NAME]
       Sign in. Only needed for apps an account owns; dedicated servers do not.
+      Names the account this machine's Steam client last used, if there is one.
   tapline whoami
-      Show the current session.
+      Show the current session, any Steam accounts found on this machine, and
+      the Steam library paths it is configured with.
 
 Options:
   --json      newline-delimited JSON instead of text

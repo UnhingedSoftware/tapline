@@ -24,9 +24,13 @@
 //! back. For an interactive login it is both easier and safer, and it is the
 //! flow that can be tested end to end without anyone typing a secret.
 
+mod local;
 mod password;
 mod store;
 
+pub use local::{
+    LocalAccount, discover, discover_in, libraries, most_recent, parse_libraries, parse_login_users,
+};
 pub use password::{PasswordError, PublicKey, encrypt_password};
 pub use store::{StoredToken, TokenStore, TokenStoreError};
 

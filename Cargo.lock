@@ -1267,6 +1267,7 @@ dependencies = [
  "keyring",
  "rsa",
  "tapline-ids",
+ "tapline-vdf",
  "zeroize",
 ]
 

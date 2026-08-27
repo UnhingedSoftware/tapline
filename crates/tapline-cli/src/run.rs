@@ -783,6 +783,25 @@ async fn download_item(
 
 /// `login`
 async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
+    // A machine with Steam on it already knows who you are. Say so, so the
+    // account name in the QR prompt is not a surprise.
+    let local = tapline_auth::most_recent();
+    if account.is_none()
+        && let Some(found) = &local
+    {
+        if found.persona.is_empty() {
+            println!(
+                "this machine's Steam client last signed in as {}",
+                found.account
+            );
+        } else {
+            println!(
+                "this machine's Steam client last signed in as {} ({})",
+                found.account, found.persona
+            );
+        }
+    }
+
     if !qr && account.is_some() {
         // Honest about the gap rather than prompting for a password the rest of
         // the flow does not yet finish.
@@ -854,6 +873,34 @@ async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
 async fn whoami() -> Result<(), String> {
     let session = Session::anonymous().await.map_err(|e| e.to_string())?;
     println!("anonymous session, cell {}", session.cell_id());
+
+    // The local Steam client's accounts are a different thing from tapline's
+    // session, and saying which is which is the whole point of printing both.
+    let accounts = tapline_auth::discover();
+    if accounts.is_empty() {
+        println!("no local Steam client found");
+    } else {
+        for found in &accounts {
+            println!(
+                "local Steam account: {}{}{}",
+                found.account,
+                if found.persona.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", found.persona)
+                },
+                if found.most_recent {
+                    ", most recent"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+
+    for library in tapline_auth::libraries() {
+        println!("Steam library: {}", library.display());
+    }
     Ok(())
 }
 
