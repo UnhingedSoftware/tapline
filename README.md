@@ -295,7 +295,7 @@ remote-code-execution primitive.
 
 No steamcmd, no Steam client, no 32-bit runtime, no CA bundle: tapline speaks the
 CM protocol itself and `rustls` carries Mozilla's roots compiled in. The
-`Dockerfile` builds a **5.0 MB image on `scratch`** — one static binary and
+`Dockerfile` builds a **5.1 MB image on `scratch`** — one static binary and
 nothing else, not even a shell. (It was 1.6 MB before the zip, pipeline and
 extension crates; the number here is measured per release, not aspirational.)
 
@@ -305,19 +305,36 @@ docker run --rm -v /srv/gmod:/data tapline \
   +login anonymous +force_install_dir /data +app_update 4020 +quit
 ```
 
-Verified by running a real Workshop download inside it: 348 files streamed in
-0.60 s, with nothing in the image but the binary.
-
-It is also the cheapest place tapline runs. A full 1.5 GB Valheim install
-completes inside `--memory=24m`, and fails at 16m:
+The whole surface works in there, filtering included — verified by running it
+against Steam and comparing every file against a full extraction, 195 of 348
+entries byte-for-byte correct:
 
 ```sh
-docker run --rm --memory=24m -v /srv/valheim:/data tapline app download 896660 --dir /data
+docker run --rm -v /srv/gmod:/data tapline \
+  workshop download 4000 104691717 --dir /data --only 'lua/**'
 ```
 
-That is *less* than the same install costs natively, because the image is a musl
-build and musl's allocator does not have the retention behaviour glibc has to be
-talked out of — so `retune()` is compiled out there, and there is nothing to fix.
+It is also the cheapest place tapline runs, because the image is a musl build
+and musl's allocator has none of the retention behaviour glibc has to be talked
+out of — `retune()` is compiled out there, and there is nothing to fix. A full
+1.5 GB Valheim install against a hard cgroup limit:
+
+| `--memory` | default (24 in flight) | `--concurrency 10` |
+|---|---|---|
+| 24m | fails | fails |
+| 32m | fails | **60 s** |
+| 48m | **61 s** | — |
+| 64m | **39 s** | — |
+
+```sh
+docker run --rm --memory=48m -v /srv/valheim:/data tapline app download 896660 --dir /data
+```
+
+Note what the low end costs in time as well as headroom: at 48m the install
+takes 61 s against 39 s at 64m, because the cgroup limit counts page cache and a
+tight one leaves the writeback path nothing to work with. Squeezing the
+container below what the download wants does not fail loudly, it just gets slow
+first.
 
 ## From JavaScript
 
