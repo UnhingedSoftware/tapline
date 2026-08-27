@@ -1,6 +1,6 @@
 //! Doing what the command line asked for.
 
-use crate::args::{Command, Step};
+use crate::args::{Command, SearchFilters, Step};
 use std::path::PathBuf;
 use tapline::{AppId, InstallOptions, Os, PublishedFileId, Session};
 
@@ -47,30 +47,7 @@ pub async fn execute(command: Command) -> Result<(), String> {
             )
             .await
         }
-        Command::WorkshopSearch {
-            app,
-            text,
-            tags,
-            exclude_tags,
-            all_tags,
-            sort,
-            limit,
-            cursor,
-            json,
-        } => {
-            search(
-                app,
-                text,
-                tags,
-                exclude_tags,
-                all_tags,
-                sort.as_deref(),
-                limit,
-                cursor,
-                json,
-            )
-            .await
-        }
+        Command::WorkshopSearch { filters, json } => search(filters, json).await,
         Command::WorkshopInfo { items, json } => workshop_info(items, json).await,
         Command::Login { qr, account } => login(qr, account).await,
         Command::WhoAmI => whoami().await,
@@ -321,21 +298,11 @@ async fn print_info(session: &mut Session, app: AppId, json: bool) -> Result<(),
 
 /// `workshop search`
 #[allow(clippy::too_many_arguments)]
-async fn search(
-    app: AppId,
-    text: Option<String>,
-    tags: Vec<String>,
-    exclude_tags: Vec<String>,
-    all_tags: bool,
-    sort: Option<&str>,
-    limit: Option<u32>,
-    cursor: Option<String>,
-    json: bool,
-) -> Result<(), String> {
+async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
     let defaults = tapline::BrowseQuery::default();
     // Resolved before connecting: an unknown sort should cost a message rather
     // than a login and a round trip.
-    let sort = match sort {
+    let sort = match filters.sort.as_deref() {
         None => defaults.sort,
         Some(name) => tapline::BrowseSort::parse(name).ok_or_else(|| {
             format!(
@@ -345,14 +312,14 @@ async fn search(
         })?,
     };
     let query = tapline::BrowseQuery {
-        app,
-        text,
-        required_tags: tags,
-        excluded_tags: exclude_tags,
-        match_all_tags: all_tags,
+        app: filters.app,
+        text: filters.text,
+        required_tags: filters.tags,
+        excluded_tags: filters.exclude_tags,
+        match_all_tags: filters.all_tags,
         sort,
-        per_page: limit.unwrap_or(defaults.per_page),
-        cursor,
+        per_page: filters.limit.unwrap_or(defaults.per_page),
+        cursor: filters.cursor,
     };
     query.validate().map_err(|error| error.to_string())?;
 

@@ -95,22 +95,8 @@ pub enum Command {
     },
     /// `tapline workshop search <appid> [--text ...] [--tag ...]`
     WorkshopSearch {
-        /// Which app's Workshop.
-        app: AppId,
-        /// Free text to match.
-        text: Option<String>,
-        /// Tags an item must carry.
-        tags: Vec<String>,
-        /// Tags that exclude an item.
-        exclude_tags: Vec<String>,
-        /// Require every tag rather than any.
-        all_tags: bool,
-        /// How to order results.
-        sort: Option<String>,
-        /// How many to return.
-        limit: Option<u32>,
-        /// Where to resume from.
-        cursor: Option<String>,
+        /// What to search for.
+        filters: SearchFilters,
         /// Emit JSON.
         json: bool,
     },
@@ -162,6 +148,32 @@ pub enum Command {
     Help,
     /// `tapline --version`
     Version,
+}
+
+/// What `workshop search` searches for.
+///
+/// One value rather than a parameter each: Steam's own Workshop sidebar offers
+/// a dozen filters, and carrying them separately means every one of them
+/// widens a call signature that is already long enough to get an argument
+/// order wrong in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchFilters {
+    /// Which app's Workshop.
+    pub app: AppId,
+    /// Free text to match.
+    pub text: Option<String>,
+    /// Tags an item must carry.
+    pub tags: Vec<String>,
+    /// Tags that exclude an item.
+    pub exclude_tags: Vec<String>,
+    /// Require every tag rather than any.
+    pub all_tags: bool,
+    /// How to order results.
+    pub sort: Option<String>,
+    /// How many to return.
+    pub limit: Option<u32>,
+    /// Where to resume from.
+    pub cursor: Option<String>,
 }
 
 /// What went wrong reading the command line.
@@ -436,21 +448,23 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
             json,
         }),
         (Some("workshop"), Some("search")) => Ok(Command::WorkshopSearch {
-            app: app_id(positional.get(2))?,
-            text: options.value("text").map(str::to_owned),
-            tags: options.all_values("tag"),
-            exclude_tags: options.all_values("exclude-tag"),
-            all_tags: options.flag("all-tags"),
-            sort: options.value("sort").map(str::to_owned),
-            limit: match options.value("limit") {
-                None => None,
-                Some(raw) => Some(raw.parse().map_err(|_| {
-                    ArgError::new(format!(
-                        "{raw:?} is not a result count; give a positive number"
-                    ))
-                })?),
+            filters: SearchFilters {
+                app: app_id(positional.get(2))?,
+                text: options.value("text").map(str::to_owned),
+                tags: options.all_values("tag"),
+                exclude_tags: options.all_values("exclude-tag"),
+                all_tags: options.flag("all-tags"),
+                sort: options.value("sort").map(str::to_owned),
+                limit: match options.value("limit") {
+                    None => None,
+                    Some(raw) => Some(raw.parse().map_err(|_| {
+                        ArgError::new(format!(
+                            "{raw:?} is not a result count; give a positive number"
+                        ))
+                    })?),
+                },
+                cursor: options.value("cursor").map(str::to_owned),
             },
-            cursor: options.value("cursor").map(str::to_owned),
             json,
         }),
         (Some("workshop"), Some("info")) => {
@@ -691,21 +705,13 @@ mod tests {
         ))
         .expect("parse");
         match parsed {
-            Command::WorkshopSearch {
-                app,
-                text,
-                tags,
-                exclude_tags,
-                sort,
-                limit,
-                ..
-            } => {
-                assert_eq!(app.get(), 4000);
-                assert_eq!(text.as_deref(), Some("stargate"));
-                assert_eq!(tags, vec!["Fun".to_owned(), "Tool".to_owned()]);
-                assert_eq!(exclude_tags, vec!["NSFW".to_owned()]);
-                assert_eq!(sort.as_deref(), Some("trend"));
-                assert_eq!(limit, Some(5));
+            Command::WorkshopSearch { filters, .. } => {
+                assert_eq!(filters.app.get(), 4000);
+                assert_eq!(filters.text.as_deref(), Some("stargate"));
+                assert_eq!(filters.tags, vec!["Fun".to_owned(), "Tool".to_owned()]);
+                assert_eq!(filters.exclude_tags, vec!["NSFW".to_owned()]);
+                assert_eq!(filters.sort.as_deref(), Some("trend"));
+                assert_eq!(filters.limit, Some(5));
             }
             other => panic!("wrong command: {other:?}"),
         }
@@ -721,8 +727,8 @@ mod tests {
         ))
         .expect("parse");
         match parsed {
-            Command::WorkshopSearch { cursor, .. } => {
-                assert_eq!(cursor.as_deref(), Some("AoMITpIrrFfJsRd4xNDoAw=="));
+            Command::WorkshopSearch { filters, .. } => {
+                assert_eq!(filters.cursor.as_deref(), Some("AoMITpIrrFfJsRd4xNDoAw=="));
             }
             other => panic!("wrong command: {other:?}"),
         }
