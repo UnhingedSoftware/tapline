@@ -162,7 +162,7 @@ async fn run_script(steps: Vec<Step>) -> Result<(), String> {
 
 /// `app plan`
 async fn plan(app: AppId, dir: PathBuf, branch: String, json: bool) -> Result<(), String> {
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let options = InstallOptions {
         install_dir: dir,
         branch,
@@ -256,7 +256,7 @@ async fn download(
 
 /// `app info`
 async fn info(app: AppId, json: bool) -> Result<(), String> {
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     print_info(&mut session, app, json).await
 }
 
@@ -356,7 +356,7 @@ async fn search(
     };
     query.validate().map_err(|error| error.to_string())?;
 
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let page = session
         .browse_workshop(&query)
         .await
@@ -433,7 +433,7 @@ fn human_bytes(bytes: u64) -> String {
 
 /// `workshop info`
 async fn workshop_info(items: Vec<PublishedFileId>, json: bool) -> Result<(), String> {
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let described = session
         .workshop_details(&items)
         .await
@@ -538,7 +538,7 @@ async fn workshop(
         .map(|name| extension_by_name(name))
         .collect::<Result<_, _>>()?;
 
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     for extension in resolved {
         session.register(extension);
     }
@@ -600,7 +600,7 @@ async fn pipe_workshop(
     pipeline.validate().map_err(|error| error.to_string())?;
 
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
 
     let started = std::time::Instant::now();
     let outcome = tapline_pipe::run_pipeline(
@@ -655,7 +655,7 @@ async fn stream_workshop(
     json: bool,
 ) -> Result<(), String> {
     let _ = app;
-    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let details = session
         .workshop_details(&[item])
         .await
@@ -802,15 +802,13 @@ async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
         }
     }
 
-    if !qr && account.is_some() {
-        // Honest about the gap rather than prompting for a password the rest of
-        // the flow does not yet finish.
-        return Err(
-            "password login is not wired into the CLI yet; use `tapline login --qr`".to_owned(),
-        );
-    }
-
+    // Anonymous on purpose: signing in is what this command is for, and a
+    // session that quietly reused an old token would hide a failed login.
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+
+    if let Some(name) = account.filter(|_| !qr) {
+        return password_login(&mut session, &name).await;
+    }
     let pending = session
         .begin_qr_login()
         .await
@@ -852,17 +850,7 @@ async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
                 account,
                 refresh_token,
                 ..
-            } => {
-                println!("signed in as {account}");
-                // Storing is opt-in and off by default; say where it would go
-                // rather than writing a credential nobody asked to persist.
-                let _ = refresh_token;
-                println!(
-                    "the refresh token was not saved; \
-                     pass a token store to persist it"
-                );
-                return Ok(());
-            }
+            } => return finish_login(&account, &refresh_token),
         }
     }
 
@@ -870,9 +858,135 @@ async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
 }
 
 /// `whoami`
+/// Signs in with an account name and a password typed at the terminal.
+async fn password_login(session: &mut Session, account: &str) -> Result<(), String> {
+    let key = session
+        .password_key(account)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // Read straight from the terminal with echo off, and never from an
+    // argument: a password on the command line is in the shell history and in
+    // every `ps` listing on the machine.
+    let password = read_hidden(&format!("password for {account}: "))?;
+    if password.is_empty() {
+        return Err("no password given".to_owned());
+    }
+
+    let mut pending = session
+        .begin_password_login(account, password, &key)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // A code, when Steam wants one. The confirmations are alternatives, so
+    // take the first that a typed code satisfies.
+    if let Some(kind) = pending
+        .confirmations
+        .iter()
+        .copied()
+        .find(|kind| kind.needs_a_code())
+    {
+        let code = read_line(&format!("Steam Guard code ({kind}): "))?;
+        if code.is_empty() {
+            return Err("no Steam Guard code given".to_owned());
+        }
+        session
+            .submit_guard_code(&pending, code.trim(), kind)
+            .await
+            .map_err(|error| error.to_string())?;
+    } else if !pending.confirmations.is_empty() {
+        println!("{}", pending.instruction());
+    }
+
+    let interval = std::time::Duration::from_secs_f32(pending.interval.max(1.0));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    while std::time::Instant::now() < deadline {
+        match session
+            .poll_login(&pending)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            tapline::PollOutcome::Complete {
+                account,
+                refresh_token,
+                ..
+            } => return finish_login(&account, &refresh_token),
+            tapline::PollOutcome::Moved { client_id, .. } => pending.client_id = client_id,
+            tapline::PollOutcome::Pending { .. } => {}
+        }
+        tokio::time::sleep(interval).await;
+    }
+    Err("timed out waiting for the login to complete".to_owned())
+}
+
+/// Saves the token and says where it went.
+///
+/// Saved by default, because a login that has to be repeated every run is not
+/// a login. The file is the store's own, under the user's config directory.
+fn finish_login(account: &str, refresh_token: &str) -> Result<(), String> {
+    let store = tapline_auth::TokenStore::default_file();
+    let token = tapline_auth::StoredToken {
+        account: account.to_owned(),
+        refresh_token: refresh_token.to_owned(),
+    };
+    store.save(&token).map_err(|error| error.to_string())?;
+    println!("signed in as {account}; token saved, future commands will use it");
+    Ok(())
+}
+
+/// Reads a line from the terminal.
+fn read_line(prompt: &str) -> Result<String, String> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    Ok(line.trim().to_owned())
+}
+
+/// Reads a line without echoing it.
+///
+/// Turns the terminal's echo off around the read rather than pulling in a
+/// dependency for it. If the terminal cannot be reconfigured — a pipe, a CI
+/// job — it refuses instead of echoing the password, because printing a
+/// password to a log is worse than failing.
+fn read_hidden(prompt: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Command;
+
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Err(
+            "a password has to be typed at a terminal; this is not one. \
+             Use `tapline login --qr`, which needs no password"
+                .to_owned(),
+        );
+    }
+
+    // `stty` rather than a crate: it is present wherever a terminal is, and
+    // the alternative is a dependency for two syscalls.
+    let off = Command::new("stty").arg("-echo").status();
+    print!("{prompt}");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+
+    if off.map(|status| status.success()).unwrap_or(false) {
+        let _ = Command::new("stty").arg("echo").status();
+    }
+    println!();
+    read.map_err(|e| e.to_string())?;
+    Ok(line.trim().to_owned())
+}
+
 async fn whoami() -> Result<(), String> {
-    let session = Session::anonymous().await.map_err(|e| e.to_string())?;
-    println!("anonymous session, cell {}", session.cell_id());
+    let session = Session::automatic(None).await.map_err(|e| e.to_string())?;
+    match session.account() {
+        Some(account) => println!("signed in as {account}, cell {}", session.cell_id()),
+        None => println!("anonymous session, cell {}", session.cell_id()),
+    }
 
     // The local Steam client's accounts are a different thing from tapline's
     // session, and saying which is which is the whole point of printing both.

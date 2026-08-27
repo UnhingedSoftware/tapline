@@ -59,6 +59,23 @@ pub enum GuardType {
 }
 
 impl GuardType {
+    /// The wire value, for sending a code back as the kind Steam asked for.
+    ///
+    /// Steam refuses a device code submitted where an email code was wanted, so
+    /// a caller has to echo the type rather than guess it.
+    #[must_use]
+    pub const fn as_i32(self) -> i32 {
+        match self {
+            Self::None => 0,
+            Self::EmailCode => 2,
+            Self::DeviceCode => 3,
+            Self::DeviceConfirmation => 4,
+            Self::EmailConfirmation => 5,
+            Self::MachineToken => 6,
+            Self::Unknown(value) => value,
+        }
+    }
+
     /// Decodes the wire value.
     #[must_use]
     pub const fn from_i32(value: i32) -> Self {

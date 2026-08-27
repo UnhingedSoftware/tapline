@@ -55,8 +55,13 @@ Native:
                               which defaults to unpacking into DIR.
       One Workshop item.
   tapline login [--qr | --account NAME]
-      Sign in. Only needed for apps an account owns; dedicated servers do not.
-      Names the account this machine's Steam client last used, if there is one.
+      Sign in and save the token, so later commands sign in by themselves.
+      --qr        approve in the Steam mobile app; no password is typed
+      --account   sign in with a password, typed at the terminal and never
+                  taken as an argument
+      Only needed for content an account owns; every dedicated server and the
+      Workshop search work anonymously. Names the account this machine's Steam
+      client last used, if there is one.
   tapline whoami
       Show the current session, any Steam accounts found on this machine, and
       the Steam library paths it is configured with.

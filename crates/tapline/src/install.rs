@@ -312,15 +312,49 @@ impl fmt::Display for InstallError {
             }
             Self::Io(message) => write!(f, "filesystem error: {message}"),
             Self::NoDepotKey { depot, eresult } => {
-                write!(
-                    f,
-                    "Steam granted no key for depot {depot} (EResult {eresult})"
-                )
+                if *eresult == ACCESS_DENIED {
+                    // The common case by far, and the message decides whether
+                    // someone reaches for `tapline login` or files a bug.
+                    write!(
+                        f,
+                        "Steam refused a key for depot {depot}: access denied. \
+                         This depot is not anonymously accessible, so it needs an \
+                         account that owns it — run `tapline login`, or build the \
+                         session with Session::with_token"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Steam granted no key for depot {depot} (EResult {eresult})"
+                    )
+                }
             }
             Self::NothingToInstall { app, branch } => write!(
                 f,
                 "app {app} has nothing to install on branch {branch} for this platform"
             ),
+        }
+    }
+}
+
+/// Steam's `EResult` for a refusal on permission grounds.
+///
+/// Named because the number appears in three places and 15 means nothing on
+/// sight.
+pub const ACCESS_DENIED: i32 = 15;
+
+impl InstallError {
+    /// Whether this failed because the session is not signed in as someone who
+    /// may see the content.
+    ///
+    /// The distinction worth acting on: a caller can retry this after a login,
+    /// and there is no point retrying anything else.
+    #[must_use]
+    pub fn needs_login(&self) -> bool {
+        match self {
+            Self::NoDepotKey { eresult, .. } => *eresult == ACCESS_DENIED,
+            Self::Net(NetError::Steam { eresult }) => *eresult == ACCESS_DENIED,
+            _ => false,
         }
     }
 }
@@ -427,6 +461,32 @@ mod tests {
             "the default should sit at the measured plateau; \
              above it is slower and dearer, below it is slower and cheaper"
         );
+    }
+
+    #[test]
+    fn an_access_denied_depot_says_to_sign_in() {
+        // The message decides whether someone reaches for `tapline login` or
+        // files a bug, so it has to name the fix rather than the number.
+        let error = InstallError::NoDepotKey {
+            depot: DepotId(4001),
+            eresult: ACCESS_DENIED,
+        };
+        let text = error.to_string();
+        assert!(text.contains("access denied"), "{text}");
+        assert!(text.contains("tapline login"), "{text}");
+        assert!(error.needs_login());
+    }
+
+    #[test]
+    fn another_refusal_is_not_reported_as_a_login_problem() {
+        // Telling someone to sign in when signing in cannot help is worse than
+        // saying nothing.
+        let error = InstallError::NoDepotKey {
+            depot: DepotId(4001),
+            eresult: 2,
+        };
+        assert!(!error.needs_login());
+        assert!(!error.to_string().contains("tapline login"));
     }
 
     #[test]

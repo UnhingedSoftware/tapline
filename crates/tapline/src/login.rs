@@ -39,6 +39,8 @@ pub struct PendingLogin {
     pub challenge_url: Option<String>,
     /// The account name, once Steam knows it.
     pub account: Option<String>,
+    /// The SteamID this attempt is for, which a Guard code submission needs.
+    pub steam_id: u64,
 }
 
 impl PendingLogin {
@@ -222,6 +224,7 @@ mod tests {
 
     fn pending(url: Option<&str>, confirmations: Vec<GuardType>) -> PendingLogin {
         PendingLogin {
+            steam_id: 0,
             client_id: 1,
             request_id: vec![1, 2, 3],
             interval: 5.0,

@@ -60,6 +60,8 @@ pub struct Session {
     app_name: Option<String>,
     /// The build id of the branch most recently resolved.
     build_id: Option<u64>,
+    /// The account this session signed in as, or `None` when anonymous.
+    account: Option<String>,
 }
 
 /// Everything needed to download one depot.
@@ -122,9 +124,121 @@ impl Session {
             last_heartbeat: std::time::Instant::now(),
             app_name: None,
             build_id: None,
+            account: None,
         };
         session.refresh_hosts().await?;
         Ok(session)
+    }
+
+    /// Logs on as an account, using a refresh token from a completed login.
+    ///
+    /// The token comes from [`Session::poll_login`] and is what
+    /// [`TokenStore`] persists, so a program that has logged in once never has
+    /// to ask again until Steam expires it.
+    ///
+    /// [`TokenStore`]: tapline_auth::TokenStore
+    pub async fn with_token(token: &tapline_auth::StoredToken) -> Result<Self, InstallError> {
+        Self::with_token_shared(
+            token,
+            crate::Shared::new(InstallOptions::default().concurrency),
+        )
+        .await
+    }
+
+    /// Logs on as an account, sharing resources with other sessions.
+    pub async fn with_token_shared(
+        token: &tapline_auth::StoredToken,
+        shared: Arc<crate::Shared>,
+    ) -> Result<Self, InstallError> {
+        let servers = cm_list(0)
+            .await
+            .map_err(|e| InstallError::Io(format!("could not reach the CM directory: {e}")))?;
+        let endpoint = servers
+            .first()
+            .ok_or_else(|| InstallError::Io("Steam offered no CM servers".to_owned()))?
+            .endpoint
+            .clone();
+
+        let transport = CmTransport::connect(&endpoint)
+            .await
+            .map_err(|e| InstallError::Io(format!("could not connect to {endpoint}: {e}")))?;
+
+        // The logon header must name the account's own SteamID, and the token
+        // carries it. A token without one is not a token Steam will accept, so
+        // say that rather than sending a logon that fails opaquely.
+        let steam_id = token.steam_id().ok_or_else(|| {
+            InstallError::Io(
+                "the saved token is not a Steam refresh token; sign in again with \
+                 `tapline login`"
+                    .to_owned(),
+            )
+        })?;
+
+        let mut cm = CmSession::new(transport);
+        let outcome = cm
+            .logon_with_token(0, &token.account, &token.refresh_token, steam_id)
+            .await?;
+
+        let mut session = Self {
+            cm,
+            shared,
+            extensions: Arc::new(Vec::new()),
+            pool: HostPool::new(Vec::new()),
+            cell_id: outcome.cell_id,
+            keys: HashMap::new(),
+            heartbeat_interval: std::time::Duration::from_secs(
+                (u64::from(outcome.heartbeat_seconds).clamp(2, 60)) / 2,
+            ),
+            last_heartbeat: std::time::Instant::now(),
+            app_name: None,
+            build_id: None,
+            account: Some(token.account.clone()),
+        };
+        session.refresh_hosts().await?;
+        Ok(session)
+    }
+
+    /// A session that signs in if it can, and stays anonymous if it cannot.
+    ///
+    /// What a caller almost always wants, and what the CLI uses. In order:
+    ///
+    /// 1. a saved token for `account`, when one is named;
+    /// 2. a saved token for whichever account this machine's Steam client last
+    ///    used, so a desktop with Steam on it needs no arguments;
+    /// 3. anonymous, which is enough for every dedicated server.
+    ///
+    /// A saved token that Steam rejects — expired, revoked, password changed —
+    /// falls back to anonymous rather than failing, because an expired token is
+    /// not a reason to stop a download that never needed one. [`Session::account`]
+    /// says which of the three happened.
+    pub async fn automatic(account: Option<&str>) -> Result<Self, InstallError> {
+        let store = tapline_auth::TokenStore::default_file();
+        let wanted = match account {
+            Some(name) => Some(name.to_owned()),
+            None => tapline_auth::most_recent().map(|found| found.account),
+        };
+
+        if let Some(name) = wanted
+            && let Ok(Some(token)) = store.load(&name)
+        {
+            match Self::with_token(&token).await {
+                Ok(session) => return Ok(session),
+                Err(_) => {
+                    // Falls through to anonymous. The caller sees which
+                    // happened through `Session::account`, which is a better
+                    // channel than a log line a library has no business
+                    // deciding to print.
+                }
+            }
+        }
+
+        Self::anonymous().await
+    }
+
+    /// The account this session signed in as, or `None` when anonymous.
+    #[must_use]
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
     }
 
     /// The cell Steam placed this session in, which decides which CDN hosts are
@@ -809,6 +923,8 @@ impl Session {
             confirmations: crate::login::confirmations_from(&response.allowed_confirmations),
             challenge_url: response.challenge_url.clone(),
             account: None,
+            // A QR login does not know the account until it is approved.
+            steam_id: 0,
         })
     }
 
@@ -882,7 +998,44 @@ impl Session {
             confirmations: crate::login::confirmations_from(&response.allowed_confirmations),
             challenge_url: None,
             account: Some(account.to_owned()),
+            steam_id: response.steamid.unwrap_or(0),
         })
+    }
+
+    /// Submits a Steam Guard code for a pending login.
+    ///
+    /// Needed when [`PendingLogin::confirmations`] asks for a code — emailed or
+    /// from the authenticator. The kind must be the one Steam asked for:
+    /// a device code sent where an email code was wanted is refused, which is
+    /// why the caller echoes the [`GuardType`] it saw rather than this guessing.
+    ///
+    /// Poll as usual afterwards. Steam completes the session on the next poll
+    /// rather than in the reply here.
+    ///
+    /// [`PendingLogin::confirmations`]: crate::PendingLogin::confirmations
+    /// [`GuardType`]: tapline_auth::GuardType
+    pub async fn submit_guard_code(
+        &mut self,
+        pending: &crate::PendingLogin,
+        code: &str,
+        kind: tapline_auth::GuardType,
+    ) -> Result<(), crate::LoginError> {
+        use tapline_proto::steammessages_auth_steamclient::{
+            CAuthentication_UpdateAuthSessionWithSteamGuardCode_Request, EAuthSessionGuardType,
+        };
+
+        self.cm
+            .call(
+                &CAuthentication_UpdateAuthSessionWithSteamGuardCode_Request {
+                    client_id: Some(pending.client_id),
+                    steamid: Some(pending.steam_id),
+                    code: Some(code.to_owned()),
+                    code_type: Some(EAuthSessionGuardType::from(kind.as_i32())),
+                },
+            )
+            .await
+            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+        Ok(())
     }
 
     /// Polls a login once.

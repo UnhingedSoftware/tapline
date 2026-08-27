@@ -231,6 +231,66 @@ impl<T: Transport> Session<T> {
         })
     }
 
+    /// Logs on as an account, using a refresh token from a completed login.
+    ///
+    /// The token goes in `access_token` and the name in `account_name`; Steam
+    /// takes the refresh token there rather than an access token, which reads
+    /// wrong and is what the field means in a client logon.
+    ///
+    /// The SteamID has to be the account's own, not the anonymous one, and it
+    /// is carried in the header rather than the body — a logon with the
+    /// anonymous id and a real token is refused with a result that does not say
+    /// why.
+    pub async fn logon_with_token(
+        &mut self,
+        cell_id: u32,
+        account: &str,
+        refresh_token: &str,
+        steam_id: u64,
+    ) -> Result<LogonOutcome, NetError> {
+        self.hello().await?;
+
+        self.steam_id = steam_id;
+        let job_id = self.next_job_id();
+
+        let logon = CMsgClientLogon {
+            protocol_version: Some(PROTOCOL_VERSION),
+            cell_id: Some(cell_id),
+            client_os_type: Some(OS_LINUX),
+            should_remember_password: Some(true),
+            account_name: Some(account.to_owned()),
+            access_token: Some(refresh_token.to_owned()),
+            // Steam rate-limits logons and says so in the response when the
+            // client admits it understands the answer. Without this a throttled
+            // logon comes back as a bare failure.
+            supports_rate_limit_response: Some(true),
+            ..CMsgClientLogon::default()
+        };
+
+        let mut header = self.header(Some(job_id));
+        header.steamid = Some(steam_id);
+        let frame = Frame::new(EMsg::CLIENT_LOGON, header, logon.encode_to_vec());
+        self.send(&frame).await?;
+
+        let reply = self.wait_for_logon_response().await?;
+        let response: CMsgClientLogonResponse = reply.decode_body()?;
+
+        let eresult = response.eresult.unwrap_or(0);
+        if eresult != RESULT_OK {
+            return Err(NetError::Steam { eresult });
+        }
+
+        self.session_id = reply.header.client_sessionid.unwrap_or(0);
+        self.steam_id = reply.header.steamid.unwrap_or(steam_id);
+
+        Ok(LogonOutcome {
+            steam_id: self.steam_id,
+            session_id: self.session_id,
+            heartbeat_seconds: response.heartbeat_seconds.unwrap_or(9).max(1) as u32,
+            cell_id: response.cell_id.unwrap_or(cell_id),
+        })
+    }
+
     /// Waits for the logon response.
     ///
     /// Matched by message type rather than by job id: Steam's logon response

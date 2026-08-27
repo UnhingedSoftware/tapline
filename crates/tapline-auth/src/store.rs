@@ -38,6 +38,79 @@ pub struct StoredToken {
     pub refresh_token: String,
 }
 
+impl StoredToken {
+    /// The SteamID this token belongs to.
+    ///
+    /// A logon has to name the account's own SteamID, and the token already
+    /// carries it: a Steam refresh token is a JWT whose `sub` claim is the
+    /// 64-bit id. Reading it here means the store keeps one field instead of
+    /// two that could disagree, and it works for the keyring backend, which
+    /// holds nothing but the token string.
+    ///
+    /// Returns `None` for anything that is not a token with a readable `sub`,
+    /// which the caller should treat as "log in again" rather than as a crash.
+    #[must_use]
+    pub fn steam_id(&self) -> Option<u64> {
+        steam_id_from_jwt(&self.refresh_token)
+    }
+}
+
+/// Reads the `sub` claim of a JWT without verifying it.
+///
+/// Not verifying is the point: this is Steam's own token being handed back to
+/// Steam, and the only thing wanted from it is which account it is for. Steam
+/// decides whether it is valid.
+fn steam_id_from_jwt(token: &str) -> Option<u64> {
+    // header.payload.signature — the middle part is the claims.
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64url_decode(payload)?;
+    let text = std::str::from_utf8(&decoded).ok()?;
+
+    // A targeted scan rather than a JSON parser: this crate does not have one,
+    // and one field of one shape does not justify adding it.
+    let start = text.find("\"sub\"")?;
+    let rest = text.get(start + 5..)?;
+    let quoted = rest.find('"')?;
+    let digits: String = rest
+        .get(quoted + 1..)?
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Decodes unpadded base64url, which is what a JWT uses.
+fn base64url_decode(input: &str) -> Option<Vec<u8>> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            // The url alphabet, which is why a standard decoder would fail here.
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut accumulator = 0_u32;
+    let mut bits = 0_u32;
+    for byte in input.bytes() {
+        // JWTs are unpadded, but tolerate padding rather than failing on it.
+        if byte == b'=' {
+            break;
+        }
+        accumulator = (accumulator << 6) | u32::from(value(byte)?);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((accumulator >> bits) & 0xFF) as u8);
+        }
+    }
+    Some(out)
+}
+
 impl fmt::Debug for StoredToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoredToken")
@@ -284,6 +357,52 @@ fn read_file(path: &Path, account: &str) -> Result<Option<StoredToken>, TokenSto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A token shaped like Steam's: header.payload.signature, unpadded
+    /// base64url, with the SteamID in `sub`.
+    const REAL_SHAPE: &str = "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiAic3RlYW0iLCAic3ViIjogIjc2NTYxMTk4MTYwNTcwMjA4IiwgImF1ZCI6IFsiY2xpZW50IiwgIndlYiJdLCAiZXhwIjogMTkwMDAwMDAwMH0.c2lnbmF0dXJl";
+
+    #[test]
+    fn a_token_knows_which_account_it_is_for() {
+        // The logon header needs this and the store does not hold it, so a
+        // wrong answer here is a logon that fails with no useful message.
+        let token = StoredToken {
+            account: "someone".to_owned(),
+            refresh_token: REAL_SHAPE.to_owned(),
+        };
+        assert_eq!(token.steam_id(), Some(76_561_198_160_570_208));
+    }
+
+    #[test]
+    fn rubbish_is_no_id_rather_than_a_panic() {
+        for bad in [
+            "",
+            "not-a-jwt",
+            "only.two",
+            "a.!!!!.c",
+            "a.eyJzdWIiOiJub3QtYS1udW1iZXIifQ.c",
+        ] {
+            let token = StoredToken {
+                account: "someone".to_owned(),
+                refresh_token: bad.to_owned(),
+            };
+            assert_eq!(token.steam_id(), None, "{bad:?} should not yield an id");
+        }
+    }
+
+    #[test]
+    fn base64url_reads_the_alphabet_a_jwt_uses() {
+        // `-` and `_` rather than `+` and `/`, and no padding: a standard
+        // decoder rejects exactly the tokens this has to read.
+        assert_eq!(base64url_decode("Zm9vYmFy"), Some(b"foobar".to_vec()));
+        assert_eq!(base64url_decode("Zg"), Some(b"f".to_vec()));
+        assert_eq!(base64url_decode("Zg=="), Some(b"f".to_vec()));
+        assert_eq!(
+            base64url_decode("++"),
+            None,
+            "the standard alphabet is not this one"
+        );
+    }
     use std::os::unix::fs::PermissionsExt;
 
     /// A scratch directory that removes itself.
