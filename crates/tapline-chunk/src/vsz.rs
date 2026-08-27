@@ -39,7 +39,15 @@ pub fn matches(input: &[u8]) -> bool {
 }
 
 /// Decodes a `VSZ` chunk.
+#[cfg(test)]
 pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
+    let mut out = Vec::new();
+    decode_into(input, max_output, &mut out)?;
+    Ok(out)
+}
+
+/// Decodes into a buffer the caller owns. See [`crate::vz::decode_into`].
+pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     if input.len() < HEADER_LEN + FOOTER_LEN {
         return Err(ChunkError::Truncated);
     }
@@ -86,10 +94,11 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     // Capped by the caller rather than trusted from the frame header: a zstd
     // frame can claim any output size, and one byte over the cap is enough to
     // notice without allocating what it asked for.
-    let mut out = Vec::with_capacity(claimed_size as usize);
+    out.clear();
+    out.reserve(claimed_size as usize);
     (&mut reader)
         .take(u64::from(claimed_size) + 1)
-        .read_to_end(&mut out)
+        .read_to_end(out)
         .map_err(|e| ChunkError::Decompress(e.to_string()))?;
 
     if out.len() != claimed_size as usize {
@@ -99,7 +108,7 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
         });
     }
 
-    let actual_crc = crc32fast::hash(&out);
+    let actual_crc = crc32fast::hash(out);
     if actual_crc != footer_crc {
         return Err(ChunkError::ChecksumMismatch {
             expected: footer_crc,
@@ -107,7 +116,7 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
         });
     }
 
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]

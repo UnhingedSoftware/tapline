@@ -270,10 +270,55 @@ pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Cry
 
     let cipher = Aes256CbcDec::new(GenericArray::from_slice(key), GenericArray::from_slice(&iv));
     let mut buf = body.to_vec();
-    Ok(cipher
+    // Truncated rather than copied out. The previous version ended with
+    // `.to_vec()` on the decrypted slice, which allocated and copied a second
+    // full buffer for every chunk — a megabyte of churn per chunk, on the
+    // hottest path in the program.
+    let len = cipher
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|_| CryptoError::DecryptionFailed)?
-        .to_vec())
+        .len();
+    buf.truncate(len);
+    Ok(buf)
+}
+
+/// Decrypts content in the buffer it arrived in.
+///
+/// Same as [`decrypt_content`] and allocates nothing: the ciphertext is
+/// decrypted in place, the IV shifted out, and the buffer handed back. A
+/// download decrypts every chunk it fetches, so the copy that version makes is
+/// a megabyte per chunk that exists only to be freed.
+pub fn decrypt_content_owned(
+    key: &[u8; 32],
+    mut ciphertext: Vec<u8>,
+) -> Result<Vec<u8>, CryptoError> {
+    let wrapped = SessionKey::from_bytes(*key);
+
+    let encrypted_iv: [u8; BLOCK] = ciphertext
+        .get(..BLOCK)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(CryptoError::MalformedCiphertext)?;
+    let body_len = ciphertext.len().saturating_sub(BLOCK);
+    if body_len == 0 || body_len % BLOCK != 0 {
+        return Err(CryptoError::MalformedCiphertext);
+    }
+
+    let iv = ecb_decrypt_block(&wrapped, encrypted_iv);
+    let cipher = Aes256CbcDec::new(GenericArray::from_slice(key), GenericArray::from_slice(&iv));
+
+    let body = ciphertext
+        .get_mut(BLOCK..)
+        .ok_or(CryptoError::MalformedCiphertext)?;
+    let len = cipher
+        .decrypt_padded_mut::<Pkcs7>(body)
+        .map_err(|_| CryptoError::DecryptionFailed)?
+        .len();
+
+    // Move the plaintext over the IV so the caller gets a buffer starting at
+    // byte zero, then shrink. No allocation at any point.
+    ciphertext.copy_within(BLOCK..BLOCK + len, 0);
+    ciphertext.truncate(len);
+    Ok(ciphertext)
 }
 
 /// Encrypts content with a plain IV, mirroring [`decrypt_content`].
@@ -450,5 +495,33 @@ mod tests {
             SessionKey::generate().as_bytes(),
             SessionKey::generate().as_bytes()
         );
+    }
+
+    #[test]
+    fn decrypting_in_place_matches_decrypting_by_reference() {
+        // The owned form is what every chunk goes through now. If it ever
+        // disagreed with the reference form, content would be silently wrong
+        // rather than rejected — the SHA-1 check would catch it, but as a
+        // mysterious integrity failure blamed on a CDN.
+        let key = [7_u8; 32];
+        for len in [1_usize, 15, 16, 17, 255, 1024] {
+            let plaintext: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let encrypted = encrypt_content(&key, &plaintext).expect("encrypt");
+
+            let by_reference = decrypt_content(&key, &encrypted).expect("by reference");
+            let owned = decrypt_content_owned(&key, encrypted.clone()).expect("owned");
+
+            assert_eq!(by_reference, plaintext, "reference form wrong at {len}");
+            assert_eq!(owned, plaintext, "owned form wrong at {len}");
+        }
+    }
+
+    #[test]
+    fn the_owned_form_refuses_the_same_malformed_input() {
+        let key = [1_u8; 32];
+        assert!(decrypt_content_owned(&key, Vec::new()).is_err());
+        assert!(decrypt_content_owned(&key, vec![0; BLOCK]).is_err());
+        // Not a whole number of blocks after the IV.
+        assert!(decrypt_content_owned(&key, vec![0; BLOCK + 3]).is_err());
     }
 }

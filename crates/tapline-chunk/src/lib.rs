@@ -156,18 +156,35 @@ pub fn decode(input: &[u8]) -> Result<Vec<u8>, ChunkError> {
 
 /// Decodes a chunk with an explicit output cap.
 pub fn decode_with_limit(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
+    let mut out = Vec::new();
+    decode_into(input, max_output, &mut out)?;
+    Ok(out)
+}
+
+/// Decodes into a buffer the caller owns.
+///
+/// The form a download uses: a chunk's plaintext is a megabyte, and allocating
+/// one per chunk only to free it is what drives an allocator to grow its heap
+/// and hold on to it. Reusing a buffer keeps peak memory at the number of
+/// chunks in flight rather than at whatever the allocator decided to retain.
+pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     // VSZ is checked first: its magic is three bytes and VZ's is two, so
     // checking VZ first would match the "VZ" inside... nothing, in fact — the
     // two magics differ at byte 1 — but ordering by specificity keeps that true
     // if a third container ever appears.
     if vsz::matches(input) {
-        return vsz::decode(input, max_output);
+        return vsz::decode_into(input, max_output, out);
     }
     if vz::matches(input) {
-        return vz::decode(input, max_output);
+        return vz::decode_into(input, max_output, out);
     }
     if zip::matches(input) {
-        return zip::decode(input, max_output);
+        // The rarest container by far, and miniz_oxide has no decode-into-a-Vec
+        // form, so this one still allocates and copies.
+        let decoded = zip::decode(input, max_output)?;
+        out.clear();
+        out.extend_from_slice(&decoded);
+        return Ok(());
     }
 
     Err(ChunkError::UnknownContainer(

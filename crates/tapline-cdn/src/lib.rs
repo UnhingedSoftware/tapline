@@ -169,14 +169,49 @@ pub fn decode_chunk(
     depot_key: &[u8; 32],
     host: &str,
 ) -> Result<Vec<u8>, CdnError> {
-    let container =
-        tapline_crypto::decrypt_content(depot_key, stored).map_err(|_| CdnError::Decrypt)?;
+    decode_chunk_owned(stored.to_vec(), chunk, depot_key, host)
+}
 
-    let plaintext =
-        tapline_chunk::decode(&container).map_err(|e| CdnError::Container(e.to_string()))?;
+/// Decodes a chunk, reusing the buffer it arrived in.
+///
+/// What a download uses. The reference form copies the ciphertext so it can
+/// decrypt it, and a download decrypts every chunk it fetches — that copy is a
+/// megabyte per chunk allocated only to be freed, which is what makes an
+/// allocator grow its heap and keep it.
+pub fn decode_chunk_owned(
+    stored: Vec<u8>,
+    chunk: &Chunk,
+    depot_key: &[u8; 32],
+    host: &str,
+) -> Result<Vec<u8>, CdnError> {
+    let mut out = Vec::new();
+    decode_chunk_into(stored, chunk, depot_key, host, &mut out)?;
+    Ok(out)
+}
+
+/// Decodes a chunk into a buffer the caller owns, reusing the fetched one.
+///
+/// Both allocations a chunk would otherwise make are gone: the ciphertext is
+/// decrypted in the buffer it arrived in, and the plaintext goes into one the
+/// caller keeps. A download then holds one buffer per chunk in flight rather
+/// than churning two per chunk — which is what stopped the peak from being
+/// whatever the allocator felt like retaining.
+pub fn decode_chunk_into(
+    stored: Vec<u8>,
+    chunk: &Chunk,
+    depot_key: &[u8; 32],
+    host: &str,
+    plaintext: &mut Vec<u8>,
+) -> Result<(), CdnError> {
+    let container =
+        tapline_crypto::decrypt_content_owned(depot_key, stored).map_err(|_| CdnError::Decrypt)?;
+
+    tapline_chunk::decode_into(&container, tapline_chunk::MAX_CHUNK, plaintext)
+        .map_err(|e| CdnError::Container(e.to_string()))?;
+    let plaintext = &*plaintext;
 
     // The check the whole pipeline exists to reach.
-    let digest = tapline_crypto::sha1(&plaintext);
+    let digest = tapline_crypto::sha1(plaintext);
     if digest != chunk.id {
         return Err(CdnError::IntegrityFailure {
             expected: chunk.id_hex(),
@@ -194,7 +229,7 @@ pub fn decode_chunk(
         });
     }
 
-    Ok(plaintext)
+    Ok(())
 }
 
 /// Fetches and parses a depot manifest.

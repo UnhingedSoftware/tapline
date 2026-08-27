@@ -16,7 +16,8 @@
 mod symmetric;
 
 pub use symmetric::{
-    CryptoError, SessionKey, decrypt_content, decrypt_message, encrypt_content, encrypt_message,
+    CryptoError, SessionKey, decrypt_content, decrypt_content_owned, decrypt_message,
+    encrypt_content, encrypt_message,
 };
 
 use hmac::{Hmac, Mac};

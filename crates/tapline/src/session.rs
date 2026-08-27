@@ -613,8 +613,8 @@ impl Session {
                             let for_decode = chunk.clone();
                             let host_for_decode = host.clone();
                             let decoded = tokio::task::spawn_blocking(move || {
-                                tapline_cdn::decode_chunk(
-                                    &stored,
+                                tapline_cdn::decode_chunk_owned(
+                                    stored,
                                     &for_decode,
                                     &key,
                                     &host_for_decode,
@@ -1348,8 +1348,8 @@ impl Session {
                                     let for_decode = chunk.clone();
                                     let host_for_decode = host.clone();
                                     let decoded = tokio::task::spawn_blocking(move || {
-                                        tapline_cdn::decode_chunk(
-                                            &stored,
+                                        tapline_cdn::decode_chunk_owned(
+                                            stored,
                                             &for_decode,
                                             &key,
                                             &host_for_decode,
@@ -1672,7 +1672,7 @@ pub(crate) async fn fetch_and_decode(
                 let key = *key;
                 let host_for_decode = host.clone();
                 let decoded = tokio::task::spawn_blocking(move || {
-                    tapline_cdn::decode_chunk(&stored, &for_decode, &key, &host_for_decode)
+                    tapline_cdn::decode_chunk_owned(stored, &for_decode, &key, &host_for_decode)
                 })
                 .await
                 .map_err(|error| InstallError::Io(error.to_string()))?;

@@ -40,7 +40,19 @@ pub fn matches(input: &[u8]) -> bool {
 }
 
 /// Decodes a `VZ` chunk.
+#[cfg(test)]
 pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
+    let mut out = Vec::new();
+    decode_into(input, max_output, &mut out)?;
+    Ok(out)
+}
+
+/// Decodes into a buffer the caller owns.
+///
+/// What a download uses. Allocating a megabyte per chunk and freeing it again
+/// is what makes an allocator raise its mmap threshold and keep the heap; a
+/// reused buffer never gives it the chance.
+pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     if input.len() < HEADER_LEN + PROPS_LEN + FOOTER_LEN {
         return Err(ChunkError::Truncated);
     }
@@ -82,11 +94,12 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
         .ok_or(ChunkError::Truncated)?;
 
     let mut reader = std::io::Cursor::new(stream);
-    let mut out = Vec::with_capacity(claimed_size as usize);
+    out.clear();
+    out.reserve(claimed_size as usize);
 
     lzma_rs::lzma_decompress_with_options(
         &mut reader,
-        &mut out,
+        out,
         &lzma_rs::decompress::Options {
             unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(Some(u64::from(
                 claimed_size,
@@ -104,7 +117,7 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
         });
     }
 
-    let actual_crc = crc32fast::hash(&out);
+    let actual_crc = crc32fast::hash(out);
     if actual_crc != footer_crc {
         return Err(ChunkError::ChecksumMismatch {
             expected: footer_crc,
@@ -112,7 +125,7 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
         });
     }
 
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
