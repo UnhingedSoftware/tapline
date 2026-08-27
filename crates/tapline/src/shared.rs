@@ -4,24 +4,32 @@
 //! connection pools, and three independent budgets of 64 chunks in flight, for
 //! 192 concurrent requests against Steam's CDN.
 //!
-//! That is not three times the throughput. Measured on Garry's Mod, a single
+//! That is not three times the throughput. Measured on Valheim, a single
 //! download at increasing concurrency:
 //!
-//! | chunks in flight | throughput |
-//! |---|---|
-//! | 32 | 168 MB/s |
-//! | 64 | 184 MB/s |
-//! | 128 | 163 MB/s |
-//! | 256 | 157 MB/s |
+//! | chunks in flight | wall clock | peak RSS |
+//! |---|---|---|
+//! | 12 | 13.8 s | 27.5 MB |
+//! | 24 | 13.3 s | 40.8 MB |
+//! | 32 | 13.9 s | 51.0 MB |
+//! | 64 | 11.9 s | 83.0 MB |
+//! | 128 | 29.3 s | 152.8 MB |
 //!
-//! The curve turns over after 64. Two downloads at 64 each land where one
-//! download at 128 lands — slower than either would be alone — and they do it
-//! while also paying for a second connection pool whose warm sockets the other
-//! download cannot use.
+//! The curve is flat from 12 to 64 and then falls off a cliff: at 128 there are
+//! more requests in flight than the link and the CDN will carry, so they queue
+//! and time out. Two downloads at 64 each put 128 in flight between them and
+//! land in exactly that hole — slower than either would be alone — while also
+//! paying for a second connection pool whose warm sockets the other download
+//! cannot use.
+//!
+//! An earlier version of this table had rows for 128 and 256 taken from runs
+//! that were really capped at 64, because a download draws on this budget as
+//! well as its own limit and the budget was left at the default. They said the
+//! curve turned over gently after 64. It does not; it collapses.
 //!
 //! So the budget belongs to the process, not to the download. [`Shared`] holds
 //! it, along with the HTTP connection pool, and every [`Session`] built on the
-//! same one draws from it. Three downloads then split 64 rather than
+//! same one draws from it. Three downloads then split one budget rather than
 //! multiplying it, and a connection one of them warmed is one the others can
 //! use.
 //!
@@ -39,18 +47,28 @@
 //! the bottom: three downloads that each take 64 land at 170 MB/s and finish
 //! nearly seven seconds apart, and the same three sharing 64 land above 200 and
 //! finish within a second of each other. The gain is from sharing, not from
-//! picking a different number, which is why the default did not move.
+//! picking a different number.
 //!
 //! Three sharing 64 also beat a *single* download at 64, which peaks around
 //! 184 MB/s. One download cannot keep 64 requests busy: it stalls on its own
 //! per-file and per-depot ordering. Another download's chunks fill those gaps.
 //!
-//! [`Session`]: crate::Session
+//! # The default budget is a memory choice
+//!
+//! Those numbers argue for a budget of 64. Memory argues against it: a budget
+//! is chunks in flight, chunks in flight are what a download's peak RSS is made
+//! of, and 64 of them cost about 83 MB against 27 MB for 12.
+//!
+//! So the process budget defaults to [`InstallOptions::concurrency`], which is
+//! 12, and the ceiling holds whether a process runs one download or five. A
+//! process that runs several at once and has memory to spare should say so —
+//! that is what this type is for, and the sharing is worth more than the number:
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), tapline::InstallError> {
 //! use tapline::{Session, Shared};
 //!
+//! // ~83 MB, and worth it for three concurrent installs.
 //! let shared = Shared::new(64);
 //! let a = Session::anonymous_shared(shared.clone()).await?;
 //! let b = Session::anonymous_shared(shared).await?;
@@ -58,6 +76,9 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! [`InstallOptions::concurrency`]: crate::InstallOptions::concurrency
+//! [`Session`]: crate::Session
 
 use std::sync::Arc;
 use tapline_rt_tokio::HttpClient;

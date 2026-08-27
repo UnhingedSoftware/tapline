@@ -301,6 +301,20 @@ console.log(await concurrency()); // { total: 96, available: 96 }
 It is fixed once a download starts, because moving it underneath running
 downloads is not something you could reason about.
 
+The budget is also what bounds memory: it is chunks in flight, and peak RSS runs
+about `15 + 1.1 × total` MB regardless of how much is being downloaded. The
+default of 10 costs around 25 MB; 96 would cost around 120 MB.
+
+On glibc, add the allocator settings to whatever starts your process, or it will
+retain roughly twice that:
+
+```sh
+MALLOC_ARENA_MAX=2 MALLOC_TRIM_THRESHOLD_=131072 MALLOC_MMAP_THRESHOLD_=131072 node app.js
+```
+
+The Rust CLI does this by re-executing itself at startup. The binding cannot:
+the process it would replace is yours.
+
 ## Events
 
 Every job emits a stream, discriminated by `kind`:

@@ -17,7 +17,10 @@ tapline +login anonymous +force_install_dir /srv/valheim +app_update 896660 +qui
 
 # or the native one, with machine-readable output
 tapline app plan 896660 --dir /srv/valheim --json
-tapline app download 896660 --dir /srv/valheim --concurrency 64
+tapline app download 896660 --dir /srv/valheim
+
+# ~25 MB by default; trade memory for speed explicitly
+tapline app download 896660 --dir /srv/valheim --concurrency 24
 tapline workshop download 4000 3790437566 --dir /srv/gmod
 ```
 
@@ -90,13 +93,22 @@ says otherwise:
 | 16 | 29.5 s | 120 MB/s |
 | 32 | 21.1 s | 168 MB/s |
 | **64** | **18.3 s** | 184 MB/s |
-| 128 | 20.7 s | 163 MB/s |
-| 256 | 21.5 s | 157 MB/s |
 
 There was no link ceiling at 120 MB/s; 16 was leaving a third of the throughput
 unused, and the sentence explaining that it could not go faster was reasoning
-from two coincidentally similar numbers. The default is 64, where the curve
-turns over.
+from two coincidentally similar numbers.
+
+That table used to have rows for 128 and 256 showing the curve turning over
+gently. They were wrong: a download draws on the process-wide budget as well as
+its own limit, and the budget was left at the default of 64, so both rows were
+really 64 measured twice more. Raising a limit that another limit already caps
+is an easy experiment to run and a hard one to notice, and it produced two wrong
+tables here before it was found. Measured properly, 128 does not turn over
+gently — it collapses to 29.3 s, because more requests go out than the link and
+the CDN will carry and they queue until they time out.
+
+The default is **10**, and it is a memory choice rather than a speed one — see
+[Memory](#memory).
 
 ## Several downloads at once
 
@@ -104,21 +116,32 @@ A process that installs more than one app shares one budget of chunks in flight
 and one connection pool, through `Shared`. It is the default; concurrent
 `install()` calls need nothing.
 
-The reason is the curve above. Throughput turns over past 64, so N downloads
-each taking a full 64 is slower than N splitting one 64. Three concurrent
-Valheim installs, 4.40 GB total:
+The reason is the curve above. Throughput falls off past 64, so N downloads each
+taking a full 64 is slower than N splitting one 64. Three concurrent Valheim
+installs, 4.40 GB total:
 
 | total budget | wall clock | throughput | spread between finishes |
 |---|---|---|---|
-| **64 (shared, the default)** | **18.3–21.3 s** | **197–230 MB/s** | 0.9 s |
+| **64 (shared)** | **18.3–21.3 s** | **197–230 MB/s** | 0.9 s |
 | 96 | 18.5–19.3 s | 218–227 MB/s | — |
 | 128 | 22.9 s | 184 MB/s | — |
 | 192 (a full budget each) | 24.7 s | 170 MB/s | 6.7 s |
 
 Faster and fairer: the three finish within a second of each other rather than
 nearly seven seconds apart. 64 and 96 are inside each other's run-to-run
-variance — 64 produced both 197 and 230 MB/s — so the default did not move; the
-gain is from sharing, not from a different number.
+variance — 64 produced both 197 and 230 MB/s — so the gain is from sharing, not
+from picking a different number.
+
+The shipped budget is 10 rather than 64, because a budget is chunks in flight
+and chunks in flight are what memory is made of. A process doing several
+installs at once that has memory to spare should raise it — the sharing is worth
+more than the number:
+
+```rust
+let shared = Shared::new(64);                            // ~83 MB, three installs
+let a = Session::anonymous_shared(shared.clone()).await?;
+let b = Session::anonymous_shared(shared).await?;
+```
 
 Worth noting against the single-download table above: three downloads sharing 64
 beat *one* download at 64, which peaks near 184 MB/s. One download cannot keep
@@ -133,7 +156,7 @@ measured on a 2.5 Gb link behind a 3 Gb connection, with a disk that writes at
 
 | change | result |
 |---|---|
-| more concurrency (128, 256) | slower: 163, 157 MB/s |
+| more concurrency (128) | much slower: 29.3 s against 11.9 s at 64 |
 | more CDN hosts (40, 60) | much slower: 60, 59 MB/s |
 | fewer CDN hosts (4, 8, 12) | no change within noise |
 | sticky host affinity per slot | **40–55% slower** |
@@ -163,6 +186,56 @@ so sixteen "concurrent" tasks were sixteen tasks taking turns on one thread,
 each blocking the others while it decompressed a megabyte of LZMA. Moving the
 decode to `spawn_blocking` and using a real runtime took it to 18 s in the test
 harness and 11.7 s in a release build.
+
+## Memory
+
+A download holds about **25 MB** and never approaches 50, whatever it is
+downloading. Measured on this machine, release build, defaults:
+
+| | peak RSS | wall |
+|---|---|---|
+| idle logged-in session | 7.8 MB | — |
+| `app info` (metadata only) | 7.6 MB | 1.0 s |
+| Workshop item, 8.4 MB, streamed to a zip | 29.8 MB | 1.9 s |
+| Valheim dedicated server, 1.5 GB | 24.5–25.2 MB | 16.7–17.5 s |
+| Garry's Mod dedicated server, 6.8 GB | 26.1 MB | 47.3 s |
+
+The last two rows are the point: 6.8 GB costs what 1.5 GB does. Nothing in a
+download scales with the content — files are written and closed as they finish,
+so the only thing that grows is the number of chunks in flight, and that is a
+fixed budget. Peak RSS is close to `15 + 1.1 × concurrency` MB from 4 chunks in
+flight up to 128, which is what makes a ceiling something worth promising rather
+than something that happened to hold on the apps that got tested.
+
+Two things produce that number.
+
+**The concurrency default is a memory choice.** 10 in flight meets the 25 MB
+target; 24 would be about 25% faster and cost 41 MB; 64 is the fastest setting
+measured and costs 83 MB. `--concurrency` moves along that curve in either
+direction, and the trade is roughly a megabyte per chunk.
+
+**glibc is pinned at startup, or it hoards.** A download decrypts and
+decompresses a megabyte per chunk and frees it again, thousands of times over.
+glibc reads that as evidence that blocks that size are worth keeping, raises its
+dynamic mmap threshold, and stops returning them to the kernel — so peak memory
+becomes what the allocator decided to retain rather than what the download had
+in flight. The same Valheim install measures **80.2 MB** with the allocator left
+alone against **25 MB** pinned, and drifts about 20% between identical runs
+because the threshold settles somewhere different each time.
+
+The knobs are environment variables glibc only reads at startup, so `main` calls
+`tapline::retune()`, which re-executes the process once with them set. It costs
+one `execve`. `TAPLINE_NO_MALLOC_TUNING=1` turns it off.
+
+**Embedding tapline?** `retune()` replaces the running process, which is right
+for a binary and catastrophic for a library or a plugin, so nothing calls it for
+you. Set the variables on the process instead, before it starts —
+`tapline::tuning::ENVIRONMENT` is the list, so a launcher does not have to copy
+the numbers out of the documentation:
+
+```sh
+MALLOC_ARENA_MAX=2 MALLOC_TRIM_THRESHOLD_=131072 MALLOC_MMAP_THRESHOLD_=131072
+```
 
 ## Ready to run, not merely correct
 
@@ -204,8 +277,9 @@ remote-code-execution primitive.
 
 No steamcmd, no Steam client, no 32-bit runtime, no CA bundle: tapline speaks the
 CM protocol itself and `rustls` carries Mozilla's roots compiled in. The
-`Dockerfile` builds a **1.6 MB image on `scratch`** — one static binary and
-nothing else, not even a shell.
+`Dockerfile` builds a **5.0 MB image on `scratch`** — one static binary and
+nothing else, not even a shell. (It was 1.6 MB before the zip, pipeline and
+extension crates; the number here is measured per release, not aspirational.)
 
 ```sh
 docker build -t tapline .
@@ -215,6 +289,17 @@ docker run --rm -v /srv/gmod:/data tapline \
 
 Verified by running a real Workshop download inside it: 348 files streamed in
 0.60 s, with nothing in the image but the binary.
+
+It is also the cheapest place tapline runs. A full 1.5 GB Valheim install
+completes inside `--memory=24m`, and fails at 16m:
+
+```sh
+docker run --rm --memory=24m -v /srv/valheim:/data tapline app download 896660 --dir /data
+```
+
+That is *less* than the same install costs natively, because the image is a musl
+build and musl's allocator does not have the retention behaviour glibc has to be
+talked out of — so `retune()` is compiled out there, and there is nothing to fix.
 
 ## From JavaScript
 
@@ -242,6 +327,15 @@ failure mode. See `bindings/js/README.md` for the reasoning and
 
 Verified on Deno 2.9.5, Bun 1.3.14 and Node 26.7.0: the same test file, 10/10
 on each, including real downloads.
+
+One thing does not carry across the boundary: `retune()` replaces the running
+process, so the library never calls it for you and the FFI must not — restarting
+someone's Node server to save 50 MB is not a trade tapline gets to make. A host
+that wants the memory profile sets the variables before it starts:
+
+```sh
+MALLOC_ARENA_MAX=2 MALLOC_TRIM_THRESHOLD_=131072 MALLOC_MMAP_THRESHOLD_=131072 node app.js
+```
 
 ## Extensions
 
