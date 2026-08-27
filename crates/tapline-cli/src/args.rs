@@ -93,6 +93,34 @@ pub enum Command {
         /// Emit JSON.
         json: bool,
     },
+    /// `tapline workshop search <appid> [--text ...] [--tag ...]`
+    WorkshopSearch {
+        /// Which app's Workshop.
+        app: AppId,
+        /// Free text to match.
+        text: Option<String>,
+        /// Tags an item must carry.
+        tags: Vec<String>,
+        /// Tags that exclude an item.
+        exclude_tags: Vec<String>,
+        /// Require every tag rather than any.
+        all_tags: bool,
+        /// How to order results.
+        sort: Option<String>,
+        /// How many to return.
+        limit: Option<u32>,
+        /// Where to resume from.
+        cursor: Option<String>,
+        /// Emit JSON.
+        json: bool,
+    },
+    /// `tapline workshop info <itemid>...`
+    WorkshopInfo {
+        /// The items to describe.
+        items: Vec<PublishedFileId>,
+        /// Emit JSON.
+        json: bool,
+    },
     /// `tapline workshop download <appid> <itemid> --dir <path>`
     WorkshopDownload {
         /// Write the item's files straight into `--dir`, with no
@@ -407,6 +435,40 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
             app: app_id(positional.get(2))?,
             json,
         }),
+        (Some("workshop"), Some("search")) => Ok(Command::WorkshopSearch {
+            app: app_id(positional.get(2))?,
+            text: options.value("text").map(str::to_owned),
+            tags: options.all_values("tag"),
+            exclude_tags: options.all_values("exclude-tag"),
+            all_tags: options.flag("all-tags"),
+            sort: options.value("sort").map(str::to_owned),
+            limit: match options.value("limit") {
+                None => None,
+                Some(raw) => Some(raw.parse().map_err(|_| {
+                    ArgError::new(format!(
+                        "{raw:?} is not a result count; give a positive number"
+                    ))
+                })?),
+            },
+            cursor: options.value("cursor").map(str::to_owned),
+            json,
+        }),
+        (Some("workshop"), Some("info")) => {
+            let items: Result<Vec<PublishedFileId>, ArgError> = positional
+                .iter()
+                .skip(2)
+                .map(|raw| {
+                    raw.parse()
+                        .map(PublishedFileId)
+                        .map_err(|_| ArgError::new(format!("{raw:?} is not an item id")))
+                })
+                .collect();
+            let items = items?;
+            if items.is_empty() {
+                return Err(ArgError::new("at least one item id is required"));
+            }
+            Ok(Command::WorkshopInfo { items, json })
+        }
         (Some("workshop"), Some("download")) => {
             let item = positional
                 .get(3)
@@ -619,6 +681,80 @@ mod tests {
     fn an_unknown_native_command_names_itself() {
         let error = parse(&args("frobnicate 1")).expect_err("must refuse");
         assert!(error.message.contains("frobnicate"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_workshop_search_parses_its_filters() {
+        let parsed = parse(&args(
+            "workshop search 4000 --text stargate --tag Fun --tag Tool \
+             --exclude-tag NSFW --sort trend --limit 5",
+        ))
+        .expect("parse");
+        match parsed {
+            Command::WorkshopSearch {
+                app,
+                text,
+                tags,
+                exclude_tags,
+                sort,
+                limit,
+                ..
+            } => {
+                assert_eq!(app.get(), 4000);
+                assert_eq!(text.as_deref(), Some("stargate"));
+                assert_eq!(tags, vec!["Fun".to_owned(), "Tool".to_owned()]);
+                assert_eq!(exclude_tags, vec!["NSFW".to_owned()]);
+                assert_eq!(sort.as_deref(), Some("trend"));
+                assert_eq!(limit, Some(5));
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_search_cursor_survives_its_own_punctuation() {
+        // Steam's cursors are base64 and carry `+`, `/` and `=`. A cursor
+        // mangled in parsing silently returns the first page again, which
+        // reads as "paging is broken" rather than "the flag was eaten".
+        let parsed = parse(&args(
+            "workshop search 4000 --cursor AoMITpIrrFfJsRd4xNDoAw==",
+        ))
+        .expect("parse");
+        match parsed {
+            Command::WorkshopSearch { cursor, .. } => {
+                assert_eq!(cursor.as_deref(), Some("AoMITpIrrFfJsRd4xNDoAw=="));
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workshop_info_takes_several_ids() {
+        let parsed = parse(&args("workshop info 104691717 3790437566")).expect("parse");
+        match parsed {
+            Command::WorkshopInfo { items, .. } => {
+                assert_eq!(
+                    items,
+                    vec![PublishedFileId(104_691_717), PublishedFileId(3_790_437_566)]
+                );
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workshop_info_without_an_id_is_refused() {
+        // Rather than describing nothing and exiting zero.
+        let error = parse(&args("workshop info")).expect_err("must refuse");
+        assert!(error.message.contains("item id"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_unusable_search_limit_is_refused_rather_than_ignored() {
+        for bad in ["zero", "-4", "1.5"] {
+            let parsed = parse(&args(&format!("workshop search 4000 --limit {bad}")));
+            assert!(parsed.is_err(), "--limit {bad:?} was accepted");
+        }
     }
 
     #[test]

@@ -47,6 +47,31 @@ pub async fn execute(command: Command) -> Result<(), String> {
             )
             .await
         }
+        Command::WorkshopSearch {
+            app,
+            text,
+            tags,
+            exclude_tags,
+            all_tags,
+            sort,
+            limit,
+            cursor,
+            json,
+        } => {
+            search(
+                app,
+                text,
+                tags,
+                exclude_tags,
+                all_tags,
+                sort.as_deref(),
+                limit,
+                cursor,
+                json,
+            )
+            .await
+        }
+        Command::WorkshopInfo { items, json } => workshop_info(items, json).await,
         Command::Login { qr, account } => login(qr, account).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
@@ -290,6 +315,181 @@ async fn print_info(session: &mut Session, app: AppId, json: bool) -> Result<(),
             );
         }
         println!("install size: {} bytes", info.install_size(&filter));
+    }
+    Ok(())
+}
+
+/// `workshop search`
+#[allow(clippy::too_many_arguments)]
+async fn search(
+    app: AppId,
+    text: Option<String>,
+    tags: Vec<String>,
+    exclude_tags: Vec<String>,
+    all_tags: bool,
+    sort: Option<&str>,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    json: bool,
+) -> Result<(), String> {
+    let defaults = tapline::BrowseQuery::default();
+    // Resolved before connecting: an unknown sort should cost a message rather
+    // than a login and a round trip.
+    let sort = match sort {
+        None => defaults.sort,
+        Some(name) => tapline::BrowseSort::parse(name).ok_or_else(|| {
+            format!(
+                "unknown --sort {name:?}; known: {}",
+                tapline::BrowseSort::NAMES.join(", ")
+            )
+        })?,
+    };
+    let query = tapline::BrowseQuery {
+        app,
+        text,
+        required_tags: tags,
+        excluded_tags: exclude_tags,
+        match_all_tags: all_tags,
+        sort,
+        per_page: limit.unwrap_or(defaults.per_page),
+        cursor,
+    };
+    query.validate().map_err(|error| error.to_string())?;
+
+    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let page = session
+        .browse_workshop(&query)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if json {
+        for found in &page.items {
+            emit(&serde_json::json!({
+                "event": "result",
+                "app": found.item.app.get(),
+                // A string, because item ids exceed what JSON numbers hold
+                // exactly and a rounded id downloads the wrong thing.
+                "item": found.item.id.get().to_string(),
+                "title": found.item.title,
+                "size": found.item.size,
+                "updated": found.item.updated,
+                "subscriptions": found.subscriptions,
+                "favorites": found.favorites,
+                "tags": found.tags,
+                "description": found.description,
+                "preview_url": found.preview_url,
+            }));
+        }
+        emit(&serde_json::json!({
+            "event": "searched",
+            "total": page.total,
+            "returned": page.items.len(),
+            "next_cursor": page.next_cursor,
+            "skipped": page.skipped.len(),
+        }));
+    } else {
+        for found in &page.items {
+            println!(
+                "{:>12}  {:>9}  {:>8} subs  {}",
+                found.item.id.get(),
+                human_bytes(found.item.size),
+                found.subscriptions,
+                found.item.title
+            );
+        }
+        println!(
+            "{} of {} matches{}",
+            page.items.len(),
+            page.total,
+            match &page.next_cursor {
+                Some(cursor) => format!("; next page: --cursor {cursor}"),
+                None => String::new(),
+            }
+        );
+        // Never silent about what was left out.
+        for (id, why) in &page.skipped {
+            eprintln!("skipped {id}: {why}");
+        }
+    }
+    Ok(())
+}
+
+/// Renders a byte count the way a person reads it.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    match UNITS.get(unit) {
+        // The loop cannot walk past the last unit, so this is unreachable by
+        // construction — but a panic in a formatter is a poor way to find out.
+        None | Some(&"B") => format!("{bytes} B"),
+        Some(name) => format!("{value:.1} {name}"),
+    }
+}
+
+/// `workshop info`
+async fn workshop_info(items: Vec<PublishedFileId>, json: bool) -> Result<(), String> {
+    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+    let described = session
+        .workshop_details(&items)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut failed = 0_usize;
+    for outcome in described {
+        match outcome {
+            Ok(item) => {
+                if json {
+                    emit(&serde_json::json!({
+                        "event": "item",
+                        "app": item.app.get(),
+                        "item": item.id.get().to_string(),
+                        "title": item.title,
+                        "size": item.size,
+                        "updated": item.updated,
+                        "content": match &item.content {
+                            tapline::WorkshopContent::SteamPipe { depot, manifest } =>
+                                serde_json::json!({
+                                    "kind": "steampipe",
+                                    "depot": depot.get(),
+                                    "manifest": manifest.get().to_string(),
+                                }),
+                            tapline::WorkshopContent::Legacy { url, filename } =>
+                                serde_json::json!({
+                                    "kind": "legacy",
+                                    "url": url,
+                                    "filename": filename,
+                                }),
+                        },
+                    }));
+                } else {
+                    println!(
+                        "{:>12}  {:>9}  app {}  {}",
+                        item.id.get(),
+                        human_bytes(item.size),
+                        item.app.get(),
+                        item.title
+                    );
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                if json {
+                    emit(&serde_json::json!({"event": "error", "message": error.to_string()}));
+                } else {
+                    eprintln!("{error}");
+                }
+            }
+        }
+    }
+
+    // A lookup where every id failed is a failure, not a silent empty result.
+    if failed > 0 && failed == items.len() {
+        return Err(format!("none of the {failed} items could be described"));
     }
     Ok(())
 }

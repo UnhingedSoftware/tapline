@@ -28,6 +28,7 @@
 //! really 200 MB of changed chunks. steamcmd cannot answer either question
 //! without doing the download.
 
+mod browse;
 mod delta;
 mod install;
 mod login;
@@ -40,6 +41,9 @@ pub mod tuning;
 mod validate;
 mod workshop;
 
+pub use browse::{
+    BrowseError, BrowsePage, BrowseQuery, BrowseResult, BrowseSort, FIRST_PAGE, MAX_PER_PAGE,
+};
 pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
 pub use install::{FileModes, InstallError, InstallOptions, InstallReport, WorkshopLayout};
 pub use login::{LoginError, PendingLogin, PollOutcome};

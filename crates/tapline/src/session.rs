@@ -1011,6 +1011,62 @@ impl Session {
         Ok(out)
     }
 
+    /// Searches an app's Workshop.
+    ///
+    /// The same query the Workshop website runs, over the CM session already
+    /// open — no WebAPI key, and no login: an anonymous session searches fine.
+    ///
+    /// Results carry a [`WorkshopItem`], so anything found here can be passed
+    /// straight to [`Session::download_workshop_item`] without a second lookup.
+    ///
+    /// Paging is a cursor. Pass [`BrowsePage::next_cursor`] back as
+    /// [`BrowseQuery::cursor`] to continue, and stop when it is `None`.
+    ///
+    /// [`WorkshopItem`]: crate::WorkshopItem
+    /// [`BrowsePage::next_cursor`]: crate::BrowsePage::next_cursor
+    /// [`BrowseQuery::cursor`]: crate::BrowseQuery::cursor
+    pub async fn browse_workshop(
+        &mut self,
+        query: &crate::BrowseQuery,
+    ) -> Result<crate::BrowsePage, InstallError> {
+        query.validate()?;
+        let response = self.cm.call(&query.to_request()).await?;
+
+        // One PICS lookup for the app, not one per result: a page is twenty
+        // items from the same Workshop.
+        let workshop_depot = if query.app.get() == 0 {
+            None
+        } else {
+            tapline_pics::product_info(&mut self.cm, query.app)
+                .await
+                .ok()
+                .and_then(|info| info.workshop_depot())
+        };
+
+        let mut items = Vec::with_capacity(response.publishedfiledetails.len());
+        let mut skipped = Vec::new();
+        for details in &response.publishedfiledetails {
+            match crate::browse::describe(details, workshop_depot) {
+                Ok(found) => items.push(found),
+                Err(why) => skipped.push(why),
+            }
+        }
+
+        // Steam repeats the cursor when there is nothing after it, so an
+        // unchanged cursor is the end rather than an invitation to loop.
+        let sent = query.cursor.as_deref().unwrap_or(crate::FIRST_PAGE);
+        let next_cursor = response
+            .next_cursor
+            .filter(|cursor| !cursor.is_empty() && cursor != sent && !items.is_empty());
+
+        Ok(crate::BrowsePage {
+            items,
+            total: response.total.unwrap_or(0),
+            next_cursor,
+            skipped,
+        })
+    }
+
     /// Downloads one Workshop item.
     ///
     /// SteamPipe items go through the same path as depot content — request

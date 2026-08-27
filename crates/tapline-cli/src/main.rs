@@ -33,6 +33,13 @@ Native:
       Install or update. Downloads nothing if already current.
   tapline app info APPID [--json]
       Depots, branches and sizes.
+  tapline workshop search APPID [--text QUERY] [--tag T]... [--exclude-tag T]...
+                         [--all-tags] [--sort NAME] [--limit N] [--cursor C] [--json]
+      Search an app's Workshop. --sort: vote, recent, updated, trend,
+      subscribed, text (text needs --text). Paging is a cursor: pass the
+      next_cursor from one page as --cursor to get the following one.
+  tapline workshop info ITEMID... [--json]
+      Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]
                             --flat writes into DIR itself, for e.g. garrysmod/addons
                             --extensions gmad,gmad-zip unpacks/converts .gma as it lands
