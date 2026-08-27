@@ -55,12 +55,14 @@
 //!
 //! # The default budget is a memory choice
 //!
-//! Those numbers argue for a budget of 64. Memory argues against it: a budget
-//! is chunks in flight, chunks in flight are what a download's peak RSS is made
-//! of, and 64 of them cost about 83 MB against 27 MB for 12.
+//! Those numbers argue for a budget of 64. Measured again with interleaved
+//! repeats, 64 is not even the fastest: a single download peaks at 48 chunks in
+//! flight and is slower at 64, which also costs 15-18 MB more. A budget is
+//! chunks in flight, and chunks in flight are what a download's peak RSS is
+//! made of.
 //!
 //! So the process budget defaults to [`InstallOptions::concurrency`], which is
-//! 24, and the ceiling holds whether a process runs one download or five. A
+//! 48 — the point where one download stops getting faster. A
 //! process that runs several at once and has memory to spare should say so —
 //! that is what this type is for, and the sharing is worth more than the number:
 //!

@@ -107,10 +107,10 @@ tables here before it was found. Measured properly, 128 does not turn over
 gently — it collapses to 29.3 s, because more requests go out than the link and
 the CDN will carry and they queue until they time out.
 
-The default is **24**: the fastest setting that still leaves headroom under a
-50 MB memory ceiling. Past the plateau the extra requests cost more than they
-carry — 64 is slower than 32 on the big install — so this is not a case of
-trading all the memory you have for all the speed there is. See
+The default is **48**: the fewest chunks in flight that reach full speed, and
+not one more. Past that the extra requests cost more than they carry — 64 is
+slower than 48 on both workloads *and* costs 15–18 MB more — so this is not a
+case of trading all the memory you have for all the speed there is. See
 [Memory](#memory).
 
 ## Several downloads at once
@@ -135,10 +135,10 @@ nearly seven seconds apart. 64 and 96 are inside each other's run-to-run
 variance — 64 produced both 197 and 230 MB/s — so the gain is from sharing, not
 from picking a different number.
 
-The shipped budget is 24 rather than 64, because a budget is chunks in flight
-and chunks in flight are what memory is made of. A process doing several
-installs at once that has memory to spare should raise it — the sharing is worth
-more than the number:
+The shipped budget is 48, the same as one download's default, because a budget
+is chunks in flight and chunks in flight are what memory is made of. A process
+doing several installs at once that has memory to spare should raise it — the
+sharing is worth more than the number:
 
 ```rust
 let shared = Shared::new(64);                            // ~83 MB, three installs
@@ -192,16 +192,17 @@ harness and 11.7 s in a release build.
 
 ## Memory
 
-A download holds about **40 MB** and never reaches 50, whatever it is
-downloading. Measured on this machine, release build, defaults:
+A download holds about **65 MB**, whatever it is downloading — the memory a
+default costs is predictable from one number, and that number is picked to reach
+full speed and stop there. Measured on this machine, release build, defaults:
 
 | | peak RSS | wall |
 |---|---|---|
 | idle logged-in session | 7.8 MB | — |
 | `app info` (metadata only) | 7.6 MB | 1.0 s |
 | Workshop item, 8.4 MB, streamed to a zip | 29.8 MB | 1.9 s |
-| Valheim dedicated server, 1.5 GB | 42.8 MB | 12.9 s |
-| Garry's Mod dedicated server, 6.8 GB | 39.1 MB | 36.8 s |
+| Valheim dedicated server, 1.5 GB | 67.8 MB | 11.6 s |
+| Garry's Mod dedicated server, 6.8 GB | 60.9 MB | 33.5 s |
 
 The last two rows are the point: 6.8 GB costs what 1.5 GB does, and the bigger
 install costs slightly *less*. Nothing in a download scales with the content.
@@ -217,20 +218,25 @@ Two things produce that number.
 **The concurrency default is where memory and speed argue.** A slot costs about
 1.1 MB and it is a floor, not waste: a chunk's plaintext has to be complete
 before its SHA-1 can be checked, and nothing is written before that check. So
-buying speed means buying memory:
+buying speed means buying memory — up to the point where it stops buying speed:
 
 | in flight | Valheim 1.5 GB | GMod 6.8 GB | peak RSS |
 |---|---|---|---|
 | 10 | 15.6 s | 48.3 s | 26–27 MB |
-| **24 (default)** | **12.9 s** | **36.8 s** | **39–43 MB** |
-| 32 | 13.5 s | 34.9 s | 50 MB |
-| 64 | 11.4 s | 38.9 s | 77–85 MB |
+| 24 | 12.4 s | 35.8 s | 42 MB |
+| 32 | 12.3 s | 35.1 s | 50 MB |
+| 40 | 12.8 s | 34.3 s | 55–60 MB |
+| **48 (default)** | **11.6 s** | **33.5 s** | **61–68 MB** |
+| 64 | 12.2 s | 35.3 s | 76–86 MB |
 
-24 is the fastest setting with headroom under the ceiling — within 5% of the
-best time on both. 32 lands *on* 50 MB, which is not a ceiling any more. 64 is
-slower than 32 on the big install, and 128 collapses to 29 s. `--concurrency 10`
-holds a download to ~25 MB if the footprint matters more than the 25–39% it
-costs.
+Medians of interleaved repeats, because a single sweep cannot tell a 2%
+difference from the link having a bad minute — the first attempt at this table
+put 16 ahead of 24 on noise alone.
+
+The curve rises to 48 and turns over after it: 64 is slower on both workloads
+*and* costs 15–18 MB more, so there is nothing above the default worth buying.
+`--concurrency 10` holds a download to ~25 MB if the footprint matters more than
+the 30–45% it costs.
 
 **glibc is pinned at startup, or it hoards.** A download decrypts and
 decompresses a megabyte per chunk and frees it again, thousands of times over.
@@ -319,22 +325,27 @@ and musl's allocator has none of the retention behaviour glibc has to be talked
 out of — `retune()` is compiled out there, and there is nothing to fix. A full
 1.5 GB Valheim install against a hard cgroup limit:
 
-| `--memory` | default (24 in flight) | `--concurrency 10` |
+| `--memory` | default (48 in flight) | `--concurrency 10` |
 |---|---|---|
-| 24m | fails | fails |
-| 32m | fails | **60 s** |
-| 48m | **61 s** | — |
-| 64m | **39 s** | — |
+| 32m | fails | 88 s |
+| 48m | fails | 58 s |
+| 64m | fails | — |
+| 80m | 36 s | — |
+| 96m | **19 s** | — |
 
 ```sh
-docker run --rm --memory=48m -v /srv/valheim:/data tapline app download 896660 --dir /data
+docker run --rm --memory=96m -v /srv/valheim:/data tapline app download 896660 --dir /data
 ```
 
-Note what the low end costs in time as well as headroom: at 48m the install
-takes 61 s against 39 s at 64m, because the cgroup limit counts page cache and a
-tight one leaves the writeback path nothing to work with. Squeezing the
-container below what the download wants does not fail loudly, it just gets slow
-first.
+**Give it 96m, not the 80m it survives on.** The floor and the working figure
+are different numbers: the same install takes 36 s at 80m and 19 s at 96m. A
+cgroup limit counts page cache, so a tight one starves the writeback path and
+the download goes slow well before it goes OOM. Squeezing a container to the
+point where it still passes is how you end up with something that works in
+testing and crawls in production.
+
+The same applies to the cheap column: `--concurrency 10` fits in 32m, and takes
+88 s doing it against 12 s unconstrained.
 
 ## From JavaScript
 

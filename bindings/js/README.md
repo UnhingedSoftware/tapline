@@ -363,7 +363,8 @@ downloads is not something you could reason about.
 
 The budget is also what bounds memory: it is chunks in flight, and peak RSS runs
 about `15 + 1.1 × total` MB regardless of how much is being downloaded. The
-default of 10 costs around 25 MB; 96 would cost around 120 MB.
+default of 48 costs around 65 MB and is where a single download stops getting
+faster; 96 would cost around 120 MB and be slower, not quicker.
 
 On glibc, add the allocator settings to whatever starts your process, or it will
 retain roughly twice that:

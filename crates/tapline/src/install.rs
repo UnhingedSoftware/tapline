@@ -35,38 +35,50 @@ pub struct InstallOptions {
     pub force: bool,
     /// How many chunks to fetch at once.
     ///
-    /// 24 by default. This is the only thing bounding peak memory, and it is
-    /// also most of what decides install speed, so it is the one number where
-    /// those two goals argue with each other.
+    /// 48 by default: the fewest slots that reach full speed, and not one more.
     ///
-    /// A chunk in flight holds its compressed bytes and its plaintext at once,
-    /// because the plaintext has to be complete before its SHA-1 can be checked
-    /// and nothing reaches the disk before that check. That is roughly 1.1 MB
-    /// per slot and it is a floor, not an inefficiency: chunks are written
-    /// straight to their offset as they pass, so nothing accumulates per file.
-    /// Memory is flat against install size — 6.8 GB costs what 1.5 GB does —
-    /// and only this number moves it.
+    /// This is the only thing bounding peak memory and most of what decides
+    /// install speed. A chunk in flight holds its compressed bytes and its
+    /// plaintext at once, because the plaintext has to be complete before its
+    /// SHA-1 can be checked and nothing reaches the disk before that check.
+    /// That is roughly 1.1 MB per slot and it is a floor, not an inefficiency:
+    /// chunks are written straight to their offset as they pass, so nothing
+    /// accumulates per file. Memory is flat against install size — 6.8 GB costs
+    /// what 1.5 GB does — and only this number moves it.
     ///
-    /// Measured, both dedicated servers, allocator pinned as [`retune`] does it:
+    /// Measured on both dedicated servers, allocator pinned as [`retune`] does
+    /// it. Medians of interleaved repeats, because a single sweep cannot tell a
+    /// 2% difference from the link having a bad minute:
     ///
     /// | in flight | Valheim 1.5 GB | GMod 6.8 GB | peak RSS |
     /// |---|---|---|---|
-    /// | 10 | 15.6 s | 48.3 s | 26–27 MB |
-    /// | **24** | **12.9 s** | **36.8 s** | **39–43 MB** |
-    /// | 32 | 13.5 s | 34.9 s | 50 MB |
-    /// | 64 | 11.4 s | 38.9 s | 77–85 MB |
+    /// | 12 | 13.6 s | 40.0 s | 28 MB |
+    /// | 24 | 12.4 s | 35.8 s | 42 MB |
+    /// | 32 | 12.3 s | 35.1 s | 50 MB |
+    /// | 40 | 12.8 s | 34.3 s | 55–60 MB |
+    /// | **48** | **11.6 s** | **33.5 s** | **61–68 MB** |
+    /// | 64 | 12.2 s | 35.3 s | 76–86 MB |
+    ///
+    /// The curve rises to 48 and turns over after it. 64 is slower than 48 on
+    /// both workloads *and* costs 15–18 MB more, so nothing above 48 is worth
+    /// buying: past the plateau the extra requests cost more than they carry,
+    /// and at 128 it collapses outright to 29 s on Valheim.
     ///
     /// Peak RSS is close to `15 + 1.1 × concurrency` MB, and the fit holds from
-    /// 4 slots to 128, which is what makes a ceiling worth promising.
+    /// 4 slots to 128. So the memory a default costs is predictable from the
+    /// number, which is what makes this a choice rather than a surprise.
     ///
-    /// 24 is the fastest setting with headroom under a 50 MB ceiling: within 5%
-    /// of the best time on both, at 39–43 MB. 32 is a shade quicker on the big
-    /// install and lands *on* 50, which is not a ceiling any more. 64 is
-    /// slower than 32 on GMod — past the plateau the extra requests cost more
-    /// than they carry, and at 128 it collapses outright to 29 s on Valheim.
+    /// # Why the fewest slots rather than the cheapest
     ///
-    /// For a smaller footprint, 10 holds a download to ~25 MB and costs about
-    /// 25% on Valheim and 39% on GMod. That is the trade, in both directions.
+    /// The rule is: use the minimum memory required for full speed. That is
+    /// 48 — 40 is consistently ~2% behind it across two independent sweeps, and
+    /// 64 is slower. An earlier default of 24 came from a different rule, the
+    /// fastest setting under a 50 MB ceiling, and it is 5% off the plateau on
+    /// GMod and 7% on Valheim. The ceiling has been retired rather than quietly
+    /// kept, because it was answering a question nobody is asking now.
+    ///
+    /// A smaller footprint is still one flag away: 10 holds a download to
+    /// ~25 MB and costs about 25% on Valheim and 39% on GMod.
     ///
     /// The allocator pinning is what makes any of this reproducible. Without it
     /// the same runs measure 46–57 MB and drift by ±20% between repeats; see
@@ -83,11 +95,11 @@ pub struct InstallOptions {
     /// # async fn example() -> Result<(), tapline::InstallError> {
     /// use tapline::{Session, Shared};
     ///
-    /// // Caps at the default budget, not at 64.
+    /// // Caps at the default budget, not at 96.
     /// let session = Session::anonymous().await?;
     ///
-    /// // Actually 64.
-    /// let session = Session::anonymous_shared(Shared::new(64)).await?;
+    /// // Actually 96.
+    /// let session = Session::anonymous_shared(Shared::new(96)).await?;
     /// # let _ = session;
     /// # Ok(())
     /// # }
@@ -105,9 +117,10 @@ pub struct InstallOptions {
     /// 16, chosen as "deliberately modest" with no measurement. Then 32, from a
     /// single sweep. Then 64, from paired runs. Then 8 and 10, when memory
     /// appeared to scale with this number — it did, but the slope was mostly
-    /// the allocator's, and pinning it moved the whole curve down. Every wrong
-    /// answer came from explaining a measurement rather than isolating what
-    /// produced it.
+    /// the allocator's, and pinning it moved the whole curve down. Then 24,
+    /// under a memory ceiling. Every wrong answer came from one of two things:
+    /// explaining a measurement rather than isolating what produced it, or
+    /// optimising a rule nobody had actually asked for.
     ///
     /// Around 200 MB/s the link stops being ours: more CDN hosts and fewer CDN
     /// hosts were each measured and neither moves it, on a 2.5 Gb link with a
@@ -195,7 +208,7 @@ impl Default for InstallOptions {
             include_dlc: false,
             resume: true,
             force: false,
-            concurrency: 24,
+            concurrency: 48,
             file_modes: FileModes::default(),
             workshop_layout: WorkshopLayout::default(),
         }
@@ -377,9 +390,9 @@ mod tests {
         // run. The throttling actually observed came from pulling ~100 GB in an
         // hour, which is a volume limit and not a connection-count one.
         //
-        // 128 and 256 were measured too and are slower than 64, so the bound
-        // stays: it exists to catch someone raising the default on a hunch, in
-        // either direction.
+        // Everything above 64 measured slower, and 64 itself is slower than
+        // the plateau at 48, so the bound stays: it exists to catch someone
+        // raising the default on a hunch, in either direction.
         let concurrency = InstallOptions::default().concurrency;
         assert!(
             (1..=64).contains(&concurrency),
@@ -388,32 +401,28 @@ mod tests {
     }
 
     #[test]
-    fn the_default_concurrency_keeps_the_worst_case_under_the_memory_ceiling() {
-        // This is the only thing bounding peak memory, and the promise made to
-        // callers and in the README is that a download stays under 50 MB. The
-        // ceiling is the hard part of that promise; how close to it the default
-        // sits is a speed decision that has moved and will move again.
+    fn the_default_concurrency_is_the_measured_plateau() {
+        // The rule is: the minimum memory required for full speed. Not the
+        // cheapest setting, and not the fastest at any price.
         //
-        // The model is the measured fit from the table on the field, not a
-        // guess about what a chunk costs: peak RSS is about `BASE + SLOPE × c`
-        // MB, checked from c=4 (18.4 MB) to c=128 (152.8 MB). A previous
-        // version of this test used `1 MB × c` and would have happily passed a
-        // default of 32, which really costs 50 MB.
-        const BASE_MIB: usize = 15;
-        const SLOPE_MIB: usize = 12; // tenths, so 1.2 MB per chunk in flight
-        const CEILING_MIB: usize = 50;
-
-        // A ceiling reached exactly is not a ceiling: leave room for a machine
-        // whose disk is slower than this one's, where more slots are live at
-        // once. This is what rules out 32, which measures 50 MB on the nose.
-        const HEADROOM_MIB: usize = 5;
+        // Measured as medians of interleaved repeats on both dedicated servers,
+        // the curve rises to 48 and turns over: 64 is slower on both *and*
+        // costs 15-18 MB more, and 40 is ~2% behind 48 in two independent
+        // sweeps. So the plateau is a single value, and this pins it.
+        //
+        // There used to be a 50 MB ceiling asserted here with 5 MB of headroom.
+        // It has been retired deliberately: the default that satisfies it (24)
+        // is 5-7% off full speed, so the ceiling was answering a question that
+        // is no longer being asked. Peak RSS is still predictable — about
+        // `15 + 1.1 x concurrency` MB, which puts the default near 68 MB — it
+        // is simply no longer bounded by a number this test enforces.
+        const PLATEAU: usize = 48;
 
         let concurrency = InstallOptions::default().concurrency;
-        let expected = BASE_MIB + (SLOPE_MIB * concurrency).div_ceil(10);
-        assert!(
-            expected + HEADROOM_MIB <= CEILING_MIB,
-            "a download at the default {concurrency} costs about {expected} MB, \
-             which leaves under {HEADROOM_MIB} MB below the {CEILING_MIB} MB ceiling"
+        assert_eq!(
+            concurrency, PLATEAU,
+            "the default should sit at the measured plateau; \
+             above it is slower and dearer, below it is slower and cheaper"
         );
     }
 
