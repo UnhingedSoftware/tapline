@@ -854,4 +854,25 @@ mod tests {
         let parsed = Pipeline::parse(&text).expect("must parse");
         assert_eq!(&parsed, ready.pipeline());
     }
+
+    #[test]
+    fn every_known_format_resolves_in_the_runner() {
+        // `validate` checks a list and the runner dispatches with a `match`.
+        // Nothing makes them agree except this, and when they disagreed the
+        // symptom was a format that validated and then failed mid-run.
+        for format in tapline_pipe_known_formats() {
+            assert!(
+                index_location(format).is_ok(),
+                "{format} validates but the runner cannot locate its index"
+            );
+        }
+    }
+
+    /// The formats the spec says are usable.
+    ///
+    /// A function rather than the constant directly so the test reads as a
+    /// question asked of the spec, which is the thing that could drift.
+    fn tapline_pipe_known_formats() -> impl Iterator<Item = &'static str> {
+        crate::spec::KNOWN_FORMATS.into_iter()
+    }
 }

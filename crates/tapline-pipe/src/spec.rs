@@ -23,6 +23,15 @@
 
 use tapline_ext::ExtensionError;
 
+/// The formats a pipeline can decode.
+///
+/// One list, checked by [`Pipeline::validate`] and by the dispatchers in the
+/// runner, because they disagreed: the chain grew a `.zip()` and the runner
+/// learned to read ZIP, and this validation still said `gma` or nothing. So
+/// `.zip()` compiled, ran, and failed with "unknown format" from inside the
+/// thing that had just been taught the format.
+pub const KNOWN_FORMATS: [&str; 2] = ["gma", "zip"];
+
 /// Why a pipeline could not be read or used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpecError {
@@ -65,7 +74,11 @@ impl std::fmt::Display for SpecError {
                 write!(f, "line {line}: {directive} needs a value")
             }
             Self::UnknownFormat(format) => {
-                write!(f, "unknown format {format:?}; known: gma")
+                write!(
+                    f,
+                    "unknown format {format:?}; known: {}",
+                    KNOWN_FORMATS.join(", ")
+                )
             }
             Self::NoSinks => write!(f, "the pipeline has no destination; add a dir or a zip"),
             Self::NoSuchEntry { path, available } => write!(
@@ -153,7 +166,7 @@ impl Pipeline {
 
     /// Checks the pipeline can run.
     pub fn validate(&self) -> Result<(), SpecError> {
-        if self.format != "gma" {
+        if !KNOWN_FORMATS.contains(&self.format.as_str()) {
             return Err(SpecError::UnknownFormat(self.format.clone()));
         }
         if self.sink.is_none() {
@@ -333,6 +346,30 @@ mod tests {
             pipeline.validate(),
             Err(SpecError::UnknownFormat(_))
         ));
+    }
+
+    #[test]
+    fn every_known_format_validates() {
+        // The regression this exists for: `.zip()` on the chain produced a
+        // pipeline the runner could decode and this function refused, so the
+        // failure arrived at run time from inside the code that supported it.
+        for format in KNOWN_FORMATS {
+            let pipeline = Pipeline::parse(&format!("decode {format}\ndir /x\n")).expect("parse");
+            assert_eq!(
+                pipeline.validate(),
+                Ok(()),
+                "{format} is a known format and did not validate"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_lists_the_formats_that_would_have_worked() {
+        let pipeline = Pipeline::parse("decode rar\ndir /x\n").expect("parse");
+        let text = pipeline.validate().expect_err("must refuse").to_string();
+        for format in KNOWN_FORMATS {
+            assert!(text.contains(format), "{text} does not mention {format}");
+        }
     }
 
     #[test]
