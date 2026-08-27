@@ -25,9 +25,9 @@ Native:
   tapline app plan APPID --dir DIR [--branch NAME] [--json]
       What an install would cost. Fetches no content.
   tapline app download APPID --dir DIR [--branch NAME] [--validate] [--json]
-                            [--concurrency N]   chunks in flight; default 10.
-                              Peak memory is about 15 + 1.1N MB; 24 is ~25%
-                              faster and costs ~41 MB.
+                            [--concurrency N]   chunks in flight; default 24.
+                              Peak memory is about 15 + 1.1N MB; 10 holds a
+                              download to ~25 MB and costs 25-39% of the speed.
       Install or update. Downloads nothing if already current.
   tapline app info APPID [--json]
       Depots, branches and sizes.

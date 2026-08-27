@@ -19,8 +19,8 @@ tapline +login anonymous +force_install_dir /srv/valheim +app_update 896660 +qui
 tapline app plan 896660 --dir /srv/valheim --json
 tapline app download 896660 --dir /srv/valheim
 
-# ~25 MB by default; trade memory for speed explicitly
-tapline app download 896660 --dir /srv/valheim --concurrency 24
+# smaller footprint, ~25 MB instead of ~40, at 25-39% of the speed
+tapline app download 896660 --dir /srv/valheim --concurrency 10
 tapline workshop download 4000 3790437566 --dir /srv/gmod
 ```
 
@@ -107,7 +107,10 @@ tables here before it was found. Measured properly, 128 does not turn over
 gently — it collapses to 29.3 s, because more requests go out than the link and
 the CDN will carry and they queue until they time out.
 
-The default is **10**, and it is a memory choice rather than a speed one — see
+The default is **24**: the fastest setting that still leaves headroom under a
+50 MB memory ceiling. Past the plateau the extra requests cost more than they
+carry — 64 is slower than 32 on the big install — so this is not a case of
+trading all the memory you have for all the speed there is. See
 [Memory](#memory).
 
 ## Several downloads at once
@@ -132,7 +135,7 @@ nearly seven seconds apart. 64 and 96 are inside each other's run-to-run
 variance — 64 produced both 197 and 230 MB/s — so the gain is from sharing, not
 from picking a different number.
 
-The shipped budget is 10 rather than 64, because a budget is chunks in flight
+The shipped budget is 24 rather than 64, because a budget is chunks in flight
 and chunks in flight are what memory is made of. A process doing several
 installs at once that has memory to spare should raise it — the sharing is worth
 more than the number:
@@ -189,7 +192,7 @@ harness and 11.7 s in a release build.
 
 ## Memory
 
-A download holds about **25 MB** and never approaches 50, whatever it is
+A download holds about **40 MB** and never reaches 50, whatever it is
 downloading. Measured on this machine, release build, defaults:
 
 | | peak RSS | wall |
@@ -197,22 +200,37 @@ downloading. Measured on this machine, release build, defaults:
 | idle logged-in session | 7.8 MB | — |
 | `app info` (metadata only) | 7.6 MB | 1.0 s |
 | Workshop item, 8.4 MB, streamed to a zip | 29.8 MB | 1.9 s |
-| Valheim dedicated server, 1.5 GB | 24.5–25.2 MB | 16.7–17.5 s |
-| Garry's Mod dedicated server, 6.8 GB | 26.1 MB | 47.3 s |
+| Valheim dedicated server, 1.5 GB | 42.8 MB | 12.9 s |
+| Garry's Mod dedicated server, 6.8 GB | 39.1 MB | 36.8 s |
 
-The last two rows are the point: 6.8 GB costs what 1.5 GB does. Nothing in a
-download scales with the content — files are written and closed as they finish,
-so the only thing that grows is the number of chunks in flight, and that is a
-fixed budget. Peak RSS is close to `15 + 1.1 × concurrency` MB from 4 chunks in
-flight up to 128, which is what makes a ceiling something worth promising rather
+The last two rows are the point: 6.8 GB costs what 1.5 GB does, and the bigger
+install costs slightly *less*. Nothing in a download scales with the content.
+Chunks are written straight to their offset in the target file as they arrive
+and pass their hash — there is no per-file buffer to fill — and files are closed
+as they finish. The only thing that grows is the number of chunks in flight, and
+that is a fixed budget. Peak RSS is close to `15 + 1.1 × concurrency` MB from 4
+chunks in flight up to 128, which is what makes a ceiling worth promising rather
 than something that happened to hold on the apps that got tested.
 
 Two things produce that number.
 
-**The concurrency default is a memory choice.** 10 in flight meets the 25 MB
-target; 24 would be about 25% faster and cost 41 MB; 64 is the fastest setting
-measured and costs 83 MB. `--concurrency` moves along that curve in either
-direction, and the trade is roughly a megabyte per chunk.
+**The concurrency default is where memory and speed argue.** A slot costs about
+1.1 MB and it is a floor, not waste: a chunk's plaintext has to be complete
+before its SHA-1 can be checked, and nothing is written before that check. So
+buying speed means buying memory:
+
+| in flight | Valheim 1.5 GB | GMod 6.8 GB | peak RSS |
+|---|---|---|---|
+| 10 | 15.6 s | 48.3 s | 26–27 MB |
+| **24 (default)** | **12.9 s** | **36.8 s** | **39–43 MB** |
+| 32 | 13.5 s | 34.9 s | 50 MB |
+| 64 | 11.4 s | 38.9 s | 77–85 MB |
+
+24 is the fastest setting with headroom under the ceiling — within 5% of the
+best time on both. 32 lands *on* 50 MB, which is not a ceiling any more. 64 is
+slower than 32 on the big install, and 128 collapses to 29 s. `--concurrency 10`
+holds a download to ~25 MB if the footprint matters more than the 25–39% it
+costs.
 
 **glibc is pinned at startup, or it hoards.** A download decrypts and
 decompresses a megabyte per chunk and frees it again, thousands of times over.

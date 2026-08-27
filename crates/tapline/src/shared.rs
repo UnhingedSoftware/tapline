@@ -60,7 +60,7 @@
 //! of, and 64 of them cost about 83 MB against 27 MB for 12.
 //!
 //! So the process budget defaults to [`InstallOptions::concurrency`], which is
-//! 12, and the ceiling holds whether a process runs one download or five. A
+//! 24, and the ceiling holds whether a process runs one download or five. A
 //! process that runs several at once and has memory to spare should say so —
 //! that is what this type is for, and the sharing is worth more than the number:
 //!
