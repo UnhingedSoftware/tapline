@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 tapline = { workspace = true }
 tapline-auth = { workspace = true }
 tapline-gmad = { workspace = true }
+tapline-pipe = { workspace = true }
 tapline-ids = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 

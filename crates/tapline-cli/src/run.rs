@@ -27,11 +27,26 @@ pub async fn execute(command: Command) -> Result<(), String> {
             flat,
             extensions,
             stream,
+            only,
+            pick,
+            decode,
             app,
             item,
             dir,
             json,
-        } => workshop(app, item, dir, flat, extensions, stream, json).await,
+        } => {
+            workshop(
+                app,
+                item,
+                dir,
+                flat,
+                extensions,
+                stream,
+                Selection { only, pick, decode },
+                json,
+            )
+            .await
+        }
         Command::Login { qr, account } => login(qr, account).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
@@ -281,6 +296,21 @@ async fn print_info(session: &mut Session, app: AppId, json: bool) -> Result<(),
 
 /// `workshop download`
 #[allow(clippy::too_many_arguments)]
+/// What a caller asked to take out of the archive, and how to read it.
+struct Selection {
+    only: Vec<String>,
+    pick: Vec<String>,
+    decode: Option<String>,
+}
+
+impl Selection {
+    /// Whether anything narrows what is taken.
+    fn is_selective(&self) -> bool {
+        !self.only.is_empty() || !self.pick.is_empty()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn workshop(
     app: AppId,
     item: PublishedFileId,
@@ -288,8 +318,16 @@ async fn workshop(
     flat: bool,
     extensions: Vec<String>,
     stream: Option<String>,
+    selection: Selection,
     json: bool,
 ) -> Result<(), String> {
+    // A selection is what makes this a pipeline rather than a download: only
+    // the chunks holding the selected entries are fetched. A named format is
+    // the same, since reading it at all means decoding it.
+    if selection.is_selective() || selection.decode.is_some() {
+        let target = stream.as_deref().unwrap_or("dir");
+        return pipe_workshop(app, item, dir, target, &selection, json).await;
+    }
     if let Some(target) = stream {
         return stream_workshop(app, item, dir, &target, json).await;
     }
@@ -315,6 +353,91 @@ async fn workshop(
         }));
     } else {
         println!("downloaded item {item} to {}", target.display());
+    }
+    Ok(())
+}
+
+/// `workshop download --only/--pick`
+///
+/// Runs the item through a pipeline instead of downloading it whole. The saving
+/// is on the wire, not just on disk: a selection is resolved against the
+/// archive's index first, and only the chunks the selected entries live in are
+/// fetched.
+async fn pipe_workshop(
+    app: AppId,
+    item: PublishedFileId,
+    dir: PathBuf,
+    target: &str,
+    selection: &Selection,
+    json: bool,
+) -> Result<(), String> {
+    let format = selection.decode.as_deref().unwrap_or("gma");
+
+    // A zip target names a file; a directory target names a directory. Same
+    // convention as --stream, so the two flags do not disagree about where
+    // things land.
+    let zip_path = dir.join(format!("{item}.zip"));
+    let sink = match target {
+        "zip" => tapline_pipe::Sink::Zip {
+            path: zip_path.display().to_string(),
+            compress: true,
+        },
+        "zip-stored" => tapline_pipe::Sink::Zip {
+            path: zip_path.display().to_string(),
+            compress: false,
+        },
+        _ => tapline_pipe::Sink::Directory(dir.display().to_string()),
+    };
+
+    let pipeline = tapline_pipe::Pipeline {
+        format: format.to_owned(),
+        filters: selection.only.clone(),
+        picks: selection.pick.clone(),
+        sink: Some(sink),
+    };
+    // Before connecting: an unknown format should cost a message rather than a
+    // login and a round trip to Steam.
+    pipeline.validate().map_err(|error| error.to_string())?;
+
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
+
+    let started = std::time::Instant::now();
+    let outcome = tapline_pipe::run_pipeline(
+        &mut session,
+        app,
+        item,
+        tapline::Window::default(),
+        &pipeline,
+        &mut |_event| {},
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let elapsed = started.elapsed();
+
+    if json {
+        emit(&serde_json::json!({
+            "event": "piped",
+            "app": app.get(),
+            "item": item.get(),
+            "path": dir.display().to_string(),
+            "format": format,
+            "target": target,
+            "entries": outcome.entries,
+            "bytes_downloaded": outcome.bytes_downloaded,
+            "bytes_streamed": outcome.bytes_streamed,
+            "peak_buffered_chunks": outcome.peak_buffered,
+            "seconds": elapsed.as_secs_f64(),
+        }));
+    } else {
+        println!(
+            "took {} entries from item {item} into {} as {target}: \
+             {} bytes downloaded, {:.2}s",
+            outcome.entries,
+            dir.display(),
+            outcome.bytes_downloaded,
+            elapsed.as_secs_f64()
+        );
     }
     Ok(())
 }

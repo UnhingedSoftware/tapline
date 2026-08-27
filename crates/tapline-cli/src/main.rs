@@ -36,6 +36,14 @@ Native:
                             --extensions gmad,gmad-zip unpacks/converts .gma as it lands
                             --stream [dir|zip|zip-stored] writes as it downloads,
                               never storing the .gma at all
+                            --only GLOB  take matching entries; repeatable
+                            --pick PATH  take one exact path; repeatable, and
+                              missing it is an error
+                            --decode gma|zip  how to read the download
+                              --only/--pick fetch only the chunks the selected
+                              entries live in, so a filter costs less to run
+                              than the whole item. They imply --stream's target,
+                              which defaults to unpacking into DIR.
       One Workshop item.
   tapline login [--qr | --account NAME]
       Sign in. Only needed for apps an account owns; dedicated servers do not.

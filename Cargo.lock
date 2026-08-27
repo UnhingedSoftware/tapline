@@ -1309,6 +1309,7 @@ dependencies = [
  "tapline-auth",
  "tapline-gmad",
  "tapline-ids",
+ "tapline-pipe",
  "tokio",
 ]
 

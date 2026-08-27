@@ -103,6 +103,15 @@ pub enum Command {
         /// Where to stream the archive, if streaming: "dir", "zip" or
         /// "zip-stored". `None` downloads the archive normally.
         stream: Option<String>,
+        /// Globs selecting entries from the archive. Empty takes everything.
+        ///
+        /// Any selection turns the download into a pipeline, which fetches only
+        /// the chunks the selected entries live in.
+        only: Vec<String>,
+        /// Exact paths to take. Missing one is an error, unlike a glob.
+        pick: Vec<String>,
+        /// The format to read the download as. `None` means `gma`.
+        decode: Option<String>,
         /// The app.
         app: AppId,
         /// The item.
@@ -309,6 +318,19 @@ impl Options {
     fn flag(&self, name: &str) -> bool {
         self.values.iter().any(|(key, _)| key == name)
     }
+
+    /// Every value given for a repeatable option, in the order written.
+    ///
+    /// `--only a --only b` is two selections, not the second overriding the
+    /// first, because a filter list is a union and dropping one silently would
+    /// quietly change what gets downloaded.
+    fn all_values(&self, name: &str) -> Vec<String> {
+        self.values
+            .iter()
+            .filter(|(key, _)| key == name)
+            .filter_map(|(_, value)| value.clone())
+            .collect()
+    }
 }
 
 /// Parses the native subcommand grammar.
@@ -389,9 +411,23 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
             let item = positional
                 .get(3)
                 .ok_or_else(|| ArgError::new("an item id is required"))?;
+            let only = options.all_values("only");
+            let pick = options.all_values("pick");
+            // Refused rather than ignored: an extension acts on the downloaded
+            // archive, and a filtered pipeline never writes one. Silently
+            // dropping the flag would look like the extension had run.
+            if (!only.is_empty() || !pick.is_empty()) && options.flag("extensions") {
+                return Err(ArgError::new(
+                    "--extensions acts on a downloaded archive, and --only/--pick \
+                     never write one; drop one of them",
+                ));
+            }
             Ok(Command::WorkshopDownload {
                 flat: options.flag("flat"),
                 stream: stream_target(&options)?,
+                only,
+                pick,
+                decode: options.value("decode").map(str::to_owned),
                 extensions: options
                     .value("extensions")
                     .map(|list| {
@@ -583,6 +619,64 @@ mod tests {
     fn an_unknown_native_command_names_itself() {
         let error = parse(&args("frobnicate 1")).expect_err("must refuse");
         assert!(error.message.contains("frobnicate"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_repeatable_option_keeps_every_value() {
+        // `--only a --only b` is a union. Keeping only the last would silently
+        // change what gets downloaded.
+        let parsed = parse(&args(
+            "workshop download 4000 1 --dir /x --only lua/** --only *.txt",
+        ))
+        .expect("parse");
+        match parsed {
+            Command::WorkshopDownload { only, .. } => {
+                assert_eq!(only, vec!["lua/**".to_owned(), "*.txt".to_owned()]);
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picks_are_separate_from_patterns() {
+        let parsed = parse(&args(
+            "workshop download 4000 1 --dir /x --pick lua/init.lua --only lua/**",
+        ))
+        .expect("parse");
+        match parsed {
+            Command::WorkshopDownload { only, pick, .. } => {
+                assert_eq!(pick, vec!["lua/init.lua".to_owned()]);
+                assert_eq!(only, vec!["lua/**".to_owned()]);
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_download_with_no_selection_selects_nothing() {
+        // The absence has to be empty rather than "everything", because it is
+        // what decides between a plain download and a pipeline.
+        let parsed = parse(&args("workshop download 4000 1 --dir /x")).expect("parse");
+        match parsed {
+            Command::WorkshopDownload {
+                only, pick, decode, ..
+            } => {
+                assert!(only.is_empty() && pick.is_empty());
+                assert_eq!(decode, None);
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_selection_and_an_extension_together_are_refused() {
+        // An extension acts on the downloaded archive and a filtered pipeline
+        // never writes one, so accepting both would look like it had run.
+        let error = parse(&args(
+            "workshop download 4000 1 --dir /x --only lua/** --extensions gmad",
+        ))
+        .expect_err("must refuse");
+        assert!(error.message.contains("--extensions"), "{}", error.message);
     }
 
     #[test]
