@@ -33,6 +33,8 @@ import type {
   InstallOptions,
   InstallReport,
   PipeReport,
+  ResultEvent,
+  SearchedEvent,
   PlanOptions,
   PlanReport,
   StreamReport,
@@ -663,4 +665,91 @@ export function workshop(app: number, item: number | bigint): Source {
     picks: [],
     concurrency: 0,
   });
+}
+
+/** What to search an app's Workshop for. */
+export interface SearchOptions {
+  /** Which app's Workshop. */
+  app: number;
+  /** Free text to match. */
+  text?: string;
+  /** Tags an item must carry. */
+  tags?: string[];
+  /** Tags that exclude an item. */
+  excludeTags?: string[];
+  /** Require every tag rather than any of them. */
+  allTags?: boolean;
+  /**
+   * How to order results: `vote`, `recent`, `updated`, `trend`, `subscribed`
+   * or `text`. `text` needs {@link SearchOptions.text} — without it Steam
+   * returns an arbitrary order that looks like a ranking, so it is refused.
+   */
+  sort?: "vote" | "recent" | "updated" | "trend" | "subscribed" | "text";
+  /** How many to return. Capped at 100, because Steam silently returns fewer. */
+  limit?: number;
+  /** {@link SearchPage.nextCursor} from a previous page. */
+  cursor?: string;
+  onEvent?: (event: TaplineEvent) => void;
+}
+
+/** A page of search results. */
+export interface SearchPage {
+  items: Omit<ResultEvent, "kind">[];
+  /** How many the whole search matched, usually far more than one page. */
+  total: number;
+  /** Items Steam returned that could not be described. */
+  skipped: number;
+  /** Pass to {@link SearchOptions.cursor} for the next page, or null at the end. */
+  nextCursor: string | null;
+}
+
+/**
+ * Searches an app's Workshop.
+ *
+ * Works on an anonymous session — no key, no login:
+ *
+ * ```ts
+ * const page = await searchWorkshop({ app: 4000, text: "stargate", sort: "text" });
+ * for (const found of page.items) console.log(found.item, found.title);
+ * ```
+ *
+ * Each result carries everything {@link downloadWorkshopItem} needs, so a
+ * search feeds a download with no second lookup:
+ *
+ * ```ts
+ * await downloadWorkshopItem({ app: 4000, item: page.items[0].item, dir });
+ * ```
+ *
+ * Paging is a cursor rather than a page number, because offsets repeat items
+ * past about a thousand results. Walk it until `nextCursor` is null.
+ */
+export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
+  return new Job<SearchPage>(
+    (ffi) =>
+      ffi.search(
+        options.app,
+        options.text ?? null,
+        options.tags?.length ? options.tags.join(",") : null,
+        options.excludeTags?.length ? options.excludeTags.join(",") : null,
+        options.allTags ? 1 : 0,
+        options.sort ?? null,
+        options.limit ?? 0,
+        options.cursor ?? null,
+      ),
+    (events) => {
+      const summary = lastOfKind(events, "searched") as SearchedEvent;
+      const items = events
+        .filter((event): event is ResultEvent => event.kind === "result")
+        .map(({ kind: _kind, ...rest }) => rest);
+      return {
+        items,
+        total: summary.total,
+        skipped: summary.skipped,
+        // Empty is "no next page"; null says that plainly rather than making
+        // every caller check for "".
+        nextCursor: summary.nextCursor === "" ? null : summary.nextCursor,
+      };
+    },
+    options.onEvent ? progressBridge(options.onEvent, undefined) : undefined,
+  );
 }

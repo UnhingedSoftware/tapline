@@ -22,6 +22,7 @@ import {
   install,
   Job,
   plan,
+  searchWorkshop,
   version,
   workshop,
 } from "../src/index.ts";
@@ -125,6 +126,29 @@ await test("a chain step returns a new chain rather than mutating one", () => {
   assert(b.includes("b.lua") && !b.includes("a.lua"), `leaked into b:\n${b}`);
 });
 
+await test("a bad sort is refused before the search runs", async () => {
+  let message = "";
+  try {
+    // deno-lint-ignore no-explicit-any
+    await searchWorkshop({ app: 4000, sort: "nonsense" as any });
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assert(message.includes("nonsense"), `unexpected: ${message}`);
+  assert(message.includes("subscribed"), `should list what works: ${message}`);
+});
+
+await test("a text sort without text is refused", async () => {
+  // It "works" and returns an arbitrary order, which looks like a ranking.
+  let message = "";
+  try {
+    await searchWorkshop({ app: 4000, sort: "text" });
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assert(message.length > 0, "a text sort with no text was accepted");
+});
+
 await test("a bad directive fails before anything downloads", async () => {
   let message = "";
   try {
@@ -178,6 +202,47 @@ if (process_env("TAPLINE_LIVE") === "1") {
       message = error instanceof Error ? error.message : String(error);
     }
     assert(message.length > 0, "a missing pick succeeded silently");
+  });
+
+  await test("a workshop search returns usable results", async () => {
+    const page = await searchWorkshop({ app: 4000, limit: 5 });
+    assert(page.items.length > 0, "no results");
+    assert(page.total > 1000, `too few matches: ${page.total}`);
+    assert(page.nextCursor !== null, "a first page should have a next");
+    for (const found of page.items) {
+      assert(found.title.length > 0, "a result had no title");
+      // The id must survive as a string; as a number it rounds and points at
+      // a different item.
+      assert(/^\d+$/.test(found.item), `id is not a string of digits: ${found.item}`);
+    }
+    console.log(`    ${page.items.length} of ${page.total}, first: ${page.items[0]?.title}`);
+  });
+
+  await test("a search result downloads without a second lookup", async () => {
+    const page = await searchWorkshop({ app: 4000, sort: "subscribed", limit: 20 });
+    const small = page.items
+      .filter((f) => f.size > 0 && f.size < 8_000_000)
+      .sort((a, b) => a.size - b.size)[0];
+    assert(small !== undefined, "no small item among the most-subscribed");
+
+    const dir = scratch("js-search-download");
+    const report = await downloadWorkshopItem({
+      app: 4000,
+      item: small.item,
+      dir,
+      layout: "flat",
+    });
+    assert(report.files > 0, "nothing was downloaded");
+    console.log(`    downloaded ${small.title} (${small.size} bytes)`);
+  });
+
+  await test("the search cursor walks forward", async () => {
+    const first = await searchWorkshop({ app: 4000, limit: 10 });
+    assert(first.nextCursor !== null, "no next cursor");
+    const second = await searchWorkshop({ app: 4000, limit: 10, cursor: first.nextCursor });
+    const ids = new Set(first.items.map((f) => f.item));
+    const overlap = second.items.filter((f) => ids.has(f.item)).length;
+    assert(overlap === 0, `the second page repeated ${overlap} items`);
   });
 
   await test("plan reports a real app's cost without downloading it", async () => {

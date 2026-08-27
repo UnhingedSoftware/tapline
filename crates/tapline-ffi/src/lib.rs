@@ -551,6 +551,145 @@ pub unsafe extern "C" fn tapline_workshop_download(
     )
 }
 
+/// Searches an app's Workshop.
+///
+/// Query parts cross as scalars and strings rather than a struct, the same
+/// rule every other entry point here follows: a `repr(C)` struct would make
+/// each runtime reproduce Rust's padding by hand.
+///
+/// `tags` and `excluded_tags` are comma-separated, `sort` is one of the names
+/// `BrowseSort` accepts, and `cursor` is the `nextCursor` from a previous page
+/// or null for the first. Results arrive as `result` events followed by one
+/// `searched` event carrying the totals.
+///
+/// # Safety
+///
+/// Every pointer must be a null-terminated UTF-8 string or null, and `out` must
+/// be a valid pointer to write the job handle to.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn tapline_workshop_search(
+    app_id: u32,
+    text: *const c_char,
+    tags: *const c_char,
+    excluded_tags: *const c_char,
+    all_tags: u8,
+    sort: *const c_char,
+    limit: u32,
+    cursor: *const c_char,
+    out: *mut *mut TaplineJob,
+) -> i32 {
+    fn split(list: Option<&str>) -> Vec<String> {
+        list.map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    let defaults = tapline::BrowseQuery::default();
+    // Resolved before the job starts, so a bad sort name is a synchronous
+    // error rather than one delivered through the event queue.
+    let sort = match unsafe { read_str(sort) } {
+        None => defaults.sort,
+        Some(name) => match tapline::BrowseSort::parse(name) {
+            Some(sort) => sort,
+            None => {
+                set_error(format!(
+                    "unknown sort {name:?}; known: {}",
+                    tapline::BrowseSort::NAMES.join(", ")
+                ));
+                return TAPLINE_BAD_ARGUMENT;
+            }
+        },
+    };
+
+    let query = tapline::BrowseQuery {
+        app: AppId(app_id),
+        text: unsafe { read_str(text) }.map(str::to_owned),
+        required_tags: split(unsafe { read_str(tags) }),
+        excluded_tags: split(unsafe { read_str(excluded_tags) }),
+        match_all_tags: all_tags != 0,
+        sort,
+        per_page: if limit == 0 { defaults.per_page } else { limit },
+        cursor: unsafe { read_str(cursor) }.map(str::to_owned),
+    };
+    if let Err(error) = query.validate() {
+        set_error(error.to_string());
+        return TAPLINE_BAD_ARGUMENT;
+    }
+
+    let pool_handle = pool().cloned();
+    spawn_job(
+        move |sender| async move {
+            let Some(pool_handle) = pool_handle else {
+                send_error(&sender, "the tapline runtime could not be started");
+                return;
+            };
+            match pool_handle.acquire().await {
+                Err(error) => send_error(&sender, &error.to_string()),
+                Ok(mut session) => match session.browse_workshop(&query).await {
+                    Err(error) => send_error(&sender, &error.to_string()),
+                    Ok(page) => {
+                        for found in &page.items {
+                            let mut out = String::from("{");
+                            json::push_str_field(&mut out, "kind", "result");
+                            json::push_u64(&mut out, "app", u64::from(found.item.app.get()));
+                            // A string: item ids exceed what a JSON number
+                            // holds exactly, and a rounded id is a different
+                            // item.
+                            json::push_str_field(
+                                &mut out,
+                                "item",
+                                &found.item.id.get().to_string(),
+                            );
+                            json::push_str_field(&mut out, "title", &found.item.title);
+                            json::push_str_field(&mut out, "description", &found.description);
+                            json::push_u64(&mut out, "size", found.item.size);
+                            json::push_u64(&mut out, "updated", u64::from(found.item.updated));
+                            json::push_u64(&mut out, "subscriptions", found.subscriptions);
+                            json::push_u64(&mut out, "favorites", found.favorites);
+                            json::push_str_field(
+                                &mut out,
+                                "previewUrl",
+                                found.preview_url.as_deref().unwrap_or(""),
+                            );
+                            json::push_key(&mut out, "tags");
+                            out.push('[');
+                            for (index, tag) in found.tags.iter().enumerate() {
+                                if index > 0 {
+                                    out.push(',');
+                                }
+                                json::push_string(&mut out, tag);
+                            }
+                            out.push(']');
+                            out.push('}');
+                            let _ = sender.send(out);
+                        }
+
+                        let mut out = String::from("{");
+                        json::push_str_field(&mut out, "kind", "searched");
+                        json::push_u64(&mut out, "total", u64::from(page.total));
+                        json::push_u64(&mut out, "returned", page.items.len() as u64);
+                        json::push_u64(&mut out, "skipped", page.skipped.len() as u64);
+                        json::push_str_field(
+                            &mut out,
+                            "nextCursor",
+                            page.next_cursor.as_deref().unwrap_or(""),
+                        );
+                        out.push('}');
+                        let _ = sender.send(out);
+                    }
+                },
+            }
+        },
+        out,
+    )
+}
+
 /// Runs a pipeline given in its text form.
 ///
 /// The chain in `tapline-pipe` is a Rust API and cannot cross a C ABI, so what

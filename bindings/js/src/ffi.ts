@@ -45,6 +45,17 @@ export interface Ffi {
     extensions: string | null,
     stream: number,
   ): bigint;
+  /** Searches an app's Workshop. */
+  search(
+    app: number,
+    text: string | null,
+    tags: string | null,
+    excludedTags: string | null,
+    allTags: number,
+    sort: string | null,
+    limit: number,
+    cursor: string | null,
+  ): bigint;
   /** Runs a pipeline given in its text form. */
   pipeline(
     app: number,
@@ -251,6 +262,10 @@ async function loadDeno(path: string): Promise<Ffi> {
       parameters: ["u32", "u64", "buffer", "u32", "buffer"],
       result: "i32",
     },
+    tapline_workshop_search: {
+      parameters: ["u32", "buffer", "buffer", "buffer", "u8", "buffer", "u32", "buffer", "buffer"],
+      result: "i32",
+    },
     tapline_job_next: {
       parameters: ["pointer", "u32", "buffer", "usize", "buffer"],
       result: "i32",
@@ -338,6 +353,21 @@ async function loadDeno(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "pipeline", lastError);
     },
+    search(app, text, tags, excludedTags, allTags, sort, limit, cursor) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_workshop_search(
+        app,
+        text === null ? null : cstring(text),
+        tags === null ? null : cstring(tags),
+        excludedTags === null ? null : cstring(excludedTags),
+        allTags,
+        sort === null ? null : cstring(sort),
+        limit,
+        cursor === null ? null : cstring(cursor),
+        new Uint8Array(out.buffer),
+      );
+      return readJobPointer(out, code, "workshop search", lastError);
+    },
     async next(job, timeoutMs) {
       let buffer = new Uint8Array(INITIAL_BUFFER);
       for (;;) {
@@ -401,6 +431,13 @@ async function loadBun(path: string): Promise<Ffi> {
     },
     tapline_pipeline: {
       args: [FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    tapline_workshop_search: {
+      args: [
+        FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr,
+        FFIType.u8, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr,
+      ],
       returns: FFIType.i32,
     },
     tapline_job_next: {
@@ -475,6 +512,21 @@ async function loadBun(path: string): Promise<Ffi> {
       );
       return readJobPointer(out, code, "pipeline", lastError);
     },
+    search(app, text, tags, excludedTags, allTags, sort, limit, cursor) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_workshop_search(
+        app,
+        text === null ? null : ptr(cstring(text)),
+        tags === null ? null : ptr(cstring(tags)),
+        excludedTags === null ? null : ptr(cstring(excludedTags)),
+        allTags,
+        sort === null ? null : ptr(cstring(sort)),
+        limit,
+        cursor === null ? null : ptr(cstring(cursor)),
+        ptr(out),
+      );
+      return readJobPointer(out, code, "workshop search", lastError);
+    },
     async next(job, timeoutMs) {
       let buffer = new Uint8Array(INITIAL_BUFFER);
       const deadline = Date.now() + timeoutMs;
@@ -538,6 +590,9 @@ async function loadNode(path: string): Promise<Ffi> {
   const pipelineFn = lib.func(
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
   );
+  const searchFn = lib.func(
+    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, uint8_t, const char*, uint32_t, const char*, _Out_ void**)",
+  );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
   );
@@ -593,6 +648,14 @@ async function loadNode(path: string): Promise<Ffi> {
       const out: unknown[] = [null];
       const code = pipelineFn(app, item, spec, concurrency, out);
       if (code !== OK) throw new Error(`pipeline: ${lastError() || `code ${code}`}`);
+      return asPointer(out);
+    },
+    search(app, text, tags, excludedTags, allTags, sort, limit, cursor) {
+      const out: unknown[] = [null];
+      const code = searchFn(app, text, tags, excludedTags, allTags, sort, limit, cursor, out);
+      if (code !== OK) {
+        throw new Error(`workshop search: ${lastError() || `code ${code}`}`);
+      }
       return asPointer(out);
     },
     next(job, timeoutMs) {

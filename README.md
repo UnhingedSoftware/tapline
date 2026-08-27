@@ -118,6 +118,58 @@ slower than 48 on both workloads *and* costs 15–18 MB more — so this is not 
 case of trading all the memory you have for all the speed there is. See
 [Memory](#memory).
 
+## Finding Workshop items
+
+tapline could always download an item once you knew its number; getting that
+number meant a browser. `PublishedFile.QueryFiles` is the same search the
+Workshop website runs, over the CM session already open — no WebAPI key and no
+login:
+
+```sh
+tapline workshop search 4000 --text stargate --sort text --limit 5
+tapline workshop search 4000 --tag Weapon --sort subscribed
+tapline workshop info 104691717 3790437566
+```
+
+```
+  3037205213     2.0 GB      4341 subs  Stargate (CAP)
+   177663377    61.0 MB    434585 subs  ttt_stargate
+   133391119    63.1 MB     70138 subs  rp_stargate
+5 of 885 matches; next page: --cursor AoIIQ0gRxHvXp+MF
+```
+
+A result carries everything a download needs, so search feeds download with no
+second lookup — in Rust, from the CLI, and from JavaScript:
+
+```rust
+let page = session.browse_workshop(&BrowseQuery { app: AppId(4000), ..default }).await?;
+session.download_workshop_item(&page.items[0].item, &options).await?;
+```
+
+Paging is Steam's cursor rather than a page number, because offsets start
+repeating items past about a thousand results. Pass `nextCursor` back as
+`--cursor` and stop when it is empty.
+
+Two queries are refused rather than sent, because Steam answers both with
+something that looks right: a search with no app id (an unusable mixture of
+every app's Workshop) and a text sort with no text (an arbitrary order that
+looks like a ranking).
+
+## Which Steam account this machine uses
+
+`tapline whoami` reports the local Steam client's accounts and library paths
+alongside its own session, and `tapline login` names the account the client last
+used instead of making you remember it.
+
+It reads the **identity**, not the session. A modern Steam client keeps its
+refresh token in its own encrypted store: `loginusers.vdf` has the SteamID, the
+account name and the auto-login flags and no token, `config.vdf` has no auth key
+in 49 KB, and there are no `ssfn` files. Getting at a live session would mean
+driving the client's undocumented localhost IPC or linking Valve's SDK — the
+first lifts a credential out of another running process, the second is the one
+thing this project does not do at any layer. So tapline signs in once itself and
+keeps its own token.
+
 ## Several downloads at once
 
 A process that installs more than one app shares one budget of chunks in flight

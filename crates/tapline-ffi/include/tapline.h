@@ -99,6 +99,34 @@ int32_t tapline_workshop_download(uint32_t app_id,
                                   uint8_t stream,
                                   TaplineJob **out);
 
+/* Searches an app's Workshop.
+ *
+ * text, tags, excluded_tags, sort and cursor may all be NULL. tags and
+ * excluded_tags are comma-separated. sort is one of: vote, recent, updated,
+ * trend, subscribed, text — and "text" requires text to be set, because
+ * without it Steam returns an arbitrary order that looks like a ranking.
+ * limit of 0 takes the default; anything above 100 is clamped, since Steam
+ * silently returns fewer rather than erroring.
+ *
+ * cursor is the nextCursor from a previous page, or NULL for the first. Paging
+ * is a cursor rather than an offset because offsets repeat items past about a
+ * thousand results. An empty nextCursor means there is no next page.
+ *
+ * Emits one "result" event per item, then one "searched" event with the
+ * totals. Item ids are strings: they exceed what a JSON number holds exactly.
+ *
+ * The query is validated before the job starts, so a bad sort name comes back
+ * here rather than through the event queue. */
+int32_t tapline_workshop_search(uint32_t app_id,
+                                const char *text,
+                                const char *tags,
+                                const char *excluded_tags,
+                                uint8_t all_tags,
+                                const char *sort,
+                                uint32_t limit,
+                                const char *cursor,
+                                TaplineJob **out);
+
 /* Runs a pipeline over one Workshop item, given in its text form.
  *
  * The typed chain in the Rust crate cannot cross a C ABI, so what travels is

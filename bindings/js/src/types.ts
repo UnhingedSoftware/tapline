@@ -62,6 +62,39 @@ export interface StreamedEvent extends StreamReport {
   kind: "streamed";
 }
 
+/** One Workshop search result. */
+export interface ResultEvent {
+  kind: "result";
+  /** The app the item belongs to. */
+  app: number;
+  /** The item id, as a string: ids exceed Number.MAX_SAFE_INTEGER. */
+  item: string;
+  title: string;
+  description: string;
+  /** Size in bytes. */
+  size: number;
+  /** Last update, as a Unix timestamp. */
+  updated: number;
+  subscriptions: number;
+  favorites: number;
+  /** Empty when the item has no preview image. */
+  previewUrl: string;
+  tags: string[];
+}
+
+/** The last event of a successful search. */
+export interface SearchedEvent {
+  kind: "searched";
+  /** How many the whole search matched. */
+  total: number;
+  /** How many came back on this page. */
+  returned: number;
+  /** Items Steam returned that could not be described. */
+  skipped: number;
+  /** Pass back as `cursor` for the next page; empty means there is none. */
+  nextCursor: string;
+}
+
 /** The last event of a successful pipeline run. */
 export interface PipedEvent extends PipeReport {
   kind: "piped";
@@ -122,6 +155,8 @@ export type TaplineEvent =
   | CompletedEvent
   | ExtendedEvent
   | StreamedEvent
+  | ResultEvent
+  | SearchedEvent
   | PipedEvent
   | FinishedEvent
   | ErrorEvent

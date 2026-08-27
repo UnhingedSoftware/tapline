@@ -193,6 +193,46 @@ saving scales with the addon.
 `stream: true` implies the flat layout and ignores `extensions`, since the
 archive those act on never exists. From the CLI it is `--stream`.
 
+## Finding items
+
+```ts
+import { searchWorkshop, downloadWorkshopItem } from "tapline";
+
+const page = await searchWorkshop({ app: 4000, text: "stargate", sort: "text" });
+for (const found of page.items) {
+  console.log(found.item, found.title, found.subscriptions);
+}
+
+// A result is what a download takes — no second lookup.
+await downloadWorkshopItem({ app: 4000, item: page.items[0].item, dir: "/srv/gmod" });
+```
+
+Works on an anonymous session: no key, no login.
+
+| option | does |
+|---|---|
+| `text` | free text to match |
+| `tags` / `excludeTags` | filter by tag; `allTags` requires every one |
+| `sort` | `vote`, `recent`, `updated`, `trend`, `subscribed`, `text` |
+| `limit` | results per page, capped at 100 |
+| `cursor` | `nextCursor` from a previous page |
+
+**Item ids are strings.** They exceed `Number.MAX_SAFE_INTEGER`, and a rounded
+id is a different item — so `found.item` is a string and stays one all the way
+to `downloadWorkshopItem`.
+
+Paging is a cursor, not a page number, because offsets repeat items past about a
+thousand results. Walk until `nextCursor` is `null`:
+
+```ts
+let cursor: string | null = null;
+do {
+  const page = await searchWorkshop({ app: 4000, tags: ["Weapon"], limit: 50, cursor: cursor ?? undefined });
+  handle(page.items);
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
 ## Pipelines
 
 `downloadWorkshopItem` writes an item somewhere. When you want *part* of one, or
