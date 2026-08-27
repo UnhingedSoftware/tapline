@@ -52,17 +52,20 @@ pub struct InstallOptions {
     ///
     /// | in flight | Valheim 1.5 GB | GMod 6.8 GB | peak RSS |
     /// |---|---|---|---|
-    /// | 12 | 13.6 s | 40.0 s | 28 MB |
-    /// | 24 | 12.4 s | 35.8 s | 42 MB |
-    /// | 32 | 12.3 s | 35.1 s | 50 MB |
-    /// | 40 | 12.8 s | 34.3 s | 55–60 MB |
-    /// | **48** | **11.6 s** | **33.5 s** | **61–68 MB** |
-    /// | 64 | 12.2 s | 35.3 s | 76–86 MB |
+    /// | 16 | 11.5 s | 29.6 s | 40 MB |
+    /// | 32 | 9.3 s | 21.4 s | 60 MB |
+    /// | **48** | **8.5 s** | **19.3 s** | **73 MB** |
+    /// | 64 | 8.0 s | 19.7 s | 84 MB |
     ///
-    /// The curve rises to 48 and turns over after it. 64 is slower than 48 on
-    /// both workloads *and* costs 15–18 MB more, so nothing above 48 is worth
-    /// buying: past the plateau the extra requests cost more than they carry,
-    /// and at 128 it collapses outright to 29 s on Valheim.
+    /// The curve flattens at 48: GMod is at its best there and 64 is slightly
+    /// worse, while Valheim gains 6% for another 11 MB. So 48 is the last
+    /// setting that buys speed on both.
+    ///
+    /// An earlier version of this table had the same shape and much worse
+    /// numbers — 33.5 s for GMod at this default — because the blocking pool
+    /// that runs chunk decode was capped at four threads. The concurrency was
+    /// never the constraint there; the decode was. See `BLOCKING_THREADS` in
+    /// the CLI.
     ///
     /// Peak RSS is close to `15 + 1.1 × concurrency` MB, and the fit holds from
     /// 4 slots to 128. So the memory a default costs is predictable from the

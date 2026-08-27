@@ -9,10 +9,10 @@
 //!
 //! | chunks in flight | wall clock | peak RSS |
 //! |---|---|---|
-//! | 12 | 13.8 s | 27.5 MB |
-//! | 24 | 13.3 s | 40.8 MB |
-//! | 32 | 13.9 s | 51.0 MB |
-//! | 64 | 11.9 s | 83.0 MB |
+//! | 16 | 11.5 s | 40 MB |
+//! | 32 | 9.3 s | 60 MB |
+//! | 48 | 8.5 s | 73 MB |
+//! | 64 | 8.0 s | 84 MB |
 //! | 128 | 29.3 s | 152.8 MB |
 //!
 //! The curve is flat from 12 to 64 and then falls off a cliff: at 128 there are

@@ -64,10 +64,15 @@ default.
 
 Same machine, same link, both starting cold:
 
-| app | downloaded | steamcmd | tapline |
-|---|---|---|---|
-| Valheim DS (896660) | 1.47 GB | 19.0 s | **8.3 s** |
-| Garry's Mod DS (4020) | 3.54 GB | 29.5 s | **18.3 s** |
+| app | downloaded | steamcmd | tapline | wire |
+|---|---|---|---|---|
+| Valheim DS (896660) | 1.47 GB | 19.0 s | **8.2 s** | 1.43 Gb/s |
+| Garry's Mod DS (4020) | 3.54 GB | 29.5 s | **19.1 s** | 1.48 Gb/s |
+
+"Downloaded" is compressed bytes over the wire, which is the only unit worth
+quoting for throughput. Earlier versions of this file quoted installed bytes per
+second — 184 MB/s and similar — which is the same runs inflated by a 1.2x
+decompression ratio and made the link look closer to saturated than it was.
 
 GMod is the more interesting measurement because tapline lost it first, at
 41.3 s against 29.5 s. Instrumenting the stages, aggregated across the sixteen
@@ -153,16 +158,29 @@ and another download's chunks fill those gaps.
 
 ## Where the ceiling actually is
 
-Around **184 MB/s**, and it does not appear to be ours. Everything below was
-measured on a 2.5 Gb link behind a 3 Gb connection, with a disk that writes at
-1.9 GB/s — none of which is the constraint at 184 MB/s.
+A single install tops out around **1.45 Gb/s** on a 2.5 Gb link, and that limit
+**is ours** — two connection pools in one process reach 1.83 Gb/s together, so
+neither the link nor Steam is the constraint. What that limit *is* has not been
+identified yet, and the honest list below is mostly of things it is not.
 
 | change | result |
 |---|---|
-| more concurrency (128) | much slower: 29.3 s against 11.9 s at 64 |
-| more CDN hosts (40, 60) | much slower: 60, 59 MB/s |
+| blocking pool 4 → 16 threads | **1.02 → 1.40 Gb/s** — chunk decode was starved |
+| more chunks in flight (96, 192) | slower: 1.28, 1.21 Gb/s |
+| more CDN hosts (40, 60, 80) | slower: 1.02, 1.04, 1.04 Gb/s despite 89 IPs |
 | fewer CDN hosts (4, 8, 12) | no change within noise |
+| bigger idle connection pool (32/256, 64/512) | no change beyond noise |
 | sticky host affinity per slot | **40–55% slower** |
+| a second connection pool in the same process | **1.42 → 1.83 Gb/s** |
+
+The decode row is the one that mattered, and it was a self-inflicted wound: the
+pool was capped at four threads in an earlier commit here, on a measurement
+taken while `--concurrency` was itself silently capped at 8. Four decode threads
+really were enough for eight chunks in flight. At 48 they cost 40% of the link.
+
+CPU sits at 3.6–4.1 cores of 32 and the disk writes at 1.9 GB/s, so neither is
+close. Sharding one install across several pools is the obvious next experiment,
+with 1.83 Gb/s as its measured upper bound so far.
 
 The sticky experiment is the informative failure. Chunks round-robin across the
 host list, so a host's pooled connection can go cold between visits and pay a
@@ -174,10 +192,10 @@ pinned slot waits on whichever host it drew. That also explains the wide-host
 result without any appeal to handshakes — Steam returns hosts best-first, so
 asking for 40 or 60 means spending an equal share of requests on the worst ones.
 
-What is left is what Steam serves one client from one cell. Pulling ~100 GB
-inside an hour got that number cut roughly in half for a while, which is a
-volume limit rather than a connection-count one, and is worth knowing before
-reading any benchmark taken on a hot cache.
+Steam does apply a volume limit: pulling ~100 GB inside an hour got throughput
+cut roughly in half for a while. That is worth knowing before reading any
+benchmark taken on a hot cache, and it is not the same thing as a per-client
+rate cap — this text used to claim the latter on the strength of the former.
 
 An update that finds nothing changed re-checks 6.8 GB across 2,329 files in
 **2.1 s** and downloads 0 bytes.
@@ -201,8 +219,8 @@ full speed and stop there. Measured on this machine, release build, defaults:
 | idle logged-in session | 7.8 MB | — |
 | `app info` (metadata only) | 7.6 MB | 1.0 s |
 | Workshop item, 8.4 MB, streamed to a zip | 29.8 MB | 1.9 s |
-| Valheim dedicated server, 1.5 GB | 67.8 MB | 11.6 s |
-| Garry's Mod dedicated server, 6.8 GB | 60.9 MB | 33.5 s |
+| Valheim dedicated server, 1.5 GB | 73.1 MB | 8.2 s |
+| Garry's Mod dedicated server, 6.8 GB | 71.4 MB | 19.1 s |
 
 The last two rows are the point: 6.8 GB costs what 1.5 GB does, and the bigger
 install costs slightly *less*. Nothing in a download scales with the content.
@@ -222,21 +240,18 @@ buying speed means buying memory — up to the point where it stops buying speed
 
 | in flight | Valheim 1.5 GB | GMod 6.8 GB | peak RSS |
 |---|---|---|---|
-| 10 | 15.6 s | 48.3 s | 26–27 MB |
-| 24 | 12.4 s | 35.8 s | 42 MB |
-| 32 | 12.3 s | 35.1 s | 50 MB |
-| 40 | 12.8 s | 34.3 s | 55–60 MB |
-| **48 (default)** | **11.6 s** | **33.5 s** | **61–68 MB** |
-| 64 | 12.2 s | 35.3 s | 76–86 MB |
+| 16 | 11.5 s | 29.6 s | 40 MB |
+| 32 | 9.3 s | 21.4 s | 60 MB |
+| **48 (default)** | **8.5 s** | **19.3 s** | **73 MB** |
+| 64 | 8.0 s | 19.7 s | 84 MB |
 
-Medians of interleaved repeats, because a single sweep cannot tell a 2%
-difference from the link having a bad minute — the first attempt at this table
-put 16 ahead of 24 on noise alone.
+The curve flattens at 48: GMod is at its best there and 64 is slightly worse,
+while Valheim gains 6% for another 11 MB. `--concurrency 16` holds a download to
+~40 MB if the footprint matters more than the 35–55% it costs.
 
-The curve rises to 48 and turns over after it: 64 is slower on both workloads
-*and* costs 15–18 MB more, so there is nothing above the default worth buying.
-`--concurrency 10` holds a download to ~25 MB if the footprint matters more than
-the 30–45% it costs.
+Measure this with interleaved repeats or not at all — a single sweep cannot tell
+a 2% difference from the link having a bad minute, and an earlier attempt at
+this table put 16 ahead of 24 on noise alone.
 
 **glibc is pinned at startup, or it hoards.** A download decrypts and
 decompresses a megabyte per chunk and frees it again, thousands of times over.

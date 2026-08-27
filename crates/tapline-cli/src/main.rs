@@ -58,14 +58,33 @@ Options:
   --version   version
 ";
 
-/// How many threads may be blocked on the filesystem at once.
+/// How many threads may run blocking work at once.
 ///
-/// Well under tokio's default of 512, and deliberately: the blocking pool here
-/// does one thing, which is `fsync` on a finished file. Measured on a 1.5 GB
-/// install, four against the default is 22.5–23.2 MB and 18.2–18.6 s against
-/// 24.7–25.1 MB and 18.2–21.7 s — cheaper on both axes, because a thread that
-/// only waits on a disk does not go faster for having company.
-const BLOCKING_THREADS: usize = 4;
+/// Two things use this pool, and only one of them waits on a disk: `fsync` on a
+/// finished file, and the decrypt-decompress-hash of every chunk. The second is
+/// CPU-bound and it is the whole download, so starving this pool throttles the
+/// link rather than the disk.
+///
+/// Measured on a 1.5 GB install at 48 chunks in flight, wire throughput:
+///
+/// | pool | wall | wire |
+/// |---|---|---|
+/// | 4 | 11.5 s | 1.02 Gb/s |
+/// | 8 | 9.3 s | 1.26 Gb/s |
+/// | **16** | **8.4 s** | **1.40 Gb/s** |
+/// | 32 | 8.3 s | 1.41 Gb/s |
+/// | 64 | 8.5 s | 1.38 Gb/s |
+///
+/// 16 is where it stops paying: 32 matches it and costs ~9 MB more, and tokio's
+/// default of 512 would spawn a thread per blocked task with nothing to show
+/// for it.
+///
+/// This was 4, from a measurement that said 4 was cheaper on both memory and
+/// time. That measurement was taken while `--concurrency` was silently capped
+/// at 8 by the process-wide budget, where four decode threads genuinely were
+/// enough. It is the same trap that produced two wrong concurrency tables: a
+/// number tuned under a constraint that no longer applies.
+const BLOCKING_THREADS: usize = 16;
 
 fn main() -> ExitCode {
     // First statement, before the runtime or anything worth keeping: this
