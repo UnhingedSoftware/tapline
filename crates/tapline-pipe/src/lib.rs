@@ -446,7 +446,13 @@ async fn run_selective(
 ) -> Result<Outcome, PipeError> {
     let file = session.open_workshop_item(details).await?;
     let entries = read_index(&file, &pipeline.format).await?;
-    let selected = select(&entries, pipeline)?;
+    // Positions in the whole index, not a fresh list: the sink is given every
+    // entry below, and resolves names by the index it is handed.
+    let chosen = select_indices(&entries, pipeline)?;
+    let selected: Vec<tapline_ext::ArchiveEntry> = chosen
+        .iter()
+        .filter_map(|index| entries.get(*index).cloned())
+        .collect();
 
     observe(tapline::Event::Planned {
         plan: tapline::Plan {
@@ -478,10 +484,13 @@ async fn run_selective(
     let pieces = file.read_many(&ranges).await?;
 
     let mut streamed = 0_u64;
-    for (index, (entry, stored)) in selected.iter().zip(pieces.iter()).enumerate() {
+    for ((entry, stored), index) in selected.iter().zip(pieces.iter()).zip(chosen.iter()) {
         let bytes = decode_entry(&pipeline.format, entry, stored)?;
         let bytes = &bytes;
-        sink.begin(entry, index)?;
+        // `index` is the entry's place in the whole index, which is the list
+        // the sink was given. Passing its place in the selection instead wrote
+        // the right bytes under some other entry's name.
+        sink.begin(entry, *index)?;
         if !bytes.is_empty() {
             sink.data(bytes)?;
         }
@@ -583,10 +592,20 @@ fn decode_entry(
 /// Globs and picks are a union: anything matching either is taken. A pick that
 /// matches nothing fails here rather than at the end, so the caller is told
 /// what is wrong before any content is fetched.
-fn select(
+/// Which entries a pipeline selects, as positions in `entries`.
+///
+/// Positions rather than clones, because a sink resolves an entry's name by the
+/// index it is handed, against the list it was given in `EntrySink::index`. A
+/// selective run gives the sink the *whole* index — a hostile path is hostile
+/// whether or not this run wanted that file — so the index that comes back has
+/// to be into the whole list too.
+///
+/// Getting that wrong writes the right bytes under the wrong name, which is
+/// worse than failing: it looks like it worked.
+fn select_indices(
     entries: &[tapline_ext::ArchiveEntry],
     pipeline: &Pipeline,
-) -> Result<Vec<tapline_ext::ArchiveEntry>, SpecError> {
+) -> Result<Vec<usize>, SpecError> {
     let mut patterns = tapline_gmad::Patterns::all();
     for filter in &pipeline.filters {
         patterns = patterns.with(filter.clone());
@@ -609,7 +628,8 @@ fn select(
     let take_all_patterns = pipeline.filters.is_empty() && !pipeline.picks.is_empty();
     Ok(entries
         .iter()
-        .filter(|entry| {
+        .enumerate()
+        .filter(|(_, entry)| {
             let picked = pipeline
                 .picks
                 .iter()
@@ -617,7 +637,18 @@ fn select(
             let matched = !take_all_patterns && patterns.selects(&entry.path);
             picked || matched
         })
-        .cloned()
+        .map(|(index, _)| index)
+        .collect())
+}
+
+/// The entries a pipeline selects.
+fn select(
+    entries: &[tapline_ext::ArchiveEntry],
+    pipeline: &Pipeline,
+) -> Result<Vec<tapline_ext::ArchiveEntry>, SpecError> {
+    Ok(select_indices(entries, pipeline)?
+        .into_iter()
+        .filter_map(|index| entries.get(index).cloned())
         .collect())
 }
 
@@ -760,6 +791,45 @@ mod tests {
             entry("materials/c.vmt", 30, 30),
             entry("weapons/ak[47].lua", 60, 40),
         ]
+    }
+
+    #[test]
+    fn a_selection_reports_positions_in_the_whole_index() {
+        // The bug this exists for: a sink resolves an entry's name by the index
+        // it is handed, against the whole index it was given. Handing it the
+        // position within the *selection* instead wrote the right bytes under
+        // another entry's name — `--pick lua/autorun/pac_init.lua` produced a
+        // file called lua/pac3/extra/client/wire_expression_extension.lua with
+        // pac_init's 57 bytes in it.
+        //
+        // It looked correct in every test that counted entries or bytes, and in
+        // every filter whose matches happened to start at index 0.
+        let mut pipeline = Pipeline::gma();
+        pipeline.picks.push("materials/c.vmt".to_owned());
+        let chosen = select_indices(&archive(), &pipeline).expect("select");
+        assert_eq!(chosen, vec![2], "a pick must report where it is, not 0");
+    }
+
+    #[test]
+    fn selected_positions_address_the_entries_they_came_from() {
+        // Stated as the invariant rather than as one example: whatever the
+        // selection, index i must name the entry select() returned at i.
+        let entries = archive();
+        let mut pipeline = Pipeline::gma();
+        pipeline.filters.push("lua/**".to_owned());
+        pipeline.picks.push("weapons/ak[47].lua".to_owned());
+
+        let chosen = select_indices(&entries, &pipeline).expect("select");
+        let selected = select(&entries, &pipeline).expect("select");
+        assert_eq!(chosen.len(), selected.len());
+        for (index, entry) in chosen.iter().zip(selected.iter()) {
+            assert_eq!(
+                entries.get(*index).map(|e| e.path.as_str()),
+                Some(entry.path.as_str()),
+                "position {index} does not address {}",
+                entry.path
+            );
+        }
     }
 
     #[test]

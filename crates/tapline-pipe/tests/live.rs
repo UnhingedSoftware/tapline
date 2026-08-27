@@ -262,15 +262,27 @@ async fn named_files_can_be_taken_out_of_an_archive() {
         .await
         .expect("list");
 
-    // Three real entries, chosen from what the archive actually holds.
-    let wanted: Vec<String> = listing
+    // Three real entries, chosen from what the archive actually holds — and
+    // deliberately NOT the first three.
+    //
+    // A sink resolves an entry's name by the index it is handed. This test used
+    // to take the first three .lua files, which sit at positions 0, 1 and 2, so
+    // the position within the selection and the position within the archive
+    // agreed and a bug that confused the two was invisible. It was real: a pick
+    // wrote the right bytes under a different entry's name. Spread the choice
+    // across the archive so the two disagree.
+    let lua: Vec<String> = listing
         .entries
         .iter()
         .filter(|entry| entry.path.ends_with(".lua"))
-        .take(3)
         .map(|entry| entry.path.clone())
         .collect();
-    assert_eq!(wanted.len(), 3, "the archive should hold lua files");
+    assert!(lua.len() >= 8, "the archive should hold lua files");
+    let wanted: Vec<String> = [lua.len() / 2, lua.len() - 2, lua.len() - 1]
+        .iter()
+        .filter_map(|index| lua.get(*index).cloned())
+        .collect();
+    assert_eq!(wanted.len(), 3, "three distinct entries");
 
     let root = scratch("pick");
     let _scratch = Scratch(root.clone());
