@@ -203,47 +203,15 @@ impl<W: Write> Writer<W> {
     pub fn finish(mut self) -> Result<W, ExtensionError> {
         let directory_start = self.offset;
 
-        for index in 0..self.records.len() {
-            // Copied out because the writes below borrow `self` mutably, and a
-            // record is small.
-            let (name, crc, compressed, uncompressed, method, offset) = {
-                let record = self
-                    .records
-                    .get(index)
-                    .ok_or_else(|| ExtensionError::Io("the entry list shrank".to_owned()))?;
-                (
-                    record.name.clone(),
-                    record.crc,
-                    record.compressed,
-                    record.uncompressed,
-                    record.method,
-                    record.offset,
-                )
-            };
-            let name_len = u16::try_from(name.len()).unwrap_or(u16::MAX);
-
-            self.u32(CENTRAL_SIGNATURE)?;
-            self.u16(VERSION)?; // version made by
-            self.u16(VERSION)?; // version needed
-            self.u16(0)?; // flags
-            self.u16(method)?;
-            self.u16(0)?; // time
-            self.u16(0)?; // date
-            self.u32(crc)?;
-            self.u32(compressed)?;
-            self.u32(uncompressed)?;
-            self.u16(name_len)?;
-            self.u16(0)?; // extra
-            self.u16(0)?; // comment
-            self.u16(0)?; // disk number
-            self.u16(0)?; // internal attributes
-            self.u32(0)?; // external attributes
-            self.u32(offset)?;
-            self.write(name.as_bytes())?;
+        // Taken out so the per-record write can borrow `self` mutably without
+        // fighting the iteration over `self.records`.
+        let records = std::mem::take(&mut self.records);
+        for record in &records {
+            self.write_central_header(record)?;
         }
 
         let directory_size = self.offset.saturating_sub(directory_start);
-        let count = u16::try_from(self.records.len()).unwrap_or(u16::MAX);
+        let count = u16::try_from(records.len()).unwrap_or(u16::MAX);
 
         self.u32(END_SIGNATURE)?;
         self.u16(0)?; // this disk
@@ -256,6 +224,31 @@ impl<W: Write> Writer<W> {
 
         self.out.flush()?;
         Ok(self.out)
+    }
+
+    /// Writes one entry's central-directory header — the fixed 46-byte record
+    /// followed by the name. The whole ZIP central-directory layout lives here.
+    fn write_central_header(&mut self, record: &Record) -> Result<(), ExtensionError> {
+        let name_len = u16::try_from(record.name.len()).unwrap_or(u16::MAX);
+
+        self.u32(CENTRAL_SIGNATURE)?;
+        self.u16(VERSION)?; // version made by
+        self.u16(VERSION)?; // version needed
+        self.u16(0)?; // flags
+        self.u16(record.method)?;
+        self.u16(0)?; // time
+        self.u16(0)?; // date
+        self.u32(record.crc)?;
+        self.u32(record.compressed)?;
+        self.u32(record.uncompressed)?;
+        self.u16(name_len)?;
+        self.u16(0)?; // extra
+        self.u16(0)?; // comment
+        self.u16(0)?; // disk number
+        self.u16(0)?; // internal attributes
+        self.u32(0)?; // external attributes
+        self.u32(record.offset)?;
+        self.write(record.name.as_bytes())
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
