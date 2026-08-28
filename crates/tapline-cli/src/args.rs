@@ -172,6 +172,8 @@ pub struct SearchFilters {
     pub all_tags: bool,
     /// How to order results.
     pub sort: Option<String>,
+    /// How many days a trend ranking covers.
+    pub days: Option<u32>,
     /// How many to return.
     pub limit: Option<u32>,
     /// Where to resume from.
@@ -486,6 +488,14 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 exclude_tags: options.all_values("exclude-tag"),
                 all_tags: options.flag("all-tags"),
                 sort: options.value("sort").map(str::to_owned),
+                days: match options.value("days") {
+                    None => None,
+                    Some(raw) => Some(raw.parse().map_err(|_| {
+                        ArgError::new(format!(
+                            "{raw:?} is not a number of days; give a positive number"
+                        ))
+                    })?),
+                },
                 limit: match options.value("limit") {
                     None => None,
                     Some(raw) => Some(raw.parse().map_err(|_| {

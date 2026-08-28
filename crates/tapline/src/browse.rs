@@ -139,6 +139,13 @@ pub struct BrowseQuery {
     pub match_all_tags: bool,
     /// How to order results.
     pub sort: BrowseSort,
+    /// How many days of activity [`BrowseSort::Trend`] ranks over.
+    ///
+    /// The period beside Steam's "Most Popular": a day, a week, three months.
+    /// `None` leaves Steam its own default. It means nothing to the other
+    /// sorts, which is why [`BrowseQuery::validate`] refuses the combination
+    /// rather than sending a number that quietly does nothing.
+    pub trend_days: Option<u32>,
     /// How many to return, capped at [`MAX_PER_PAGE`].
     pub per_page: u32,
     /// Where to resume from. `None` starts at the beginning.
@@ -155,6 +162,7 @@ impl Default for BrowseQuery {
             excluded_tags: Vec::new(),
             match_all_tags: false,
             sort: BrowseSort::default(),
+            trend_days: None,
             per_page: 20,
             cursor: None,
         }
@@ -178,6 +186,9 @@ impl BrowseQuery {
         if self.tag_groups.iter().any(Vec::is_empty) {
             return Err(BrowseError::EmptyTagGroup);
         }
+        if self.trend_days.is_some() && self.sort != BrowseSort::Trend {
+            return Err(BrowseError::TrendDaysWithoutTrendSort);
+        }
         Ok(())
     }
 
@@ -190,6 +201,7 @@ impl BrowseQuery {
         CPublishedFile_QueryFiles_Request {
             query_type: Some(self.sort.query_type()),
             appid: Some(self.app.get()),
+            days: self.trend_days,
             search_text: self.text.clone(),
             requiredtags: self.required_tags.clone(),
             taggroups: self
@@ -268,6 +280,8 @@ pub enum BrowseError {
     TextSortWithoutText,
     /// A tag group with no tags in it.
     EmptyTagGroup,
+    /// A trend window given to a sort that does not rank by trend.
+    TrendDaysWithoutTrendSort,
 }
 
 impl std::fmt::Display for BrowseError {
@@ -287,6 +301,11 @@ impl std::fmt::Display for BrowseError {
                 f,
                 "a tag group needs at least one tag; an empty group is a \
                  filter that matches nothing and reads as a broken search"
+            ),
+            Self::TrendDaysWithoutTrendSort => write!(
+                f,
+                "a trend window only applies to the trend sort; Steam ignores \
+                 it for the others, which reads as the period having no effect"
             ),
         }
     }
@@ -436,6 +455,36 @@ mod tests {
         .to_request();
         assert_eq!(request.requiredtags, vec!["Wallpaper".to_owned()]);
         assert_eq!(request.taggroups.len(), 1);
+    }
+
+    #[test]
+    fn a_trend_window_travels_as_days() {
+        let request = BrowseQuery {
+            app: AppId(431_960),
+            sort: BrowseSort::Trend,
+            trend_days: Some(180),
+            ..BrowseQuery::default()
+        }
+        .to_request();
+        assert_eq!(request.days, Some(180));
+    }
+
+    #[test]
+    fn a_trend_window_on_another_sort_is_refused() {
+        // Measured against Wallpaper Engine on 2026-08-27: `--sort vote --days 7`
+        // returns the same three items as `--sort vote`, and `--sort recent
+        // --days 90` the same as `--sort recent`. Steam takes the number and
+        // ignores it, which looks like the period having no effect.
+        let query = BrowseQuery {
+            app: AppId(431_960),
+            sort: BrowseSort::Vote,
+            trend_days: Some(7),
+            ..BrowseQuery::default()
+        };
+        assert_eq!(
+            query.validate(),
+            Err(BrowseError::TrendDaysWithoutTrendSort)
+        );
     }
 
     #[test]

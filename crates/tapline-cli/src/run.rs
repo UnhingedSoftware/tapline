@@ -319,6 +319,7 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         excluded_tags: filters.exclude_tags,
         match_all_tags: filters.all_tags,
         sort,
+        trend_days: filters.days,
         per_page: filters.limit.unwrap_or(defaults.per_page),
         cursor: filters.cursor,
     };
