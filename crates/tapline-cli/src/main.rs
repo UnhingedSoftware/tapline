@@ -35,8 +35,10 @@ Native:
       Depots, branches and sizes.
   tapline workshop search APPID [--text QUERY] [--tag T]... [--exclude-tag T]...
                          [--tag-group T,T]... [--exclude-content LABEL]...
-                         [--all-tags] [--sort NAME] [--days N] [--limit N]
-                         [--cursor C] [--json]
+                         [--all-tags] [--sort NAME] [--days N]
+                         [--created-since WHEN] [--created-until WHEN]
+                         [--updated-since WHEN] [--updated-until WHEN]
+                         [--limit N] [--cursor C] [--json]
       Search an app's Workshop. --sort: vote, recent, updated, trend,
       subscribed, text (text needs --text). Paging is a cursor: pass the
       next_cursor from one page as --cursor to get the following one.
@@ -46,6 +48,7 @@ Native:
       which otherwise ranks over a single day.
       --exclude-content drops items by Steam's own labels rather than by tag:
       nudity, violence, adult-only, gratuitous, mature.
+      The date bounds take a Unix timestamp or an age: 12h, 30d, 2w.
   tapline workshop info ITEMID... [--json]
       Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]

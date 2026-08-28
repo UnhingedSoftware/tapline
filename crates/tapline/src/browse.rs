@@ -36,7 +36,8 @@ use crate::{InstallError, WorkshopItem};
 use tapline_ids::AppId;
 use tapline_proto::enums_productinfo::EContentDescriptorID;
 use tapline_proto::steammessages_publishedfile_steamclient::{
-    CPublishedFile_QueryFiles_Request, c_published_file_query_files_request::TagGroup,
+    CPublishedFile_QueryFiles_Request,
+    c_published_file_query_files_request::{DateRange, TagGroup},
 };
 
 /// How Steam should order the results.
@@ -148,6 +149,36 @@ impl ContentDescriptor {
         ["nudity", "violence", "adult-only", "gratuitous", "mature"];
 }
 
+/// A window of time, in Unix seconds.
+///
+/// Either end may be open: a search for everything published since a date has
+/// no end, and one for everything before a date has no start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TimeRange {
+    /// The earliest moment to accept, inclusive.
+    pub start: Option<u32>,
+    /// The latest moment to accept, inclusive.
+    pub end: Option<u32>,
+}
+
+impl TimeRange {
+    /// Whether the window can contain anything at all.
+    const fn is_backwards(self) -> bool {
+        match (self.start, self.end) {
+            (Some(start), Some(end)) => start > end,
+            _ => false,
+        }
+    }
+
+    /// The wire form.
+    const fn to_wire(self) -> DateRange {
+        DateRange {
+            timestamp_start: self.start,
+            timestamp_end: self.end,
+        }
+    }
+}
+
 /// The cursor that starts a search.
 ///
 /// Steam's paging is a cursor, not an offset, and the first page is the literal
@@ -193,6 +224,19 @@ pub struct BrowseQuery {
     pub match_all_tags: bool,
     /// How to order results.
     pub sort: BrowseSort,
+    /// When an item must have been first published.
+    ///
+    /// Filters hard rather than reordering: of Wallpaper Engine's 3,182,822
+    /// items, 45,523 were published in the last thirty days.
+    pub created: Option<TimeRange>,
+    /// When an item must have been revised.
+    ///
+    /// Not a superset of [`BrowseQuery::created`], which is the intuition to
+    /// resist: measured on the same day, 1,610 Wallpaper Engine items were
+    /// published within a day and only 242 fell in the updated window, so
+    /// Steam counts a revision here rather than every item's last-touched
+    /// stamp.
+    pub updated: Option<TimeRange>,
     /// How many days of activity [`BrowseSort::Trend`] ranks over.
     ///
     /// The period beside Steam's "Most Popular": a day, a week, three months.
@@ -217,6 +261,8 @@ impl Default for BrowseQuery {
             excluded_descriptors: Vec::new(),
             match_all_tags: false,
             sort: BrowseSort::default(),
+            created: None,
+            updated: None,
             trend_days: None,
             per_page: 20,
             cursor: None,
@@ -244,6 +290,11 @@ impl BrowseQuery {
         if self.trend_days.is_some() && self.sort != BrowseSort::Trend {
             return Err(BrowseError::TrendDaysWithoutTrendSort);
         }
+        if self.created.is_some_and(TimeRange::is_backwards)
+            || self.updated.is_some_and(TimeRange::is_backwards)
+        {
+            return Err(BrowseError::BackwardsTimeRange);
+        }
         Ok(())
     }
 
@@ -257,6 +308,8 @@ impl BrowseQuery {
             query_type: Some(self.sort.query_type()),
             appid: Some(self.app.get()),
             days: self.trend_days,
+            date_range_created: self.created.map(TimeRange::to_wire),
+            date_range_updated: self.updated.map(TimeRange::to_wire),
             search_text: self.text.clone(),
             requiredtags: self.required_tags.clone(),
             taggroups: self
@@ -342,6 +395,8 @@ pub enum BrowseError {
     EmptyTagGroup,
     /// A trend window given to a sort that does not rank by trend.
     TrendDaysWithoutTrendSort,
+    /// A time window that ends before it starts.
+    BackwardsTimeRange,
 }
 
 impl std::fmt::Display for BrowseError {
@@ -361,6 +416,11 @@ impl std::fmt::Display for BrowseError {
                 f,
                 "a tag group needs at least one tag; an empty group is a \
                  filter that matches nothing and reads as a broken search"
+            ),
+            Self::BackwardsTimeRange => write!(
+                f,
+                "a time window that ends before it starts can contain nothing; \
+                 an empty result would look like the search simply found none"
             ),
             Self::TrendDaysWithoutTrendSort => write!(
                 f,
@@ -515,6 +575,61 @@ mod tests {
         .to_request();
         assert_eq!(request.requiredtags, vec!["Wallpaper".to_owned()]);
         assert_eq!(request.taggroups.len(), 1);
+    }
+
+    #[test]
+    fn each_date_window_travels_in_its_own_field() {
+        // Created and updated are different questions — an item published in
+        // 2016 and updated last week belongs to one and not the other — and
+        // the wrong field answers the wrong one plausibly.
+        let request = BrowseQuery {
+            app: AppId(431_960),
+            created: Some(TimeRange {
+                start: Some(1_000),
+                end: None,
+            }),
+            updated: Some(TimeRange {
+                start: None,
+                end: Some(2_000),
+            }),
+            ..BrowseQuery::default()
+        }
+        .to_request();
+
+        let created = request.date_range_created.expect("created window");
+        assert_eq!(created.timestamp_start, Some(1_000));
+        assert_eq!(created.timestamp_end, None);
+        let updated = request.date_range_updated.expect("updated window");
+        assert_eq!(updated.timestamp_start, None);
+        assert_eq!(updated.timestamp_end, Some(2_000));
+    }
+
+    #[test]
+    fn a_window_that_ends_before_it_starts_is_refused() {
+        let query = BrowseQuery {
+            app: AppId(431_960),
+            updated: Some(TimeRange {
+                start: Some(2_000),
+                end: Some(1_000),
+            }),
+            ..BrowseQuery::default()
+        };
+        assert_eq!(query.validate(), Err(BrowseError::BackwardsTimeRange));
+    }
+
+    #[test]
+    fn an_open_ended_window_is_not_backwards() {
+        // Only one end given is the common case — "since last month" — and
+        // refusing it would make the filter unusable.
+        let query = BrowseQuery {
+            app: AppId(431_960),
+            updated: Some(TimeRange {
+                start: Some(2_000),
+                end: None,
+            }),
+            ..BrowseQuery::default()
+        };
+        assert_eq!(query.validate(), Ok(()));
     }
 
     #[test]

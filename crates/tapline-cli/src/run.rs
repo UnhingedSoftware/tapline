@@ -1,6 +1,6 @@
 //! Doing what the command line asked for.
 
-use crate::args::{Command, SearchFilters, Step};
+use crate::args::{Command, Moment, SearchFilters, Step};
 use std::path::PathBuf;
 use tapline::{AppId, InstallOptions, Os, PublishedFileId, Session};
 
@@ -324,6 +324,22 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         excluded_descriptors.push(descriptor);
     }
 
+    // One clock reading for the whole query, so --created-since 1d and
+    // --updated-since 1d mean the same instant rather than two a millisecond
+    // apart.
+    let now = u32::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs()),
+    )
+    .unwrap_or(u32::MAX);
+    let window = |since: Option<Moment>, until: Option<Moment>| {
+        (since.is_some() || until.is_some()).then(|| tapline::TimeRange {
+            start: since.map(|moment| moment.resolve(now)),
+            end: until.map(|moment| moment.resolve(now)),
+        })
+    };
+
     let query = tapline::BrowseQuery {
         app: filters.app,
         text: filters.text,
@@ -333,6 +349,8 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         excluded_descriptors,
         match_all_tags: filters.all_tags,
         sort,
+        created: window(filters.created_since, filters.created_until),
+        updated: window(filters.updated_since, filters.updated_until),
         trend_days: filters.days,
         per_page: filters.limit.unwrap_or(defaults.per_page),
         cursor: filters.cursor,

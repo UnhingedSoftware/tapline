@@ -176,10 +176,41 @@ pub struct SearchFilters {
     pub sort: Option<String>,
     /// How many days a trend ranking covers.
     pub days: Option<u32>,
+    /// The earliest publication date to accept.
+    pub created_since: Option<Moment>,
+    /// The latest publication date to accept.
+    pub created_until: Option<Moment>,
+    /// The earliest update date to accept.
+    pub updated_since: Option<Moment>,
+    /// The latest update date to accept.
+    pub updated_until: Option<Moment>,
     /// How many to return.
     pub limit: Option<u32>,
     /// Where to resume from.
     pub cursor: Option<String>,
+}
+
+/// A point in time on the command line.
+///
+/// Kept unresolved so parsing needs no clock: `30d` means thirty days before
+/// whenever the search runs, and a test can say what "now" is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moment {
+    /// A Unix timestamp, as given.
+    At(u32),
+    /// This many seconds before now.
+    Ago(u32),
+}
+
+impl Moment {
+    /// Resolves against a given moment, saturating rather than wrapping.
+    #[must_use]
+    pub const fn resolve(self, now: u32) -> u32 {
+        match self {
+            Self::At(when) => when,
+            Self::Ago(seconds) => now.saturating_sub(seconds),
+        }
+    }
 }
 
 /// What went wrong reading the command line.
@@ -380,6 +411,33 @@ impl Options {
 }
 
 /// Parses the native subcommand grammar.
+/// Reads a `--since`/`--until` value: a Unix timestamp, or an age like `30d`.
+///
+/// Ages exist because that is how the filter is used — the last week, the last
+/// month — and making every caller compute a timestamp invites the off-by-one
+/// nobody notices until the results are subtly short.
+fn moment(raw: Option<&str>, flag: &str) -> Result<Option<Moment>, ArgError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let bad = || {
+        ArgError::new(format!(
+            "{flag} takes a Unix timestamp or an age like 30d, 12h or 2w, not {raw:?}"
+        ))
+    };
+
+    let (digits, unit) = raw.split_at(raw.len().saturating_sub(1));
+    let seconds = match unit {
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 604_800,
+        // No unit: a timestamp.
+        _ => {
+            return raw.parse().map(Moment::At).map(Some).map_err(|_| bad());
+        }
+    };
+    let count: u32 = digits.parse().map_err(|_| bad())?;
+    Ok(Some(Moment::Ago(count.saturating_mul(seconds))))
+}
+
 /// Reads `--tag-group "Scene,Video"` into one group per flag.
 ///
 /// Comma-separated because a group is a set and repeating the flag already
@@ -491,6 +549,10 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 exclude_content: options.all_values("exclude-content"),
                 all_tags: options.flag("all-tags"),
                 sort: options.value("sort").map(str::to_owned),
+                created_since: moment(options.value("created-since"), "--created-since")?,
+                created_until: moment(options.value("created-until"), "--created-until")?,
+                updated_since: moment(options.value("updated-since"), "--updated-since")?,
+                updated_until: moment(options.value("updated-until"), "--updated-until")?,
                 days: match options.value("days") {
                     None => None,
                     Some(raw) => Some(raw.parse().map_err(|_| {

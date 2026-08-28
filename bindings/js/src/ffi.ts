@@ -56,6 +56,10 @@ export interface Ffi {
     allTags: number,
     sort: string | null,
     trendDays: number,
+    createdSince: number,
+    createdUntil: number,
+    updatedSince: number,
+    updatedUntil: number,
     limit: number,
     cursor: string | null,
   ): bigint;
@@ -268,7 +272,7 @@ async function loadDeno(path: string): Promise<Ffi> {
     tapline_workshop_search: {
       parameters: [
         "u32", "buffer", "buffer", "buffer", "buffer", "buffer",
-        "u8", "buffer", "u32", "u32", "buffer", "buffer",
+        "u8", "buffer", "u32", "u32", "u32", "u32", "u32", "u32", "buffer", "buffer",
       ],
       result: "i32",
     },
@@ -369,6 +373,10 @@ async function loadDeno(path: string): Promise<Ffi> {
       allTags,
       sort,
       trendDays,
+      createdSince,
+      createdUntil,
+      updatedSince,
+      updatedUntil,
       limit,
       cursor,
     ) {
@@ -383,6 +391,10 @@ async function loadDeno(path: string): Promise<Ffi> {
         allTags,
         sort === null ? null : cstring(sort),
         trendDays,
+        createdSince,
+        createdUntil,
+        updatedSince,
+        updatedUntil,
         limit,
         cursor === null ? null : cstring(cursor),
         new Uint8Array(out.buffer),
@@ -457,7 +469,9 @@ async function loadBun(path: string): Promise<Ffi> {
     tapline_workshop_search: {
       args: [
         FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr,
-        FFIType.u8, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr,
+        FFIType.u8, FFIType.ptr, FFIType.u32,
+        FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32,
+        FFIType.u32, FFIType.ptr, FFIType.ptr,
       ],
       returns: FFIType.i32,
     },
@@ -543,6 +557,10 @@ async function loadBun(path: string): Promise<Ffi> {
       allTags,
       sort,
       trendDays,
+      createdSince,
+      createdUntil,
+      updatedSince,
+      updatedUntil,
       limit,
       cursor,
     ) {
@@ -557,6 +575,10 @@ async function loadBun(path: string): Promise<Ffi> {
         allTags,
         sort === null ? null : ptr(cstring(sort)),
         trendDays,
+        createdSince,
+        createdUntil,
+        updatedSince,
+        updatedUntil,
         limit,
         cursor === null ? null : ptr(cstring(cursor)),
         ptr(out),
@@ -627,7 +649,7 @@ async function loadNode(path: string): Promise<Ffi> {
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
   );
   const searchFn = lib.func(
-    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, const char*, _Out_ void**)",
+    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, _Out_ void**)",
   );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
@@ -696,6 +718,10 @@ async function loadNode(path: string): Promise<Ffi> {
       allTags,
       sort,
       trendDays,
+      createdSince,
+      createdUntil,
+      updatedSince,
+      updatedUntil,
       limit,
       cursor,
     ) {
@@ -710,6 +736,10 @@ async function loadNode(path: string): Promise<Ffi> {
         allTags,
         sort,
         trendDays,
+        createdSince,
+        createdUntil,
+        updatedSince,
+        updatedUntil,
         limit,
         cursor,
         out,

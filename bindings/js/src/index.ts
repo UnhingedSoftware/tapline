@@ -712,6 +712,16 @@ export interface SearchOptions {
    * nothing.
    */
   days?: number;
+  /**
+   * Only items first published within this window.
+   *
+   * Unix seconds, either end optional. Filters hard rather than reordering:
+   * of Wallpaper Engine's 3,182,822 items, 6,267 were updated in the last
+   * thirty days.
+   */
+  created?: { since?: number; until?: number };
+  /** Only items last updated within this window. Unix seconds. */
+  updated?: { since?: number; until?: number };
   /** How many to return. Capped at 100, because Steam silently returns fewer. */
   limit?: number;
   /** {@link SearchPage.nextCursor} from a previous page. */
@@ -765,6 +775,10 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
         options.allTags ? 1 : 0,
         options.sort ?? null,
         options.days ?? 0,
+        options.created?.since ?? 0,
+        options.created?.until ?? 0,
+        options.updated?.since ?? 0,
+        options.updated?.until ?? 0,
         options.limit ?? 0,
         options.cursor ?? null,
       ),

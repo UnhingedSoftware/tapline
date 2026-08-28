@@ -572,6 +572,10 @@ pub unsafe extern "C" fn tapline_workshop_download(
 /// truer filter than excluding a tag by name, because the label is Valve's
 /// rather than whatever the author ticked.
 ///
+/// The four date bounds are Unix seconds, and zero is unset — a search for
+/// items published or updated in a window, which filters hard rather than
+/// reordering. A window whose end precedes its start is refused.
+///
 /// `trend_days` is the period a `trend` sort ranks over. Zero means unset,
 /// which is also what Steam does with a zero it is sent, and it applies to no
 /// other sort — passing one elsewhere is refused rather than ignored.
@@ -592,6 +596,10 @@ pub unsafe extern "C" fn tapline_workshop_search(
     all_tags: u8,
     sort: *const c_char,
     trend_days: u32,
+    created_since: u32,
+    created_until: u32,
+    updated_since: u32,
+    updated_until: u32,
     limit: u32,
     cursor: *const c_char,
     out: *mut *mut TaplineJob,
@@ -605,6 +613,14 @@ pub unsafe extern "C" fn tapline_workshop_search(
                 .collect()
         })
         .unwrap_or_default()
+    }
+
+    // Zero is unset rather than 1970, which no Workshop item predates anyway.
+    fn window(since: u32, until: u32) -> Option<tapline::TimeRange> {
+        (since != 0 || until != 0).then(|| tapline::TimeRange {
+            start: (since != 0).then_some(since),
+            end: (until != 0).then_some(until),
+        })
     }
 
     fn groups(raw: Option<&str>) -> Vec<Vec<String>> {
@@ -659,6 +675,8 @@ pub unsafe extern "C" fn tapline_workshop_search(
         tag_groups: groups(unsafe { read_str(tag_groups) }),
         excluded_tags: split(unsafe { read_str(excluded_tags) }),
         excluded_descriptors,
+        created: window(created_since, created_until),
+        updated: window(updated_since, updated_until),
         match_all_tags: all_tags != 0,
         sort,
         trend_days: if trend_days == 0 {
