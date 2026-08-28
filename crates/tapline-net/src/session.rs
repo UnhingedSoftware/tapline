@@ -86,7 +86,12 @@ impl<T: Transport> Session<T> {
                 return Ok(self.pending.remove(0));
             }
             let bytes = self.transport.recv().await?;
-            let frames = expand(Frame::decode(&bytes)?)?;
+            let decoded = match Frame::decode(&bytes) {
+                Ok(frame) => frame,
+                Err(NetError::NotProtobuf { .. }) => continue,
+                Err(error) => return Err(error),
+            };
+            let frames = expand(decoded)?;
             if frames.is_empty() {
                 continue;
             }

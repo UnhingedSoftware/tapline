@@ -54,7 +54,11 @@ fn expand_into(frame: Frame, depth: u32, out: &mut Vec<Frame>) -> Result<(), Net
             .get(len_end..message_end)
             .ok_or(NetError::Truncated)?;
 
-        expand_into(Frame::decode(message)?, depth + 1, out)?;
+        match Frame::decode(message) {
+            Ok(frame) => expand_into(frame, depth + 1, out)?,
+            Err(NetError::NotProtobuf { .. }) => {}
+            Err(error) => return Err(error),
+        }
         cursor = message_end;
     }
 
@@ -101,6 +105,35 @@ mod tests {
         assert_eq!(
             frames.first().map(|f| f.emsg),
             Some(EMsg::CLIENT_LOGON_RESPONSE)
+        );
+    }
+
+    #[test]
+    fn a_legacy_message_in_a_batch_is_skipped_rather_than_fatal() {
+        let mut payload = Vec::new();
+        let first = plain(EMsg::CLIENT_LOGON_RESPONSE, b"one").encode();
+        payload.extend_from_slice(&(first.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&first);
+
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(&798_u32.to_le_bytes());
+        legacy.extend_from_slice(&[0; 16]);
+        payload.extend_from_slice(&(legacy.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&legacy);
+
+        let second = plain(EMsg::CLIENT_LICENSE_LIST, b"two").encode();
+        payload.extend_from_slice(&(second.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&second);
+
+        let frames = expand(multi_frame(payload, None)).expect("must expand");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(
+            frames.first().map(|f| f.emsg),
+            Some(EMsg::CLIENT_LOGON_RESPONSE)
+        );
+        assert_eq!(
+            frames.get(1).map(|f| f.emsg),
+            Some(EMsg::CLIENT_LICENSE_LIST)
         );
     }
 
