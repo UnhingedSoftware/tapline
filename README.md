@@ -220,5 +220,19 @@ at a steamcmd install of the same app.
 
 ## Licence
 
-MPL-2.0. Downloads only content the signed-in account is entitled to, exactly as
+**AGPL-3.0-only.** You may use, modify and redistribute tapline freely. If you
+run a modified version as a network service, §13 requires you to offer its
+source to the people using that service — linking it into your own program makes
+that program a combined work under the same terms.
+
+If those terms do not suit your project, **commercial licences are available**:
+the copyright holder is not bound by the AGPL and can grant other terms. Open an
+issue.
+
+**Contributions** need a copyright assignment or a licence grant broad enough to
+keep dual licensing possible. Without one, a contribution can only ever be used
+under the AGPL — including by the maintainer. Nothing is accepted without it, so
+that the offer above stays honest.
+
+tapline downloads only content the signed-in account is entitled to, exactly as
 the real client does — no key dumping, no unowned depots, no DRM removal.
