@@ -1,9 +1,3 @@
-//! Signing in, or deciding not to.
-//!
-//! ```sh
-//! cargo test --release -p tapline --test auth -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline::Session;
@@ -11,10 +5,6 @@ use tapline::Session;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn automatic_signs_in_when_it_can_and_carries_on_when_it_cannot() {
-    // The contract: never fails because of authentication. A machine with a
-    // saved token gets a signed-in session, a machine without gets an anonymous
-    // one, and neither is an error — a download that never needed an account
-    // must not stop because a token expired.
     let session = Session::automatic(None)
         .await
         .expect("a session either way");
@@ -29,9 +19,6 @@ async fn automatic_signs_in_when_it_can_and_carries_on_when_it_cannot() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_rubbish_token_falls_back_rather_than_failing() {
-    // A saved token that Steam refuses is the normal end of a token's life.
-    // The session should come back anonymous instead of leaving the caller
-    // holding an error about credentials it never asked to use.
     let token = tapline_auth::StoredToken {
         account: "nobody-at-all".to_owned(),
         refresh_token: "not.a.token".to_owned(),
@@ -39,7 +26,6 @@ async fn a_rubbish_token_falls_back_rather_than_failing() {
     let direct = Session::with_token(&token).await;
     assert!(direct.is_err(), "a rubbish token should not log on");
 
-    // And the same token reached through `automatic` is survivable.
     let session = Session::automatic(Some("nobody-at-all"))
         .await
         .expect("automatic should fall back to anonymous");
@@ -53,8 +39,6 @@ async fn a_rubbish_token_falls_back_rather_than_failing() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn an_owned_depot_says_it_needs_a_login() {
-    // The message a person acts on. Counter-Strike 2's client depots are not
-    // anonymously accessible, so this is the refusal every unowned app gives.
     let mut session = Session::anonymous().await.expect("session");
     let dir = std::env::temp_dir().join("tapline-auth-denied");
     let options = tapline::InstallOptions {
@@ -82,9 +66,6 @@ async fn an_owned_depot_says_it_needs_a_login() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam and needs a signed-in account"]
 async fn subscribing_round_trips() {
-    // Skips rather than fails when there is no saved token: most machines
-    // running these tests are anonymous, and an unrunnable test that reports
-    // failure teaches people to ignore red.
     let mut session = Session::automatic(None).await.expect("session");
     let Some(account) = session.account().map(str::to_owned) else {
         println!("SKIPPED: anonymous session. Run `tapline login` to exercise this.");
@@ -95,7 +76,6 @@ async fn subscribing_round_trips() {
     const APP: tapline::AppId = tapline::AppId(4000);
     const ITEM: tapline::PublishedFileId = tapline::PublishedFileId(104_691_717);
 
-    // Subscribe, then unsubscribe, so the account is left as it was found.
     session
         .subscribe_workshop_item(APP, ITEM, false)
         .await
@@ -112,8 +92,6 @@ async fn subscribing_round_trips() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn subscribing_anonymously_is_refused() {
-    // The half that can be checked without an account: Steam does not silently
-    // accept a subscription for nobody.
     let mut session = Session::anonymous().await.expect("session");
     let outcome = session
         .subscribe_workshop_item(

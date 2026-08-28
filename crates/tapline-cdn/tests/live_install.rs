@@ -1,21 +1,3 @@
-//! The M6 gate: download a real depot end to end and check what landed.
-//!
-//! ```sh
-//! cargo test -p tapline-cdn -- --ignored --nocapture
-//! ```
-//!
-//! Anonymous session throughout. Depot 232257 is 9,989 bytes across two chunks,
-//! which is small enough to verify by eye and large enough to exercise every
-//! stage: PICS, depot key, CDN directory, manifest request code, manifest fetch
-//! and decrypt, chunk fetch, decrypt, decompress, hash-check, and the write.
-//!
-//! # Disk
-//!
-//! The install goes to `TAPLINE_TEST_DIR` (default `~/.cache/tapline-test`),
-//! never `/tmp` — that is tmpfs on the development machine, and a larger depot
-//! test there would be gigabytes of RAM. The directory removes itself
-//! afterwards, including on panic.
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -39,7 +21,6 @@ use tapline_wire::Message;
 const APP: AppId = AppId(232_250);
 const DEPOT: u32 = 232_257;
 
-/// A scratch install directory that cleans up after itself.
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -64,7 +45,6 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        // Including on panic: a failed test must not leave an install behind.
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -76,7 +56,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
     let root = &scratch.0;
     println!("installing into {}", root.display());
 
-    // --- session, PICS, depot key ----------------------------------------
     let servers = cm_list(0).await.expect("directory");
     let transport = CmTransport::connect(&servers.first().expect("a CM").endpoint)
         .await
@@ -128,7 +107,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
         .try_into()
         .expect("32 bytes");
 
-    // --- CDN pool ---------------------------------------------------------
     let directory = session
         .call(&CContentServerDirectory_GetServersForSteamPipe_Request {
             cell_id: Some(outcome.cell_id),
@@ -146,8 +124,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
             Some(Host {
                 vhost: server.vhost.clone().unwrap_or_else(|| host.clone()),
                 host,
-                // Steam types this as int32; a negative would be nonsense, and
-                // an unknown load must sort last rather than first.
                 load: server
                     .load
                     .and_then(|value| u32::try_from(value).ok())
@@ -173,7 +149,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
         .manifest_request_code
         .expect("a code");
 
-    // --- manifest ---------------------------------------------------------
     let client = HttpClient::new();
     let host = pool.acquire().expect("a host");
     let manifest = fetch_manifest(
@@ -194,14 +169,10 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
         manifest.total_size
     );
 
-    // --- the download -----------------------------------------------------
     let mut written_bytes = 0_u64;
     let mut written_files = Vec::new();
 
     for file in manifest.regular_files() {
-        // Every path is validated before anything is opened. A Workshop
-        // manifest's names are attacker-authored, and this is the check that
-        // keeps them inside the install root.
         let safe = validate_path(&file.path)
             .unwrap_or_else(|e| panic!("the manifest named an unsafe path {:?}: {e}", file.path));
         let target = safe.resolve(root);
@@ -232,7 +203,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
         written_files.push((safe.as_str(), file.size, target));
     }
 
-    // --- the gate ---------------------------------------------------------
     println!("wrote {} files, {written_bytes} bytes", written_files.len());
     for (path, size, target) in &written_files {
         let actual = std::fs::metadata(target)
@@ -247,8 +217,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
         "the bytes written do not add up to the depot's size"
     );
 
-    // The content itself, not just its length. These two files are what depot
-    // 232257 contains, and their opening bytes are stable across builds.
     let whitelist = written_files
         .iter()
         .find(|(path, _, _)| path.ends_with("pure_server_whitelist.txt"))
@@ -266,7 +234,6 @@ async fn a_real_depot_downloads_and_lands_on_disk() {
         .expect("the script must have been installed");
     assert!(script.starts_with(b"#!/usr/bin/env python3"));
 
-    // Nothing may have been written outside the install root.
     for (path, _, target) in &written_files {
         assert!(
             target.starts_with(root),

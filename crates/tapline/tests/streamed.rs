@@ -1,22 +1,10 @@
-//! Streaming a Workshop item straight into an extractor.
-//!
-//! The claim: a Garry's Mod addon can be unpacked as it downloads, with the
-//! `.gma` never written to disk and peak memory bounded by the reorder window
-//! rather than the archive.
-//!
-//! ```sh
-//! cargo test -p tapline --test streamed -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
 use tapline::{Session, Window};
 use tapline_ids::{AppId, PublishedFileId};
 
-/// PAC3: a real addon, 348 files, 8.4 MB.
 const ITEM: PublishedFileId = PublishedFileId(104_691_717);
-/// Referenced by the item id, which is what actually identifies it.
 #[allow(dead_code)]
 const APP: AppId = AppId(4000);
 
@@ -96,14 +84,11 @@ async fn an_addon_extracts_while_it_downloads() {
     assert_eq!(files.len(), 348, "PAC3 has 348 files");
     assert_eq!(report.bytes_streamed, planned, "streamed less than planned");
 
-    // The point of the exercise: no archive was written.
     assert!(
         !dest.join("104691717.gma").exists(),
         "the .gma was written after all"
     );
 
-    // And the reorder buffer stayed inside the window, which is the memory
-    // bound the whole design rests on.
     assert!(
         report.peak_buffered <= Window::default().size,
         "buffered {} chunks, past the window of {}",
@@ -111,7 +96,6 @@ async fn an_addon_extracts_while_it_downloads() {
         Window::default().size
     );
 
-    // The files must be what the seeking extractor produces from the same item.
     let reference = scratch_root().join("streamed-reference");
     let _reference_scratch = Scratch(reference.clone());
     let _ = std::fs::remove_dir_all(&reference);

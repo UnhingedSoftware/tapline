@@ -1,14 +1,3 @@
-//! Against archives this crate did not write.
-//!
-//! The unit tests build ZIPs with the same understanding that reads them, which
-//! proves self-consistency and nothing about the format. These are built by
-//! Python's `zipfile`, an implementation with no connection to this one, so a
-//! misreading shows up rather than cancelling out.
-//!
-//! ```sh
-//! cargo test -p tapline-zip --test real_zip -- --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
@@ -35,7 +24,6 @@ fn scratch(name: &str) -> Scratch {
     Scratch(path)
 }
 
-/// Builds an archive with Python, or `None` if Python is not here.
 fn build(dir: &std::path::Path, script: &str) -> Option<Vec<u8>> {
     let archive = dir.join("made.zip");
     let program = format!("import zipfile, sys\nout = sys.argv[1]\n{script}\n",);
@@ -54,7 +42,6 @@ fn build(dir: &std::path::Path, script: &str) -> Option<Vec<u8>> {
     std::fs::read(&archive).ok()
 }
 
-/// Reads an archive the way the pipeline does: tail, plan, headers, finalize.
 fn read(raw: &[u8]) -> Vec<tapline_ext::ArchiveEntry> {
     let IndexLocation::Tail(want) = tapline_zip::index_location() else {
         panic!("a zip reads from the tail");
@@ -107,8 +94,6 @@ z.close()
     assert_eq!(contents(&raw, &entries[1]), b"tiny");
     assert_eq!(contents(&raw, &entries[2]), b"down here");
 
-    // The big one must actually have been deflated, or this proves nothing
-    // about the inflate path.
     assert_eq!(entries[0].compression, Compression::Deflate);
     assert!(entries[0].stored_size < entries[0].size);
     println!("all three entries match, including a deflated one");
@@ -138,9 +123,6 @@ z.close()
 
 #[test]
 fn an_end_record_behind_a_comment_is_still_found() {
-    // A comment sits after the end record, and may contain anything — including
-    // bytes that look like a signature. Scanning backwards finds the real one;
-    // scanning forwards would find a decoy inside the data or the comment.
     let dir = scratch("comment");
     let Some(raw) = build(
         &dir.0,
@@ -167,10 +149,6 @@ z.close()
 
 #[test]
 fn an_archive_with_extra_fields_lands_on_the_right_bytes() {
-    // Python writes extra fields into local headers that the central directory
-    // does not carry. A reader taking the data offset from the central record
-    // alone would be several bytes early on every entry, and would produce
-    // files that are wrong rather than missing.
     let dir = scratch("extra");
     let Some(raw) = build(
         &dir.0,
@@ -195,9 +173,6 @@ z.close()
 
 #[test]
 fn a_large_archive_keeps_its_directory_far_from_the_end() {
-    // The case that needs a second read: with enough entries the central
-    // directory begins before the tail window, so the reader must ask for it
-    // rather than read past what it was given.
     let dir = scratch("large");
     let Some(raw) = build(
         &dir.0,
@@ -219,8 +194,6 @@ z.close()
     let first = tapline_zip::plan(raw.get(start..).expect("tail"), start as u64).expect("plan");
 
     let entries = if first.entries.is_empty() && !first.needs.is_empty() {
-        // The directory was outside the window; fetch exactly what was asked
-        // for and read it.
         let (offset, len) = first.needs[0];
         println!("directory is {len} bytes at {offset}, outside a {want} byte tail");
         let directory = raw

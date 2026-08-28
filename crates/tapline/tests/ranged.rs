@@ -1,15 +1,8 @@
-//! Reading part of a Workshop item without downloading it.
-//!
-//! ```sh
-//! cargo test -p tapline --test ranged -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use tapline::Session;
 use tapline_ids::PublishedFileId;
 
-/// PAC3: 348 files in an 8.4 MB archive.
 const ITEM: PublishedFileId = PublishedFileId(104_691_717);
 
 #[tokio::test(flavor = "multi_thread")]
@@ -31,8 +24,6 @@ async fn the_index_can_be_read_before_the_file_is_downloaded() {
         .expect("open by range");
     println!("{} bytes in {} chunks", file.len(), file.chunk_count());
 
-    // The header and index live at the front of a GMAD, so one chunk is enough
-    // to learn every filename and size in the archive.
     let head = file.read(0, 64 * 1024).await.expect("read the head");
     let addon = tapline_gmad::parse_index(&head).expect("the index must parse");
 
@@ -51,7 +42,6 @@ async fn the_index_can_be_read_before_the_file_is_downloaded() {
         "the whole file was read to get the index"
     );
 
-    // Now what a filter would select, and what fetching only that would cost.
     let selected: Vec<(u64, u64)> = addon
         .entries
         .iter()
@@ -75,15 +65,12 @@ async fn the_index_can_be_read_before_the_file_is_downloaded() {
         "a selective read should cost less than the whole file"
     );
 
-    // And the bytes must actually be right.
     let pieces = file.read_many(&selected).await.expect("ranged read");
     assert_eq!(pieces.len(), selected.len());
     for (piece, (_, len)) in pieces.iter().zip(selected.iter()) {
         assert_eq!(piece.len() as u64, *len, "a range came back the wrong size");
     }
 
-    // Checked against the archive's own bytes for one entry, so this is not
-    // just self-consistent arithmetic.
     let whole = file.read(0, file.len()).await.expect("read all");
     for (index, (offset, len)) in selected.iter().enumerate().take(5) {
         let expected = whole
@@ -101,9 +88,6 @@ async fn the_index_can_be_read_before_the_file_is_downloaded() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_tail_can_be_read_first() {
-    // What a ZIP needs: its central directory is at the end, so a reader must
-    // be able to start there. Nothing about GMAD requires this; it is the
-    // capability that makes other containers possible.
     let mut session = Session::anonymous().await.expect("session");
     let details = session
         .workshop_details(&[ITEM])

@@ -1,20 +1,5 @@
-//! The round-trip gate, against a file Valve's own tooling wrote.
-//!
-//! The unit tests in this crate use a fixture I typed, which proves the writer
-//! agrees with my idea of Valve's layout. This one uses
-//! `appmanifest_896660.acf` exactly as steamcmd produced it while installing
-//! Valheim Dedicated Server on 2026-08-26 — so it proves the writer agrees with
-//! Valve.
-//!
-//! The distinction matters more than it sounds. tapline shares install
-//! directories with the real Steam client, steamcmd, LinuxGSM and every host
-//! panel that has ever grepped an appmanifest. A file that came back
-//! reformatted would still parse, and would still be a spurious diff for
-//! everyone watching those files for changes.
-
 use tapline_vdf::{Value, parse};
 
-/// steamcmd's own output, byte for byte.
 const REAL: &str = include_str!("fixtures/appmanifest_896660.acf");
 
 #[test]
@@ -36,14 +21,11 @@ fn the_fields_an_update_depends_on_are_readable() {
     assert_eq!(state.get_str("name"), Some("Valheim Dedicated Server"));
     assert_eq!(state.get_u64("buildid"), Some(21_981_590));
     assert_eq!(state.get_u64("SizeOnDisk"), Some(1_756_871_901));
-    // The directory the content actually lives in, which is not the app's name.
     assert_eq!(
         state.get_str("installdir"),
         Some("Valheim dedicated server")
     );
 
-    // The depot list is what a delta update diffs against: same depot, different
-    // manifest means refetch only what changed.
     let depots = state
         .get_object("InstalledDepots")
         .expect("an InstalledDepots block");
@@ -56,8 +38,6 @@ fn the_fields_an_update_depends_on_are_readable() {
 
 #[test]
 fn editing_one_field_leaves_every_other_byte_alone() {
-    // An update rewrites the fields that changed and nothing else. Anything more
-    // is a diff for everyone watching these files.
     let mut parsed = parse(REAL).expect("must parse");
     let mut state = parsed
         .get_object("AppState")
@@ -76,8 +56,6 @@ fn editing_one_field_leaves_every_other_byte_alone() {
 
 #[test]
 fn empty_blocks_survive() {
-    // `UserConfig` and `MountedConfig` are empty in a fresh install and must not
-    // disappear on rewrite — the Steam client expects them.
     let parsed = parse(REAL).expect("must parse");
     let state = parsed.get_object("AppState").expect("AppState");
 

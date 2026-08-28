@@ -1,14 +1,7 @@
-//! Searching a real Workshop.
-//!
-//! ```sh
-//! cargo test --release -p tapline --test browse -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline::{AppId, BrowseQuery, BrowseSort, Session};
 
-/// Garry's Mod, whose Workshop is large enough that paging is real.
 const APP: AppId = AppId(4000);
 
 #[tokio::test(flavor = "multi_thread")]
@@ -53,8 +46,6 @@ async fn an_anonymous_session_can_search() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_cursor_walks_forward() {
-    // The property that makes paging usable: a second page is different items,
-    // not the same ones again. An offset-based pager silently repeats here.
     let mut session = Session::anonymous().await.expect("session");
     let query = BrowseQuery {
         app: APP,
@@ -121,8 +112,6 @@ async fn searching_by_text_finds_the_text() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_search_result_downloads_without_a_second_lookup() {
-    // The point of embedding WorkshopItem: what a search returns is what a
-    // download takes. If this needs a GetDetails in between, the type is wrong.
     let root = std::env::var("TAPLINE_TEST_DIR")
         .unwrap_or_else(|_| format!("{}/.cache/tapline-test", std::env::var("HOME").unwrap()));
     let dir = std::path::PathBuf::from(root).join("browse-download");
@@ -140,7 +129,6 @@ async fn a_search_result_downloads_without_a_second_lookup() {
         .await
         .expect("search");
 
-    // Something small, so the test is about the handoff and not the bandwidth.
     let found = page
         .items
         .iter()
@@ -170,16 +158,11 @@ async fn a_search_result_downloads_without_a_second_lookup() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Wallpaper Engine, whose tag vocabulary has the overlapping groups this is about.
 const TAGGED_APP: AppId = AppId(431_960);
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn tag_groups_mean_any_within_a_group_and_all_across_them() {
-    // The claim is about Steam's behaviour, not tapline's field mapping, so it
-    // can only be checked against Steam. Counted rather than compared item by
-    // item: totals are stable between two calls a second apart, and the whole
-    // point is a set relation.
     let mut session = Session::anonymous().await.expect("session");
 
     let mut count = async |query: BrowseQuery| -> u32 {
@@ -216,8 +199,6 @@ async fn tag_groups_mean_any_within_a_group_and_all_across_them() {
         "(Scene|Video)&Anime {scene_or_video_and_anime}, any {any_of_the_three}, all {all_of_the_three}"
     );
 
-    // Flat tags cannot express this: nothing is both Scene and Video, so the
-    // all-form is empty, and the any-form is the whole of three tags.
     assert!(
         scene_or_video_and_anime > all_of_the_three,
         "groups returned no more than requiring every tag"
@@ -231,8 +212,6 @@ async fn tag_groups_mean_any_within_a_group_and_all_across_them() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn one_group_of_one_tag_is_the_same_search_as_a_required_tag() {
-    // The degenerate case, which is where a wrong field number hides: a group
-    // sent as a required tag would pass every other assertion here.
     let mut session = Session::anonymous().await.expect("session");
     let base = BrowseQuery {
         app: TAGGED_APP,

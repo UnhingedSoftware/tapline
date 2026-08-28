@@ -1,13 +1,3 @@
-//! An exploratory probe, not a gate.
-//!
-//! Dumps what a PICS product-info response actually contains so the parser can
-//! be written against real bytes rather than against a guess. Kept because
-//! re-running it is how the next surprise gets found.
-//!
-//! ```sh
-//! cargo test -p tapline-rt-tokio --test explore_pics -- --ignored --nocapture
-//! ```
-
 use tapline_net::{EMsg, Frame, Session};
 use tapline_proto::steammessages_base::CMsgProtoBufHeader;
 use tapline_proto::steammessages_clientserver_appinfo::{
@@ -18,7 +8,6 @@ use tapline_proto::steammessages_clientserver_appinfo::{
 use tapline_rt_tokio::{CmTransport, cm_list};
 use tapline_wire::Message;
 
-/// Team Fortress 2 Dedicated Server: anonymous-accessible, and small.
 const APP: u32 = 232_250;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -34,7 +23,6 @@ async fn dump_a_real_pics_product_info_response() {
     let outcome = session.logon_anonymous(0).await.expect("logon");
     println!("logged on, cell {}", outcome.cell_id);
 
-    // Step one: an access token. Many apps refuse product info without it.
     let token_request = CMsgClientPICSAccessTokenRequest {
         appids: vec![APP],
         packageids: Vec::new(),
@@ -67,7 +55,6 @@ async fn dump_a_real_pics_product_info_response() {
         .and_then(|t| t.access_token);
     println!("token for {APP}: {token:?}");
 
-    // Step two: the product info itself.
     let info_request = CMsgClientPICSProductInfoRequest {
         apps: vec![c_msg_client_pics_product_info_request::AppInfo {
             appid: Some(APP),
@@ -134,7 +121,6 @@ async fn dump_a_real_pics_product_info_response() {
         )
     );
 
-    // Write it out so the parser can be developed and tested against it.
     let path = std::env::temp_dir().join(format!("pics_{APP}.bin"));
     std::fs::write(&path, buffer).expect("write the dump");
     println!("wrote {}", path.display());
@@ -146,7 +132,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A hex + ASCII dump, which is how the format's shape becomes visible.
 fn dump(bytes: &[u8]) -> String {
     let mut out = String::new();
     for (index, chunk) in bytes.chunks(16).enumerate() {

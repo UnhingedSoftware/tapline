@@ -1,17 +1,5 @@
-//! Identifying what a Workshop item is, without downloading it.
-//!
-//! ```sh
-//! cargo test -p tapline-pipe --test probe -- --ignored --nocapture
-//! ```
-//!
-//! A container is identified by its first few bytes, and a ranged read can
-//! fetch exactly those. That is the cheapest possible use of the random-access
-//! path and a good check that it works: if the offset arithmetic is wrong, four
-//! bytes from offset zero is where it shows.
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-/// A known Garry's Mod addon: 8.7 MB, and a GMAD.
 const APP: u32 = 4_000;
 const ITEM: u64 = 104_691_717;
 
@@ -35,7 +23,6 @@ async fn four_bytes_identify_a_container() {
 
     assert_eq!(&head, b"GMAD", "wrong magic for a Garry's Mod addon");
 
-    // The point of the exercise: four bytes cost one chunk, not the file.
     let cost = file.cost_of(&[(0, 4)]);
     assert!(
         cost < file.len() / 4,

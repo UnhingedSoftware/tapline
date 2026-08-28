@@ -1,18 +1,3 @@
-//! Find and dump a `VSZ` chunk.
-//!
-//! Written after a full Valheim install failed with `expected a VZ container,
-//! found magic "VS"`. An earlier probe sampled three chunks from the smallest
-//! depot and saw `VZ` every time, which was a real measurement of an
-//! unrepresentative sample — the conclusion drawn from it ("nothing serves the
-//! zstd container") was wrong.
-//!
-//! This one scans until it finds one, so the answer comes from the depot rather
-//! than from its first few chunks.
-//!
-//! ```sh
-//! cargo test -p tapline-rt-tokio --test explore_vsz -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline_ids::AppId;
@@ -31,7 +16,6 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
 use tapline_rt_tokio::{CmTransport, HttpClient, cm_list};
 use tapline_wire::Message;
 
-/// Valheim Dedicated Server, whose install turned one up.
 const APP: AppId = AppId(896_660);
 
 #[tokio::test(flavor = "multi_thread")]
@@ -131,8 +115,6 @@ async fn find_a_vsz_chunk() {
         let (chunks, _) = manifest.distinct_chunks();
         println!("depot {} — {} chunks", depot.id, chunks.len());
 
-        // Sample widely rather than taking the head: the head is what misled
-        // the first probe.
         let step = (chunks.len() / 40).max(1);
         for chunk in chunks.iter().step_by(step).take(40) {
             let response = client

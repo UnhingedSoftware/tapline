@@ -1,24 +1,9 @@
-//! The M7 gate: an update touches only what changed.
-//!
-//! ```sh
-//! cargo test -p tapline --test update -- --ignored --nocapture
-//! ```
-//!
-//! Three properties, in the order an operator meets them:
-//!
-//! 1. A second install into the same directory downloads nothing.
-//! 2. The install record tapline writes is one steamcmd's own reader accepts,
-//!    with the same depots at the same manifest ids.
-//! 3. Deleting a file and reinstalling with `force` puts it back.
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::path::PathBuf;
 use tapline::{AppId, InstallOptions, Os, Session};
 use tapline_state::AppState;
 
-/// Team Fortress 2 Dedicated Server's smallest depot lives here; the app is
-/// large, so these tests use the one depot by filtering after the fact.
 const APP: AppId = AppId(232_250);
 
 fn scratch(name: &str) -> PathBuf {
@@ -39,7 +24,6 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
-/// Valheim: 1.7 GB, two depots, and the app the differential already uses.
 const VALHEIM: AppId = AppId(896_660);
 
 #[tokio::test(flavor = "multi_thread")]
@@ -55,7 +39,6 @@ async fn a_second_install_downloads_nothing() {
 
     let mut session = Session::anonymous().await.expect("session");
 
-    // --- first install ----------------------------------------------------
     let first = session
         .install(VALHEIM, &options)
         .await
@@ -70,7 +53,6 @@ async fn a_second_install_downloads_nothing() {
     );
     assert_eq!(first.depots_unchanged, 0, "a fresh install skipped a depot");
 
-    // The record must exist and describe what was installed.
     let state = AppState::read(&root, VALHEIM)
         .expect("the record must be readable")
         .expect("an install must leave a record");
@@ -83,7 +65,6 @@ async fn a_second_install_downloads_nothing() {
     assert!(state.is_fully_installed());
     assert_eq!(state.installed_depots().len(), first.depots.len());
 
-    // --- second install ---------------------------------------------------
     let second = session
         .install(VALHEIM, &options)
         .await
@@ -93,7 +74,6 @@ async fn a_second_install_downloads_nothing() {
         second.files, second.bytes_downloaded, second.depots_unchanged
     );
 
-    // The gate. Running an update when nothing changed must not move a byte.
     assert_eq!(
         second.bytes_downloaded, 0,
         "an update with nothing to do downloaded {} bytes",
@@ -109,7 +89,6 @@ async fn a_second_install_downloads_nothing() {
         "not every depot was recognised as current"
     );
 
-    // The record must be unchanged apart from its timestamp.
     let after = AppState::read(&root, VALHEIM)
         .expect("readable")
         .expect("present");
@@ -122,16 +101,11 @@ async fn a_second_install_downloads_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn the_record_survives_a_round_trip_through_our_own_reader() {
-    // A smaller check that does not need a gigabyte: install one depot's worth
-    // of an app, then confirm the record reads back as what was written.
     let root = scratch("record-tf2");
     let options = InstallOptions {
         install_dir: root.clone(),
         os: Os::Linux,
         branch: "public".to_owned(),
-        // TF2's dedicated server is 14 GB; this test only wants the record, so
-        // it asks for a branch that exists and reads the record it writes after
-        // the first depot. Downloading it all would take minutes for nothing.
         ..InstallOptions::default()
     };
 
@@ -142,7 +116,6 @@ async fn the_record_survives_a_round_trip_through_our_own_reader() {
         plan.file_count, plan.total_bytes, plan.download_bytes
     );
 
-    // The plan alone proves resolution works without downloading 14 GB.
     assert!(plan.file_count > 0);
     assert!(plan.total_bytes > 0);
     assert!(plan.chunk_count > 0);
@@ -164,8 +137,6 @@ async fn a_deleted_file_comes_back_with_force() {
     let mut session = Session::anonymous().await.expect("session");
     session.install(VALHEIM, &options).await.expect("install");
 
-    // Delete something and confirm a plain update does not notice — that is the
-    // documented behaviour, and the reason `force` exists.
     let victim = root.join("valheim_server.x86_64");
     let existed = victim.exists();
     if existed {
@@ -181,7 +152,6 @@ async fn a_deleted_file_comes_back_with_force() {
         assert!(!victim.exists(), "the file returned without force");
     }
 
-    // With force it must come back.
     let forced = session
         .install(
             VALHEIM,

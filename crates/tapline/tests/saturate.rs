@@ -1,19 +1,3 @@
-//! Is a single install's throughput bounded by one connection pool?
-//!
-//! A single install tops out around 1.45 Gb/s on a 2.5 Gb link. Two pools in
-//! this one process reach 1.83 Gb/s between them, which rules out the link, the
-//! CPU and any per-client cap Steam might apply, and points the finger back at
-//! us. This is the experiment that says so, kept because the conclusion is easy
-//! to lose and expensive to rediscover.
-//!
-//! Note what it does *not* show: each `Shared` carries its own `HttpClient`, so
-//! what differs between the two arms is the connection pool, not the CM
-//! session. Chunk fetching never touches the session.
-//!
-//! ```sh
-//! TAPLINE_LIVE_BIG=1 cargo test -p tapline --test saturate -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline::{AppId, InstallOptions, Session, Shared};
@@ -38,7 +22,6 @@ async fn two_connection_pools_beat_one() {
         return;
     }
 
-    // One session, for the baseline.
     let start = std::time::Instant::now();
     let mut session = Session::anonymous_shared(Shared::new(48))
         .await
@@ -55,9 +38,6 @@ async fn two_connection_pools_beat_one() {
         WIRE * 8.0 / one / 1e9
     );
 
-    // Two pools, same process, each its own Shared so neither is throttled by
-    // the other's budget. Different directories, same app: if the cap were the
-    // process, the link or Steam, this would not go faster. It does.
     let start = std::time::Instant::now();
     let a = tokio::spawn(async move {
         let mut s = Session::anonymous_shared(Shared::new(48)).await.expect("a");

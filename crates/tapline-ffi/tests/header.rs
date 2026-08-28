@@ -1,27 +1,8 @@
-//! The header and the Rust signatures must agree.
-//!
-//! A C header is the part of the interface a consumer actually reads, and it is
-//! the part nothing checks. Change a Rust `extern "C"` signature, forget the
-//! header, and the next C or koffi caller passes the old argument list — which
-//! is not a compile error anywhere, it is a corrupted stack at run time.
-//!
-//! Two halves, and both are needed:
-//!
-//! * assigning each function to an explicitly typed function pointer, so a
-//!   changed Rust signature fails to compile here;
-//! * parsing the header and comparing its parameter counts to the same list,
-//!   so a Rust change that was not mirrored into the header fails the test.
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::ffi::c_char;
 use tapline_ffi::TaplineJob;
 
-/// Every exported function, with the arity the header must declare.
-///
-/// The type ascriptions are the real check: if a Rust signature changes, this
-/// file stops compiling, and whoever changed it is standing right next to the
-/// header they also need to change.
 fn expected() -> Vec<(&'static str, usize)> {
     let install: unsafe extern "C" fn(
         u32,
@@ -70,8 +51,6 @@ fn expected() -> Vec<(&'static str, usize)> {
     let total: extern "C" fn() -> u32 = tapline_ffi::tapline_total_concurrency;
     let available: extern "C" fn() -> u32 = tapline_ffi::tapline_available_concurrency;
 
-    // Referenced so the bindings above are not dead code; the ascriptions are
-    // what this function exists for.
     let _ = (
         install, plan, workshop, qr_login, next, cancel, free, last_error, version, set_total,
         total, available,
@@ -95,10 +74,7 @@ fn expected() -> Vec<(&'static str, usize)> {
     ]
 }
 
-/// The declared parameter count for `name`, read out of the header.
 fn header_arity(header: &str, name: &str) -> Option<usize> {
-    // Find the declaration rather than a mention in a comment: a declaration is
-    // the name immediately followed by `(`.
     let needle = format!("{name}(");
     let start = header.find(&needle)?;
     let open = start + needle.len();
@@ -127,14 +103,11 @@ fn the_header_declares_every_exported_function() {
 
 #[test]
 fn the_header_declares_nothing_that_does_not_exist() {
-    // The other direction: a function removed from Rust but left in the header
-    // is a consumer calling into nothing.
     let header = include_str!("../include/tapline.h");
     let known: Vec<&str> = expected().into_iter().map(|(name, _)| name).collect();
 
     for line in header.lines() {
         let line = line.trim();
-        // Declarations only: they end in `;` and mention a tapline_ name.
         if !line.ends_with(';') || !line.contains("tapline_") {
             continue;
         }
@@ -156,8 +129,6 @@ fn the_header_declares_nothing_that_does_not_exist() {
 
 #[test]
 fn the_return_codes_match_the_rust_constants() {
-    // These are copied by hand into the header, and a consumer branching on the
-    // wrong number reads "done" as "buffer too small".
     let header = include_str!("../include/tapline.h");
     for (name, value) in [
         ("TAPLINE_OK", tapline_ffi::TAPLINE_OK),

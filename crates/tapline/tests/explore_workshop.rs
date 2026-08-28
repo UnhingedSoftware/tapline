@@ -1,21 +1,3 @@
-//! A probe for Workshop items: which path does Steam actually use?
-//!
-//! A published file reaches a client one of two ways, and the details response
-//! is what says which:
-//!
-//! * **SteamPipe UGC** — `hcontent_file` is a manifest id in the app's workshop
-//!   depot, and the item downloads exactly like depot content.
-//! * **Legacy UFS** — `file_url` is a plain HTTPS blob.
-//!
-//! Which one dominates decides how much of M8 is new code and how much is the
-//! depot path already written. This probe answers that from real items rather
-//! than from a description — the same discipline that caught the zstd container
-//! being the majority when a three-chunk sample said it did not exist.
-//!
-//! ```sh
-//! cargo test -p tapline-rt-tokio --test explore_workshop -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline_ids::AppId;
@@ -25,12 +7,6 @@ use tapline_proto::steammessages_publishedfile_steamclient::{
 };
 use tapline_rt_tokio::{CmTransport, cm_list};
 
-/// A spread of real, popular Workshop items across apps that matter here.
-///
-/// Garry's Mod and Rust both host dedicated servers that load Workshop content,
-/// which is the case tapline exists to serve.
-/// Apps whose dedicated servers load Workshop content — the case tapline
-/// exists to serve.
 const APPS: &[(u32, &str)] = &[
     (4000, "Garry's Mod"),
     (107_410, "Arma 3"),
@@ -47,15 +23,10 @@ async fn which_delivery_path_do_real_items_use() {
     let mut session = Session::new(transport);
     session.logon_anonymous(0).await.expect("logon");
 
-    // Ask Steam which items exist rather than typing ids from memory. Two of
-    // four hand-picked ids came back FileNotFound and AccessDenied, and one was
-    // an Arma 3 addon labelled as a CS:GO map — the data corrected the guess.
     let mut item_ids = Vec::new();
     for (appid, name) in APPS {
         let query = session
             .call(&CPublishedFile_QueryFiles_Request {
-                // 1 = ranked by vote, which surfaces items that really exist and
-                // are really subscribed to.
                 query_type: Some(1),
                 page: Some(1),
                 numperpage: Some(4),
@@ -116,8 +87,6 @@ async fn which_delivery_path_do_real_items_use() {
         println!("  file_url         {:?}", details.file_url);
         println!("  children         {}", details.children.len());
 
-        // hcontent_file non-zero means SteamPipe UGC: a manifest id in the
-        // app's workshop depot.
         let has_manifest = details.hcontent_file.is_some_and(|h| h != 0);
         let has_url = details.file_url.as_deref().is_some_and(|u| !u.is_empty());
 
@@ -143,9 +112,6 @@ async fn which_delivery_path_do_real_items_use() {
 
     println!("SteamPipe UGC: {steampipe}, legacy UFS: {legacy}, neither: {neither}");
 
-    // Now the other half: where does the content live? The app's PICS document
-    // names a workshop depot, and without it a SteamPipe item has no depot to
-    // fetch a manifest from.
     for app in [AppId(4000), AppId(730)] {
         match tapline_pics::product_info(&mut session, app).await {
             Ok(info) => println!(

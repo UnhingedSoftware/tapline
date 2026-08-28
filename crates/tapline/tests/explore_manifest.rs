@@ -1,14 +1,3 @@
-//! An exploratory probe for the depot content path, not a gate.
-//!
-//! Gets a depot key, a CDN host list and a manifest request code, then fetches a
-//! real manifest and dumps its first bytes — so the manifest parser can be
-//! written against the format Steam actually serves rather than a description
-//! of it.
-//!
-//! ```sh
-//! cargo test -p tapline-rt-tokio --test explore_manifest -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline_io::{Fetch, Request};
@@ -24,7 +13,6 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
 use tapline_rt_tokio::{CmTransport, HttpClient, cm_list};
 use tapline_wire::Message;
 
-/// TF2 Dedicated Server, and its smallest depot: 9,989 bytes installed.
 const APP: u32 = 232_250;
 const DEPOT: u32 = 232_257;
 
@@ -39,7 +27,6 @@ async fn fetch_a_real_manifest_and_dump_it() {
     let outcome = session.logon_anonymous(0).await.expect("logon");
     println!("logged on, cell {}", outcome.cell_id);
 
-    // --- the manifest id, from PICS -------------------------------------
     let info = tapline_pics::product_info(&mut session, tapline_ids::AppId(APP))
         .await
         .expect("PICS");
@@ -54,9 +41,6 @@ async fn fetch_a_real_manifest_and_dump_it() {
         .expect("the small depot");
     println!("depot {} manifest {}", depot.id, depot.manifest);
 
-    // --- the depot key ---------------------------------------------------
-    // Steam grants this only for content the session is entitled to, which is
-    // the entitlement check tapline relies on rather than reimplements.
     let job = session.next_job_id();
     session
         .send(&Frame::new(
@@ -84,7 +68,6 @@ async fn fetch_a_real_manifest_and_dump_it() {
     );
     assert_eq!(key_response.eresult, Some(1), "the depot key was refused");
 
-    // --- the CDN host list -----------------------------------------------
     let servers_response = session
         .call(&CContentServerDirectory_GetServersForSteamPipe_Request {
             cell_id: Some(outcome.cell_id),
@@ -108,8 +91,6 @@ async fn fetch_a_real_manifest_and_dump_it() {
         .and_then(|s| s.host.clone())
         .expect("a CDN host");
 
-    // --- the manifest request code ---------------------------------------
-    // Without this, a modern manifest cannot be fetched at all.
     let code_response = session
         .call(&CContentServerDirectory_GetManifestRequestCode_Request {
             app_id: Some(APP),
@@ -125,7 +106,6 @@ async fn fetch_a_real_manifest_and_dump_it() {
         .expect("a manifest request code");
     println!("manifest request code: {code}");
 
-    // --- the manifest itself ---------------------------------------------
     let url = format!(
         "https://{host}/depot/{DEPOT}/manifest/{}/5/{code}",
         depot.manifest

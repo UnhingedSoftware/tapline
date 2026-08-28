@@ -1,13 +1,3 @@
-//! The M5 gate, live: fetch a real manifest and decrypt its filenames.
-//!
-//! ```sh
-//! cargo test -p tapline-manifest -- --ignored --nocapture
-//! ```
-//!
-//! Anonymous session throughout. The depot key comes from Steam and is granted
-//! only for content the session may have, which is the entitlement check tapline
-//! relies on rather than reimplements.
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline_ids::AppId;
@@ -27,7 +17,6 @@ use tapline_rt_tokio::{CmTransport, HttpClient, cm_list};
 use tapline_wire::Message;
 
 const APP: AppId = AppId(232_250);
-/// The smallest depot in the app: 9,989 bytes installed.
 const SMALL_DEPOT: u32 = 232_257;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -53,7 +42,6 @@ async fn a_real_manifest_decrypts_into_real_paths() {
         .find(|d| d.id.get() == SMALL_DEPOT)
         .expect("the small depot");
 
-    // --- depot key --------------------------------------------------------
     let job = session.next_job_id();
     session
         .send(&Frame::new(
@@ -84,7 +72,6 @@ async fn a_real_manifest_decrypts_into_real_paths() {
         .try_into()
         .expect("a 32-byte AES key");
 
-    // --- manifest ---------------------------------------------------------
     let cdn = session
         .call(&CContentServerDirectory_GetServersForSteamPipe_Request {
             cell_id: Some(outcome.cell_id),
@@ -122,7 +109,6 @@ async fn a_real_manifest_decrypts_into_real_paths() {
         .expect("manifest fetch")
         .body;
 
-    // --- the gate ---------------------------------------------------------
     let manifest = Manifest::parse(&body, Some(&key)).expect("the manifest must parse and decrypt");
 
     println!(
@@ -146,9 +132,6 @@ async fn a_real_manifest_decrypts_into_real_paths() {
     assert_eq!(manifest.id, depot.manifest);
     assert!(!manifest.files.is_empty());
 
-    // Decryption worked if the paths look like paths. A wrong key produces
-    // either an error or bytes that are not UTF-8, so reaching here with
-    // plausible names is the real assertion.
     let has_a_real_looking_path = manifest
         .files
         .iter()
@@ -164,7 +147,6 @@ async fn a_real_manifest_decrypts_into_real_paths() {
             .collect::<Vec<_>>()
     );
 
-    // Every path must be printable — a mis-decryption yields control bytes.
     for file in &manifest.files {
         assert!(
             file.path.chars().all(|c| !c.is_control()),
@@ -173,7 +155,6 @@ async fn a_real_manifest_decrypts_into_real_paths() {
         );
     }
 
-    // The sizes PICS and the manifest report must agree.
     assert_eq!(
         manifest.total_size, depot.size,
         "PICS and the manifest disagree about the depot's size"

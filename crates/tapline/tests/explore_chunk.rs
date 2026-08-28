@@ -1,16 +1,3 @@
-//! An exploratory probe for the chunk container, not a gate.
-//!
-//! Fetches one real chunk, decrypts it with the depot key, and dumps what is
-//! inside — so the `VZ`/`VSZ` container can be implemented against the bytes
-//! Steam actually serves. The headers around the compressed payload are
-//! undocumented, which is the whole reason those two crates were deferred out of
-//! M1: writing them earlier would have meant inventing a format and testing it
-//! against my own invention.
-//!
-//! ```sh
-//! cargo test -p tapline-rt-tokio --test explore_chunk -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use tapline_ids::AppId;
@@ -29,8 +16,6 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
 use tapline_rt_tokio::{CmTransport, HttpClient, cm_list};
 use tapline_wire::Message;
 
-/// Overridable so the probe can be pointed at a newer app, which is how the
-/// question "does anything actually serve the zstd container?" gets answered.
 fn target() -> (AppId, Option<u32>) {
     let app = std::env::var("TAPLINE_PROBE_APP")
         .ok()
@@ -61,8 +46,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
         branch: "public".to_owned(),
         include_dlc: false,
     });
-    // Smallest first: one chunk is enough to read a container header, and the
-    // smallest depot has the smallest manifest to fetch on the way there.
     candidates.sort_by_key(|d| d.size);
     let depot = match wanted_depot {
         Some(id) => candidates.into_iter().find(|d| d.id.get() == id),
@@ -72,7 +55,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
     let depot_id = depot.id.get();
     println!("app {app_id} depot {depot_id} — {} bytes", depot.size);
 
-    // Depot key.
     let job = session.next_job_id();
     session
         .send(&Frame::new(
@@ -104,7 +86,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
         .try_into()
         .expect("32 bytes");
 
-    // CDN host and manifest.
     let cdn = session
         .call(&CContentServerDirectory_GetServersForSteamPipe_Request {
             cell_id: Some(outcome.cell_id),
@@ -146,7 +127,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
         .body;
     let manifest = Manifest::parse(&manifest_bytes, Some(&key)).expect("manifest");
 
-    // --- the chunks ------------------------------------------------------
     let (chunks, _) = manifest.distinct_chunks();
     println!("{} distinct chunks", chunks.len());
 
@@ -178,7 +158,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
             dump(response.body.get(..32).unwrap_or(&response.body))
         );
 
-        // Content encryption: plain IV, no HMAC.
         let plain = tapline_crypto::decrypt_content(&key, &response.body)
             .expect("the chunk must decrypt with the depot key");
         println!("  decrypted to {} bytes", plain.len());
@@ -195,7 +174,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
             )
         );
 
-        // What container is it? The first two bytes are the tell.
         let magic = plain.get(..2).unwrap_or_default();
         println!(
             "  container magic: {magic:?} = {:?}",
@@ -206,7 +184,6 @@ async fn fetch_a_real_chunk_and_dump_its_container() {
         std::fs::write(&path, &plain).expect("write");
         println!("  wrote {} ({} bytes)", path.display(), plain.len());
 
-        // And the encrypted form, since the pipeline has to handle that shape.
         let enc_path = std::env::temp_dir().join(format!("chunk_{}.enc", chunk.id_hex()));
         std::fs::write(&enc_path, &response.body).expect("write");
     }

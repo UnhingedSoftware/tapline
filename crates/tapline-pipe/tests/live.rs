@@ -1,15 +1,8 @@
-//! The chain, against a real Workshop item.
-//!
-//! ```sh
-//! cargo test -p tapline-pipe --test live -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
 use tapline::Session;
 
-/// PAC3: 348 files, 8.4 MB, most of them under `lua/`.
 const ITEM: u64 = 104_691_717;
 const APP: u32 = 4000;
 
@@ -46,7 +39,6 @@ async fn a_chain_streams_into_a_zip_without_the_archive() {
 
     let zip = root.join("out.zip");
 
-    // No session: the pool provides one and takes it back.
     let outcome = tapline_pipe::workshop(APP, ITEM)
         .gma()
         .zip(zip.to_string_lossy())
@@ -63,7 +55,6 @@ async fn a_chain_streams_into_a_zip_without_the_archive() {
 
     assert!(zip.is_file(), "the zip was not written");
 
-    // The archive itself never existed: that is the point of streaming.
     let stray: Vec<_> = std::fs::read_dir(&root)
         .expect("read root")
         .filter_map(Result::ok)
@@ -90,7 +81,6 @@ async fn a_filter_selects_a_subset() {
     let _scratch = Scratch(root.clone());
     std::fs::create_dir_all(&root).expect("mkdir");
 
-    // The manual path, on a session the caller owns.
     let mut session = Session::anonymous().await.expect("session");
     let outcome = tapline_pipe::workshop(APP, ITEM)
         .gma()
@@ -116,8 +106,6 @@ async fn a_filter_selects_a_subset() {
         "materials/ was written despite the filter"
     );
 
-    // The point of reading by range: a filter now stops paying for what it
-    // discards. The whole archive is 3.17 MB compressed; lua/** is a fraction.
     assert!(
         outcome.bytes_downloaded < 2_000_000,
         "a filtered run fetched {} bytes, which is most of the archive",
@@ -132,8 +120,6 @@ async fn a_filter_selects_a_subset() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn concurrent_chains_do_not_wait_on_each_other() {
-    // The reason the pool exists. Three chains at once, none of them holding a
-    // session the others need, all sharing one chunk budget.
     let roots: Vec<PathBuf> = (0..3).map(|i| scratch(&format!("concurrent{i}"))).collect();
     let _guards: Vec<Scratch> = roots.iter().cloned().map(Scratch).collect();
     for root in &roots {
@@ -158,7 +144,6 @@ async fn concurrent_chains_do_not_wait_on_each_other() {
         );
     }
 
-    // And the pool kept the sessions rather than dropping them.
     let idle = tapline::SessionPool::shared().idle_count();
     println!(
         "three chains in {:.2}s, {idle} sessions kept",
@@ -167,7 +152,6 @@ async fn concurrent_chains_do_not_wait_on_each_other() {
     assert!(idle > 0, "no session was returned to the pool");
 }
 
-/// Joins futures without pulling in a futures crate for one test.
 async fn futures_lite_join<F, T>(futures: impl Iterator<Item = F>) -> Vec<T>
 where
     F: std::future::Future<Output = T> + Send + 'static,
@@ -184,8 +168,6 @@ where
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn an_archive_can_be_listed_without_downloading_it() {
-    // The question this answers: what is in this addon? Without paying for the
-    // addon to find out.
     let listing = tapline_pipe::workshop(APP, ITEM)
         .gma()
         .list()
@@ -206,12 +188,10 @@ async fn an_archive_can_be_listed_without_downloading_it() {
         listing.archive_bytes
     );
 
-    // Entries carry what a selective read needs.
     let first = listing.entries.first().expect("an entry");
     assert!(!first.path.is_empty());
     assert!(first.size > 0);
 
-    // With no filter, everything is selected and costs the whole archive.
     assert_eq!(listing.selected.len(), listing.entries.len());
     assert_eq!(listing.selected_bytes, listing.total_bytes);
 }
@@ -242,7 +222,6 @@ async fn a_listing_prices_a_filter_before_running_it() {
         listing.selected_bytes < listing.total_bytes,
         "the filter does not reduce what would be fetched"
     );
-    // Every selected entry actually matches.
     for entry in &listing.selected {
         assert!(
             entry.path.starts_with("lua/"),
@@ -255,22 +234,12 @@ async fn a_listing_prices_a_filter_before_running_it() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn named_files_can_be_taken_out_of_an_archive() {
-    // List, choose, fetch just those. The workflow the listing exists for.
     let listing = tapline_pipe::workshop(APP, ITEM)
         .gma()
         .list()
         .await
         .expect("list");
 
-    // Three real entries, chosen from what the archive actually holds — and
-    // deliberately NOT the first three.
-    //
-    // A sink resolves an entry's name by the index it is handed. This test used
-    // to take the first three .lua files, which sit at positions 0, 1 and 2, so
-    // the position within the selection and the position within the archive
-    // agreed and a bug that confused the two was invisible. It was real: a pick
-    // wrote the right bytes under a different entry's name. Spread the choice
-    // across the archive so the two disagree.
     let lua: Vec<String> = listing
         .entries
         .iter()
@@ -309,7 +278,6 @@ async fn named_files_can_be_taken_out_of_an_archive() {
         listing.total_bytes
     );
 
-    // Exactly those three, and nothing else.
     let mut written = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {

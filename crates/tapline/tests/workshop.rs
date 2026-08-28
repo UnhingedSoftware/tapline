@@ -1,21 +1,8 @@
-//! The M8 gate: download a real Workshop item, and match steamcmd on it.
-//!
-//! ```sh
-//! cargo test -p tapline --test workshop -- --ignored --nocapture
-//! ```
-//!
-//! Workshop content is the case `tapline-fs` exists for. Anyone can publish an
-//! item and its manifest names the paths tapline creates, so these tests assert
-//! not just that the content arrives but that every path stayed inside the
-//! install directory.
-
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::path::PathBuf;
 use tapline::{AppId, InstallOptions, Os, PublishedFileId, Session, WorkshopContent};
 
-/// Garry's Mod, whose dedicated servers load Workshop addons — the case this
-/// milestone exists to serve.
 const GMOD: AppId = AppId(4000);
 
 fn scratch(name: &str) -> PathBuf {
@@ -36,11 +23,6 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
-/// Asks Steam for real item ids rather than typing them from memory.
-///
-/// Four of four hand-picked ids in an earlier probe were wrong in some way —
-/// two did not exist, one was mislabelled, one was a screenshot. Steam knows
-/// which items are real.
 async fn some_real_items(session: &mut Session, app: AppId, count: u32) -> Vec<PublishedFileId> {
     use tapline_proto::steammessages_publishedfile_steamclient::CPublishedFile_QueryFiles_Request;
 
@@ -83,8 +65,6 @@ async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
         let item = match outcome {
             Ok(item) => item,
             Err(error) => {
-                // Reported, not hidden: an item that exists but has nothing an
-                // anonymous session may fetch is worth saying out loud.
                 println!("  skipped: {error}");
                 continue;
             }
@@ -102,7 +82,6 @@ async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
             }
         );
 
-        // Only download something small enough to be quick.
         if item.size == 0 || item.size > 32 * 1024 * 1024 {
             continue;
         }
@@ -128,7 +107,6 @@ async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
                     item.id
                 );
 
-                // The property that matters most: nothing escaped.
                 let mut files = 0;
                 let mut stack = vec![item_dir.clone()];
                 while let Some(dir) = stack.pop() {
@@ -152,8 +130,6 @@ async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
                 );
             }
             Err(error) => {
-                // A depot key refused for an anonymous session is a legitimate
-                // outcome for some apps, and not a test failure.
                 println!("    could not download: {error}");
             }
         }
@@ -174,8 +150,6 @@ async fn a_real_workshop_item_downloads_and_stays_inside_its_directory() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam"]
 async fn a_nonexistent_item_is_reported_rather_than_silently_dropped() {
-    // Asking for five items and getting three back is worse than being told
-    // which two failed.
     let mut session = Session::anonymous().await.expect("session");
     let ids = vec![PublishedFileId(1), PublishedFileId(u64::MAX)];
 
@@ -196,18 +170,11 @@ async fn a_nonexistent_item_is_reported_rather_than_silently_dropped() {
     );
 }
 
-/// The item the steamcmd differential uses.
-///
-/// Fixed rather than queried, because the comparison needs both tools to fetch
-/// the same thing — and this one is small.
 const DIFFERENTIAL_ITEM: PublishedFileId = PublishedFileId(3_790_437_566);
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "talks to Steam and needs a steamcmd workshop download to compare against"]
 async fn tapline_downloads_what_steamcmd_downloads() {
-    // Produce the reference with:
-    //   steamcmd.sh +force_install_dir <dir> +login anonymous \\
-    //     +workshop_download_item 4000 3790437566 +quit
     let Ok(reference_root) = std::env::var("TAPLINE_STEAMCMD_DIR") else {
         println!("SKIPPED: set TAPLINE_STEAMCMD_DIR to a steamcmd install directory");
         return;
@@ -251,7 +218,6 @@ async fn tapline_downloads_what_steamcmd_downloads() {
 
     let ours = tapline::item_dir(&root, item.app, item.id);
 
-    // Compare file by file, then byte by byte.
     let list = |dir: &std::path::Path| {
         let mut out: Vec<(String, Vec<u8>)> = Vec::new();
         let mut stack = vec![dir.to_path_buf()];

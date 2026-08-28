@@ -1,28 +1,6 @@
-//! Differential tests against Google's own protobuf implementation.
-//!
-//! Round-tripping our encoder through our decoder proves the two halves agree
-//! with each other, which is worth something but is exactly the test a
-//! self-consistent-but-wrong codec passes. These tests use bytes produced by
-//! `protoc` from Valve's real `content_manifest.proto`, so they prove we agree
-//! with the implementation Steam is on the other end of.
-//!
-//! The fixture is committed rather than generated at test time: CI has no
-//! `protoc`, and a test that silently skips when a tool is missing is a test
-//! that stops running.
-//!
-//! Regenerating, if the schema changes:
-//!
-//! ```sh
-//! cd crates/tapline-proto
-//! protoc --encode=ContentManifestPayload protos/content_manifest.proto \
-//!     < tests/fixtures/content_manifest_payload.txtpb \
-//!     > tests/fixtures/content_manifest_payload.protoc.bin
-//! ```
-
 use tapline_proto::content_manifest::{ContentManifestPayload, content_manifest_payload};
 use tapline_wire::Message;
 
-/// Bytes `protoc` produced for the message in `content_manifest_payload.txtpb`.
 const PROTOC_BYTES: &[u8] = include_bytes!("fixtures/content_manifest_payload.protoc.bin");
 
 #[test]
@@ -46,7 +24,6 @@ fn we_decode_what_google_encoded() {
 
     let first = mapping.chunks.first().expect("two chunks");
     assert_eq!(first.sha.as_deref(), Some(&b"abcdefghij0123456789"[..]));
-    // A fixed32 field, which is where a little-endian mistake would show up.
     assert_eq!(first.crc, Some(0x1234_5678));
     assert_eq!(first.offset, Some(0));
     assert_eq!(first.cb_original, Some(1_048_576));
@@ -59,10 +36,6 @@ fn we_decode_what_google_encoded() {
 
 #[test]
 fn what_we_encode_is_byte_identical_to_google() {
-    // Rebuilding the fixture's message by hand and encoding it must produce the
-    // same bytes protoc did. This is the assertion that catches a wrong wire
-    // type, a wrong field number, or a varint written one byte too wide — none
-    // of which a round trip through our own decoder would notice.
     let payload = ContentManifestPayload {
         mappings: vec![content_manifest_payload::FileMapping {
             filename: Some("bin/srcds_linux".to_owned()),
@@ -112,9 +85,7 @@ fn our_own_round_trip_is_stable() {
 
 #[test]
 fn unknown_fields_do_not_break_decoding() {
-    // Valve adds fields; an older build must keep reading the ones it knows.
     let mut bytes = PROTOC_BYTES.to_vec();
-    // Field 4095, varint, value 1 — a number nothing in the schema uses.
     bytes.extend_from_slice(&[0xF8, 0xFE, 0x03, 0x01]);
 
     let payload =
@@ -124,13 +95,8 @@ fn unknown_fields_do_not_break_decoding() {
 
 #[test]
 fn a_truncated_message_is_an_error_not_a_partial_value() {
-    // Every prefix of a valid message is either an error or a shorter valid
-    // message; none of them may panic. This is the shape a dropped connection
-    // delivers.
     for cut in 1..PROTOC_BYTES.len() {
         let prefix = PROTOC_BYTES.get(..cut).expect("in range");
-        // The result is not asserted — a prefix can legitimately parse — only
-        // that producing it does not panic.
         let _ = ContentManifestPayload::decode(prefix);
     }
 }

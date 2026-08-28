@@ -1,20 +1,3 @@
-/**
- * One test file, three runtimes.
- *
- * Written as a plain script rather than against `bun:test`, `node:test` or
- * `Deno.test`, because the thing most worth testing here is that the *same*
- * code behaves the same way in all three — and a test that imports a
- * runtime-specific harness cannot check that.
- *
- * ```sh
- * bun  test/smoke.ts
- * node test/smoke.ts
- * deno run --allow-ffi --allow-env --allow-read --unstable-ffi test/smoke.ts
- * ```
- *
- * Network tests are opt-in: set TAPLINE_LIVE=1.
- */
-
 import { detectRuntime } from "../src/ffi.ts";
 import {
   concurrency,
@@ -62,7 +45,6 @@ await test("the native library loads and reports a version", async () => {
 });
 
 await test("a job is awaitable, iterable and cancellable at once", () => {
-  // The shape claim from the README, checked rather than asserted in prose.
   const job = plan({ app: 4020, dir: "/nonexistent-on-purpose" });
   assert(job instanceof Job, "not a Job");
   assert(typeof job.then === "function", "not awaitable");
@@ -74,8 +56,6 @@ await test("a job is awaitable, iterable and cancellable at once", () => {
 });
 
 await test("a job nobody awaits does not crash the process", async () => {
-  // Constructing a job starts it. A caller who cancels one and never looks at
-  // it again must not take the process down with an unhandled rejection.
   const job = plan({ app: 4020, dir: "/tmp" });
   job.cancel();
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -103,9 +83,6 @@ await test("a callback-style consumer gets the same failure", async () => {
 });
 
 await test("the chain compiles to the text form the ABI takes", () => {
-  // The chain is a Rust API that cannot cross a C ABI, so what actually travels
-  // is this text. If the two disagree the failure is a parse error from inside
-  // the native library, which says nothing about the chain that produced it.
   const text = workshop(4000, 104691717)
     .gma()
     .only("lua/**")
@@ -118,8 +95,6 @@ await test("the chain compiles to the text form the ABI takes", () => {
 });
 
 await test("a chain step returns a new chain rather than mutating one", () => {
-  // Reusing a partly-built chain is the obvious thing to do with a builder, and
-  // it is only safe if each step is a copy.
   const base = workshop(4000, 104691717).gma().only("lua/**");
   const a = base.pick("a.lua").text("dir", "/x");
   const b = base.pick("b.lua").text("dir", "/x");
@@ -140,8 +115,6 @@ await test("a bad sort is refused before the search runs", async () => {
 });
 
 await test("a trend window on another sort is refused", async () => {
-  // Steam takes the number and ignores it, so accepting it would show a
-  // period control that does nothing.
   let message = "";
   try {
     await searchWorkshop({ app: 4000, sort: "vote", days: 7 });
@@ -152,7 +125,6 @@ await test("a trend window on another sort is refused", async () => {
 });
 
 await test("a text sort without text is refused", async () => {
-  // It "works" and returns an arbitrary order, which looks like a ranking.
   let message = "";
   try {
     await searchWorkshop({ app: 4000, sort: "text" });
@@ -175,8 +147,6 @@ await test("a bad directive fails before anything downloads", async () => {
 
 if (process_env("TAPLINE_LIVE") === "1") {
   await test("a count matches the search it stands for", async () => {
-    // The point of the count is that it costs no results, so the only thing
-    // worth asserting is that it agrees with the search it replaces.
     const counted = await countWorkshop({ app: 431960, tags: ["Scene"] });
     const searched = await searchWorkshop({ app: 431960, tags: ["Scene"], limit: 1 });
     assert(counted > 0, "counted nothing");
@@ -187,8 +157,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
   });
 
   await test("tag groups reach Steam as groups", async () => {
-    // (Scene or Video) and Anime is a query the flat tag list cannot express,
-    // so it must match fewer items than accepting any of the three tags.
     const grouped = await searchWorkshop({
       app: 431960,
       tagGroups: [["Scene", "Video"], ["Anime"]],
@@ -207,8 +175,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
   });
 
   await test("a filtered chain downloads less than the whole archive", async () => {
-    // The capability the chain exists for: a selection makes the *download*
-    // selective, rather than fetching everything and discarding on arrival.
     const whole = await workshop(4000, 104691717)
       .gma()
       .dir(scratch("chain-all"));
@@ -256,8 +222,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
     assert(page.nextCursor !== null, "a first page should have a next");
     for (const found of page.items) {
       assert(found.title.length > 0, "a result had no title");
-      // The id must survive as a string; as a number it rounds and points at
-      // a different item.
       assert(/^\d+$/.test(found.item), `id is not a string of digits: ${found.item}`);
     }
     console.log(`    ${page.items.length} of ${page.total}, first: ${page.items[0]?.title}`);
@@ -342,9 +306,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
   });
 
   await test("a GMod addon can be downloaded straight into a folder", async () => {
-    // PAC3, a real addon, which arrives as a single .gma. Under the steamcmd
-    // layout it lands four directories down; flat puts it where a server's
-    // garrysmod/addons actually is.
     const dir = scratch("addons");
     const report = await downloadWorkshopItem({
       app: 4000,
@@ -361,7 +322,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
       entries[0]?.endsWith(".gma"),
       `expected a .gma, got ${entries[0]}`,
     );
-    // GMAD is the addon container's magic; anything else means the wrong bytes.
     const head = fs.readFileSync(`${dir}/${entries[0]}`).subarray(0, 4).toString();
     assertEquals(head, "GMAD", "the file is not a Garry's Mod addon");
   });
@@ -385,8 +345,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
     assert(fs.existsSync(`${dir}/104691717.zip`), "the zip was not produced");
     assert(fs.existsSync(`${dir}/104691717`), "the addon was not unpacked");
 
-    // PAC3 is 348 files; asserting the count catches a partial extraction that
-    // a "the directory exists" check would not.
     assertEquals(extended["gmad"], 348, "wrong unpacked count");
     assertEquals(extended["gmad-zip"], 1, "the zip should be one file");
 
@@ -405,15 +363,12 @@ if (process_env("TAPLINE_LIVE") === "1") {
 
     assertEquals(report.files, 348, "wrong file count");
     assert(report.bytesStreamed > 8_000_000, "streamed too little");
-    // The whole point: the archive is never written.
     const fs = await import("node:fs");
     assert(
       !fs.existsSync(`${dir}/104691717.gma`),
       "the .gma was written after all",
     );
     assert(fs.existsSync(`${dir}/lua`), "the addon was not unpacked");
-    // And the reorder buffer stayed inside its window, which is the memory
-    // bound the design rests on.
     assert(
       report.peakBufferedChunks <= 16,
       `buffered ${report.peakBufferedChunks} chunks, past the window`,
@@ -432,7 +387,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
 
     const fs = await import("node:fs");
     const entries = fs.readdirSync(dir);
-    // Only the zip: the archive it was built from never existed.
     assertEquals(entries.length, 1, `expected one file, got ${entries.join(",")}`);
     assertEquals(entries[0], "104691717.zip");
     const head = fs.readFileSync(`${dir}/104691717.zip`).subarray(0, 2).toString();
@@ -468,12 +422,6 @@ if (process_env("TAPLINE_LIVE") === "1") {
   });
 
   await test("concurrent downloads share one budget", async () => {
-    // The property, not the throughput: two downloads must draw from one pool
-    // rather than taking a full one each. Two at 64 is measurably slower than
-    // two splitting 64, because throughput turns over past 64.
-    // Waited for rather than asserted outright: a job cancelled by an earlier
-    // test can still hold a permit for a moment, and "at rest" means once
-    // everything before it has let go.
     let before = await concurrency();
     for (let i = 0; i < 100 && before.available < before.total; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -531,13 +479,8 @@ function process_env(key: string): string | undefined {
 }
 
 function scratch(name: string): string {
-  // Never /tmp: it is tmpfs on the development machine, and a depot test there
-  // is that many gigabytes of RAM.
   const home = process_env("HOME") ?? ".";
   const path = `${home}/.cache/tapline-test/js-${name}`;
-  // Cleared here rather than by the caller. A test that asserts "this
-  // directory holds exactly one file" passes or fails depending on what the
-  // last run left behind, which is how a green suite goes red for no reason.
   try {
     // deno-lint-ignore no-explicit-any
     const fs = (globalThis as any).process
@@ -545,7 +488,6 @@ function scratch(name: string): string {
       : undefined;
     fs?.rmSync(path, { recursive: true, force: true });
   } catch {
-    // Best effort: a test that cannot clean up still runs.
   }
   return path;
 }

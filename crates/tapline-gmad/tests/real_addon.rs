@@ -1,14 +1,3 @@
-//! Against a real addon, not a constructed one.
-//!
-//! The unit tests build archives with the same code that reads them, which
-//! proves self-consistency and nothing about Valve's format. This reads PAC3
-//! (Workshop item 104691717) as Steam serves it.
-//!
-//! ```sh
-//! tapline workshop download 4000 104691717 --dir ~/.cache/tapline-test/gma --flat
-//! cargo test -p tapline-gmad --test real_addon -- --ignored --nocapture
-//! ```
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
@@ -23,7 +12,6 @@ fn addon_path() -> PathBuf {
     PathBuf::from(base).join("gma/104691717.gma")
 }
 
-/// Removes its directory on the way out, including on panic.
 struct Scratch(PathBuf);
 
 impl Drop for Scratch {
@@ -55,8 +43,6 @@ fn a_real_addon_parses_and_extracts() {
     assert_eq!(addon.version, 3);
     assert!(!addon.entries.is_empty(), "an addon with no files");
 
-    // The index must describe the file exactly: every entry inside the archive,
-    // and the last one ending at or before its end.
     let on_disk = std::fs::metadata(&path).expect("stat").len();
     for entry in &addon.entries {
         let end = entry.offset as u64 + entry.size;
@@ -74,7 +60,6 @@ fn a_real_addon_parses_and_extracts() {
     let written = tapline_gmad::extract(&path, &dest).expect("must extract");
     assert_eq!(written.len(), addon.entries.len());
 
-    // Every file must exist at the size the index promised.
     for entry in &addon.entries {
         let target = dest.join(&entry.path);
         let meta = std::fs::metadata(&target)
@@ -82,8 +67,6 @@ fn a_real_addon_parses_and_extracts() {
         assert_eq!(meta.len(), entry.size, "{:?} is the wrong size", entry.path);
     }
 
-    // And the bytes must be right, checked against the archive's own CRC where
-    // it bothered to record one.
     let raw = std::fs::read(&path).expect("read");
     let mut checked = 0;
     for entry in &addon.entries {
@@ -125,8 +108,6 @@ fn a_real_addon_converts_to_a_zip_other_tools_can_open() {
         addon.unpacked_size()
     );
 
-    // The claim worth testing is not that we can read our own output. It is
-    // that something else can: a ZIP that only this crate accepts is not a ZIP.
     let unzip = std::process::Command::new("unzip")
         .arg("-t")
         .arg(&zip)
@@ -168,7 +149,6 @@ fn streaming_a_real_addon_matches_extracting_it() {
     let _ = std::fs::remove_dir_all(&streamed);
     let _ = std::fs::remove_dir_all(&seeking);
 
-    // 1 MiB pieces, which is the chunk size a real download delivers.
     let mut extractor = tapline_gmad::StreamingExtractor::new(&streamed);
     for piece in raw.chunks(1 << 20) {
         extractor.push(piece).expect("push");
@@ -200,8 +180,6 @@ fn how_long_the_work_actually_takes() {
     let bytes = addon.unpacked_size();
 
     let time = |label: &str, mut work: Box<dyn FnMut()>| {
-        // Three passes: the first pays for a cold page cache, and reporting
-        // that as the cost of the code would be measuring the disk.
         let mut best = std::time::Duration::MAX;
         for _ in 0..3 {
             let start = std::time::Instant::now();
