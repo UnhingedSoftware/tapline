@@ -34,8 +34,7 @@ mod json;
 use std::ffi::{CStr, c_char};
 use std::sync::OnceLock;
 use tapline::{
-    FileModes, InstallOptions, Os, PublishedFileId, Session, SessionPool, Shared, TokenStore,
-    WorkshopLayout,
+    FileModes, InstallOptions, Os, PublishedFileId, Session, SessionPool, Shared, WorkshopLayout,
 };
 use tapline_ids::AppId;
 

@@ -68,7 +68,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools binutils file
 
       - name: Build the release binary
-        run: cargo build --release --target x86_64-unknown-linux-musl -p tapline-cli
+        # `--no-default-features`, the same as the Dockerfile. The steamworks
+        # bridge dlopens the Steam SDK, which a fully static musl binary cannot
+        # do — so it is not in the container or this static build, only in the
+        # dynamic desktop release binary. This job measures the lean static one.
+        run: cargo build --release --no-default-features --target x86_64-unknown-linux-musl -p tapline-cli
 
       - name: Check the size budget
         run: |
