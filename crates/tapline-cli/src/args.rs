@@ -162,6 +162,8 @@ pub struct SearchFilters {
     pub app: AppId,
     /// Free text to match.
     pub text: Option<String>,
+    /// Where to match it: all, title or description.
+    pub search_in: Option<String>,
     /// Tags an item must carry.
     pub tags: Vec<String>,
     /// Groups of tags, of which an item must carry one from each.
@@ -543,6 +545,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
             filters: SearchFilters {
                 app: app_id(positional.get(2))?,
                 text: options.value("text").map(str::to_owned),
+                search_in: options.value("search-in").map(str::to_owned),
                 tags: options.all_values("tag"),
                 tag_groups: tag_groups(&options.all_values("tag-group"))?,
                 exclude_tags: options.all_values("exclude-tag"),

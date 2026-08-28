@@ -36,7 +36,7 @@ use crate::{InstallError, WorkshopItem};
 use tapline_ids::AppId;
 use tapline_proto::enums_productinfo::EContentDescriptorID;
 use tapline_proto::steammessages_publishedfile_steamclient::{
-    CPublishedFile_QueryFiles_Request,
+    CPublishedFile_QueryFiles_Request, EQueryFilesSearchTextTarget,
     c_published_file_query_files_request::{DateRange, TagGroup},
 };
 
@@ -149,6 +149,50 @@ impl ContentDescriptor {
         ["nudity", "violence", "adult-only", "gratuitous", "mature"];
 }
 
+/// Where [`BrowseQuery::text`] is matched.
+///
+/// Steam searches titles and descriptions together by default, which finds
+/// items that merely mention a word. Narrowing to titles is what someone
+/// looking for a thing by name means: of Wallpaper Engine's 15,361 matches for
+/// "miku", 13,901 carry it in the title and 4,132 in the description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextTarget {
+    /// Titles and descriptions, which is Steam's default.
+    #[default]
+    Everything,
+    /// Titles only.
+    Title,
+    /// Descriptions only.
+    Description,
+}
+
+impl TextTarget {
+    /// Valve's `EQueryFilesSearchTextTarget`, or `None` for its default.
+    const fn target(self) -> Option<i32> {
+        match self {
+            // Measured: sending 0 returns exactly what sending nothing does,
+            // so the default stays off the wire.
+            Self::Everything => None,
+            Self::Title => Some(1),
+            Self::Description => Some(2),
+        }
+    }
+
+    /// Parses the name the CLI and the bindings use.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "all" | "everything" => Some(Self::Everything),
+            "title" => Some(Self::Title),
+            "description" | "body" => Some(Self::Description),
+            _ => None,
+        }
+    }
+
+    /// Every name [`TextTarget::parse`] accepts, canonical form first.
+    pub const NAMES: [&'static str; 3] = ["all", "title", "description"];
+}
+
 /// A window of time, in Unix seconds.
 ///
 /// Either end may be open: a search for everything published since a date has
@@ -199,6 +243,8 @@ pub struct BrowseQuery {
     pub app: AppId,
     /// Free text to match, if any.
     pub text: Option<String>,
+    /// Where that text is matched.
+    pub search_in: TextTarget,
     /// Tags an item must carry.
     pub required_tags: Vec<String>,
     /// Groups of tags, of which an item must carry at least one from each.
@@ -255,6 +301,7 @@ impl Default for BrowseQuery {
         Self {
             app: AppId(0),
             text: None,
+            search_in: TextTarget::default(),
             required_tags: Vec::new(),
             tag_groups: Vec::new(),
             excluded_tags: Vec::new(),
@@ -284,6 +331,9 @@ impl BrowseQuery {
         if self.sort == BrowseSort::TextMatch && self.text.is_none() {
             return Err(BrowseError::TextSortWithoutText);
         }
+        if self.search_in != TextTarget::Everything && self.text.is_none() {
+            return Err(BrowseError::TextTargetWithoutText);
+        }
         if self.tag_groups.iter().any(Vec::is_empty) {
             return Err(BrowseError::EmptyTagGroup);
         }
@@ -311,6 +361,7 @@ impl BrowseQuery {
             date_range_created: self.created.map(TimeRange::to_wire),
             date_range_updated: self.updated.map(TimeRange::to_wire),
             search_text: self.text.clone(),
+            search_text_target: self.search_in.target().map(EQueryFilesSearchTextTarget),
             requiredtags: self.required_tags.clone(),
             taggroups: self
                 .tag_groups
@@ -397,6 +448,8 @@ pub enum BrowseError {
     TrendDaysWithoutTrendSort,
     /// A time window that ends before it starts.
     BackwardsTimeRange,
+    /// Narrowing where text is matched, with no text to match.
+    TextTargetWithoutText,
 }
 
 impl std::fmt::Display for BrowseError {
@@ -416,6 +469,11 @@ impl std::fmt::Display for BrowseError {
                 f,
                 "a tag group needs at least one tag; an empty group is a \
                  filter that matches nothing and reads as a broken search"
+            ),
+            Self::TextTargetWithoutText => write!(
+                f,
+                "narrowing the search to titles or descriptions needs search \
+                 text; without it there is nothing to narrow"
             ),
             Self::BackwardsTimeRange => write!(
                 f,
@@ -575,6 +633,39 @@ mod tests {
         .to_request();
         assert_eq!(request.requiredtags, vec!["Wallpaper".to_owned()]);
         assert_eq!(request.taggroups.len(), 1);
+    }
+
+    #[test]
+    fn narrowing_the_text_target_travels_and_the_default_does_not() {
+        // Sending 0 was measured to return exactly what sending nothing does,
+        // so the default stays off the wire rather than pinning a behaviour
+        // Steam owns.
+        let default = BrowseQuery {
+            app: AppId(431_960),
+            text: Some("miku".to_owned()),
+            ..BrowseQuery::default()
+        }
+        .to_request();
+        assert!(default.search_text_target.is_none());
+
+        let title = BrowseQuery {
+            app: AppId(431_960),
+            text: Some("miku".to_owned()),
+            search_in: TextTarget::Title,
+            ..BrowseQuery::default()
+        }
+        .to_request();
+        assert_eq!(title.search_text_target.map(|t| t.value()), Some(1));
+    }
+
+    #[test]
+    fn narrowing_without_text_is_refused() {
+        let query = BrowseQuery {
+            app: AppId(431_960),
+            search_in: TextTarget::Title,
+            ..BrowseQuery::default()
+        };
+        assert_eq!(query.validate(), Err(BrowseError::TextTargetWithoutText));
     }
 
     #[test]

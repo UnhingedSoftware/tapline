@@ -567,6 +567,10 @@ pub unsafe extern "C" fn tapline_workshop_download(
 /// A flat tag list cannot express that, which is the whole reason it is a
 /// second parameter rather than more of the first.
 ///
+/// `search_in` narrows where `text` is matched: `all`, `title` or
+/// `description`. Narrowing without text is refused, since there is nothing to
+/// narrow.
+///
 /// `excluded_content` is a comma-separated list of Steam's own content labels
 /// — `nudity`, `violence`, `adult-only`, `gratuitous`, `mature` — which are a
 /// truer filter than excluding a tag by name, because the label is Valve's
@@ -589,6 +593,7 @@ pub unsafe extern "C" fn tapline_workshop_download(
 pub unsafe extern "C" fn tapline_workshop_search(
     app_id: u32,
     text: *const c_char,
+    search_in: *const c_char,
     tags: *const c_char,
     tag_groups: *const c_char,
     excluded_tags: *const c_char,
@@ -652,6 +657,19 @@ pub unsafe extern "C" fn tapline_workshop_search(
             }
         }
     }
+    let search_in = match unsafe { read_str(search_in) } {
+        None => tapline::TextTarget::default(),
+        Some(name) => match tapline::TextTarget::parse(name) {
+            Some(target) => target,
+            None => {
+                set_error(format!(
+                    "unknown search target {name:?}; known: {}",
+                    tapline::TextTarget::NAMES.join(", ")
+                ));
+                return TAPLINE_BAD_ARGUMENT;
+            }
+        },
+    };
     // Resolved before the job starts, so a bad sort name is a synchronous
     // error rather than one delivered through the event queue.
     let sort = match unsafe { read_str(sort) } {
@@ -671,6 +689,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
     let query = tapline::BrowseQuery {
         app: AppId(app_id),
         text: unsafe { read_str(text) }.map(str::to_owned),
+        search_in,
         required_tags: split(unsafe { read_str(tags) }),
         tag_groups: groups(unsafe { read_str(tag_groups) }),
         excluded_tags: split(unsafe { read_str(excluded_tags) }),

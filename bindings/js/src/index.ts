@@ -673,6 +673,13 @@ export interface SearchOptions {
   app: number;
   /** Free text to match. */
   text?: string;
+  /**
+   * Where {@link SearchOptions.text} is matched. Steam searches titles and
+   * descriptions together by default, which finds items that merely mention a
+   * word: of 15,361 Wallpaper Engine matches for "miku", 13,901 carry it in
+   * the title and 4,132 in the description.
+   */
+  searchIn?: "all" | "title" | "description";
   /** Tags an item must carry. */
   tags?: string[];
   /**
@@ -766,6 +773,7 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
       ffi.search(
         options.app,
         options.text ?? null,
+        options.searchIn ?? null,
         options.tags?.length ? options.tags.join(",") : null,
         options.tagGroups?.length
           ? options.tagGroups.map((group) => group.join(",")).join(";")

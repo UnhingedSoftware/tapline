@@ -112,6 +112,9 @@ int32_t tapline_workshop_download(uint32_t app_id,
  * group by ',', so "Scene,Video;Anime" means (Scene or Video) and Anime. The
  * flat tag list cannot say that — all_tags is one switch over the whole set.
  *
+ * search_in narrows where text is matched: all, title or description.
+ * Narrowing with no text to narrow is refused.
+ *
  * excluded_content is a comma-separated list of Steam's own content labels:
  * nudity, violence, adult-only, gratuitous, mature. A truer filter than
  * excluding a tag by name — the label is Valve's, applied per item.
@@ -136,6 +139,7 @@ int32_t tapline_workshop_download(uint32_t app_id,
  * here rather than through the event queue. */
 int32_t tapline_workshop_search(uint32_t app_id,
                                 const char *text,
+                                const char *search_in,
                                 const char *tags,
                                 const char *tag_groups,
                                 const char *excluded_tags,

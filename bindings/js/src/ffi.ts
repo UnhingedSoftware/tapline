@@ -49,6 +49,7 @@ export interface Ffi {
   search(
     app: number,
     text: string | null,
+    searchIn: string | null,
     tags: string | null,
     tagGroups: string | null,
     excludedTags: string | null,
@@ -271,7 +272,7 @@ async function loadDeno(path: string): Promise<Ffi> {
     },
     tapline_workshop_search: {
       parameters: [
-        "u32", "buffer", "buffer", "buffer", "buffer", "buffer",
+        "u32", "buffer", "buffer", "buffer", "buffer", "buffer", "buffer",
         "u8", "buffer", "u32", "u32", "u32", "u32", "u32", "u32", "buffer", "buffer",
       ],
       result: "i32",
@@ -366,6 +367,7 @@ async function loadDeno(path: string): Promise<Ffi> {
     search(
       app,
       text,
+      searchIn,
       tags,
       tagGroups,
       excludedTags,
@@ -384,6 +386,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       const code = lib.symbols.tapline_workshop_search(
         app,
         text === null ? null : cstring(text),
+        searchIn === null ? null : cstring(searchIn),
         tags === null ? null : cstring(tags),
         tagGroups === null ? null : cstring(tagGroups),
         excludedTags === null ? null : cstring(excludedTags),
@@ -468,7 +471,7 @@ async function loadBun(path: string): Promise<Ffi> {
     },
     tapline_workshop_search: {
       args: [
-        FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr,
+        FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr,
         FFIType.u8, FFIType.ptr, FFIType.u32,
         FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32,
         FFIType.u32, FFIType.ptr, FFIType.ptr,
@@ -550,6 +553,7 @@ async function loadBun(path: string): Promise<Ffi> {
     search(
       app,
       text,
+      searchIn,
       tags,
       tagGroups,
       excludedTags,
@@ -568,6 +572,7 @@ async function loadBun(path: string): Promise<Ffi> {
       const code = lib.symbols.tapline_workshop_search(
         app,
         text === null ? null : ptr(cstring(text)),
+        searchIn === null ? null : ptr(cstring(searchIn)),
         tags === null ? null : ptr(cstring(tags)),
         tagGroups === null ? null : ptr(cstring(tagGroups)),
         excludedTags === null ? null : ptr(cstring(excludedTags)),
@@ -649,7 +654,7 @@ async function loadNode(path: string): Promise<Ffi> {
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
   );
   const searchFn = lib.func(
-    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, _Out_ void**)",
+    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, _Out_ void**)",
   );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
@@ -711,6 +716,7 @@ async function loadNode(path: string): Promise<Ffi> {
     search(
       app,
       text,
+      searchIn,
       tags,
       tagGroups,
       excludedTags,
@@ -729,6 +735,7 @@ async function loadNode(path: string): Promise<Ffi> {
       const code = searchFn(
         app,
         text,
+        searchIn,
         tags,
         tagGroups,
         excludedTags,

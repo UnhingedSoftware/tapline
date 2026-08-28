@@ -340,9 +340,20 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         })
     };
 
+    let search_in = match filters.search_in.as_deref() {
+        None => tapline::TextTarget::default(),
+        Some(name) => tapline::TextTarget::parse(name).ok_or_else(|| {
+            format!(
+                "unknown --search-in {name:?}; known: {}",
+                tapline::TextTarget::NAMES.join(", ")
+            )
+        })?,
+    };
+
     let query = tapline::BrowseQuery {
         app: filters.app,
         text: filters.text,
+        search_in,
         required_tags: filters.tags,
         tag_groups: filters.tag_groups,
         excluded_tags: filters.exclude_tags,

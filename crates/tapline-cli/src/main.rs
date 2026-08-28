@@ -33,7 +33,8 @@ Native:
       Install or update. Downloads nothing if already current.
   tapline app info APPID [--json]
       Depots, branches and sizes.
-  tapline workshop search APPID [--text QUERY] [--tag T]... [--exclude-tag T]...
+  tapline workshop search APPID [--text QUERY] [--search-in WHERE]
+                         [--tag T]... [--exclude-tag T]...
                          [--tag-group T,T]... [--exclude-content LABEL]...
                          [--all-tags] [--sort NAME] [--days N]
                          [--created-since WHEN] [--created-until WHEN]
@@ -49,6 +50,7 @@ Native:
       --exclude-content drops items by Steam's own labels rather than by tag:
       nudity, violence, adult-only, gratuitous, mature.
       The date bounds take a Unix timestamp or an age: 12h, 30d, 2w.
+      --search-in narrows --text to all, title or description.
   tapline workshop info ITEMID... [--json]
       Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]
