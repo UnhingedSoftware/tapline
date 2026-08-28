@@ -146,16 +146,41 @@ pub enum LoginError {
 impl fmt::Display for LoginError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Refused { eresult, message } => match message {
-                Some(message) if !message.is_empty() => {
-                    write!(f, "Steam refused the login (EResult {eresult}): {message}")
+            Self::Refused { eresult, message } => {
+                let reason = describe_login_result(*eresult);
+                match message {
+                    Some(message) if !message.is_empty() => {
+                        write!(f, "{reason}: {message} (EResult {eresult})")
+                    }
+                    _ => write!(f, "{reason} (EResult {eresult})"),
                 }
-                _ => write!(f, "Steam refused the login (EResult {eresult})"),
-            },
+            }
             Self::Password(message) => write!(f, "{message}"),
             Self::Incomplete(what) => write!(f, "Steam's response had no {what}"),
             Self::Session(message) => write!(f, "{message}"),
         }
+    }
+}
+
+/// Says what a login result code means.
+///
+/// The number alone is useless to the person who has to act on it, and these
+/// four are almost all of what a login actually returns. Anything else keeps
+/// its number rather than being guessed at.
+#[must_use]
+pub fn describe_login_result(eresult: i32) -> &'static str {
+    match eresult {
+        5 => "wrong account name or password",
+        15 => "Steam refused this account access",
+        // 63 and 85 both mean "the account has Steam Guard on it".
+        63 | 85 => "this account needs a Steam Guard code",
+        65 => "that Steam Guard code was wrong",
+        84 => {
+            "too many attempts; Steam is rate limiting this account. Wait, \
+               and prefer `--qr`, which is not throttled the same way"
+        }
+        88 => "that Steam Guard code has expired; ask for a new one",
+        _ => "Steam refused the login",
     }
 }
 
@@ -221,6 +246,36 @@ mod tests {
     use tapline_proto::steammessages_auth_steamclient::{
         CAuthentication_AllowedConfirmation, CAuthentication_GetPasswordRSAPublicKey_Response,
     };
+
+    #[test]
+    fn a_refusal_says_what_to_do_about_it() {
+        // "EResult 5" tells the person nothing; the number is for the log.
+        let wrong = LoginError::Refused {
+            eresult: 5,
+            message: None,
+        }
+        .to_string();
+        assert!(wrong.contains("password"), "{wrong}");
+        assert!(
+            wrong.contains("EResult 5"),
+            "the code should still be there"
+        );
+
+        let throttled = LoginError::Refused {
+            eresult: 84,
+            message: None,
+        }
+        .to_string();
+        assert!(throttled.contains("rate limiting"), "{throttled}");
+
+        // An unknown code keeps its number rather than being invented.
+        let odd = LoginError::Refused {
+            eresult: 1234,
+            message: None,
+        }
+        .to_string();
+        assert!(odd.contains("1234"), "{odd}");
+    }
 
     fn pending(url: Option<&str>, confirmations: Vec<GuardType>) -> PendingLogin {
         PendingLogin {

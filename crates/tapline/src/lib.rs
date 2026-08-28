@@ -47,7 +47,7 @@ pub use browse::{
 };
 pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
 pub use install::{FileModes, InstallError, InstallOptions, InstallReport, WorkshopLayout};
-pub use login::{LoginError, PendingLogin, PollOutcome};
+pub use login::{LoginError, PendingLogin, PollOutcome, describe_login_result};
 pub use pool::{SessionGuard, SessionPool};
 pub use remote::RemoteFile;
 pub use session::Session;

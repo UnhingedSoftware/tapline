@@ -64,6 +64,22 @@ pub struct Session {
     account: Option<String>,
 }
 
+/// Turns a CM failure on a login RPC into a login error.
+///
+/// Steam answers a wrong password by failing the RPC with a result code rather
+/// than by returning a reply that says so. Wrapping that as an opaque session
+/// error loses the one thing the caller needs — "EResult 5" reaching a person
+/// instead of "wrong account name or password" is the whole difference.
+fn login_failure(error: tapline_net::NetError) -> crate::LoginError {
+    match error {
+        tapline_net::NetError::Steam { eresult } => crate::LoginError::Refused {
+            eresult,
+            message: None,
+        },
+        other => crate::LoginError::Session(other.to_string()),
+    }
+}
+
 /// Everything needed to download one depot.
 struct ResolvedDepot {
     depot: Depot,
@@ -914,7 +930,7 @@ impl Session {
                 website_id: Some("Client".to_owned()),
             })
             .await
-            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+            .map_err(login_failure)?;
 
         Ok(crate::PendingLogin {
             client_id: response.client_id.unwrap_or(0),
@@ -943,7 +959,7 @@ impl Session {
                 account_name: Some(account.to_owned()),
             })
             .await
-            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+            .map_err(login_failure)?;
 
         crate::login::key_from_response(&response)
     }
@@ -979,7 +995,7 @@ impl Session {
                 ..CAuthentication_BeginAuthSessionViaCredentials_Request::default()
             })
             .await
-            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+            .map_err(login_failure)?;
 
         // Steam reports a failed password as an eresult on the reply rather than
         // as an error, so a caller that only checked for transport failures
@@ -1034,7 +1050,7 @@ impl Session {
                 },
             )
             .await
-            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+            .map_err(login_failure)?;
         Ok(())
     }
 
@@ -1054,7 +1070,7 @@ impl Session {
                 token_to_revoke: None,
             })
             .await
-            .map_err(|e| crate::LoginError::Session(e.to_string()))?;
+            .map_err(login_failure)?;
 
         if let Some(refresh_token) = response
             .refresh_token
