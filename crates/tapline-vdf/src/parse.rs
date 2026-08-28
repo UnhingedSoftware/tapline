@@ -1,35 +1,13 @@
-//! The KeyValues text parser: no `#include`, no `#base`, no macros.
-
 use crate::{MAX_DEPTH, Object, Value};
 use std::fmt;
 
-/// What went wrong reading a KeyValues file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VdfError {
-    /// The file ended inside a string, a block, or before a value.
     UnexpectedEnd,
-    /// A closing brace with no matching opening brace.
-    UnmatchedBrace {
-        /// Byte offset of the offending brace.
-        offset: usize,
-    },
-    /// Nesting went past [`MAX_DEPTH`].
-    DepthLimitExceeded {
-        /// Byte offset where the limit was hit.
-        offset: usize,
-    },
-    /// A `{` where a key was expected.
-    UnexpectedBrace {
-        /// Byte offset of the offending brace.
-        offset: usize,
-    },
-    /// A directive this parser does not implement, such as `#include`.
-    UnsupportedDirective {
-        /// The directive as written.
-        directive: String,
-        /// Byte offset where it appeared.
-        offset: usize,
-    },
+    UnmatchedBrace { offset: usize },
+    DepthLimitExceeded { offset: usize },
+    UnexpectedBrace { offset: usize },
+    UnsupportedDirective { directive: String, offset: usize },
 }
 
 impl fmt::Display for VdfError {
@@ -74,7 +52,6 @@ impl<'a> Lexer<'a> {
         self.input.get(self.pos).copied()
     }
 
-    /// Skips whitespace, `//` comments, and `[$CONDITION]` tags (dropped, not evaluated).
     fn skip_trivia(&mut self) {
         loop {
             match self.peek() {
@@ -100,9 +77,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Decoded as UTF-8 at the end: per-byte conversion would split multi-byte characters.
     fn read_quoted(&mut self) -> Result<String, VdfError> {
-        self.pos += 1; // opening quote
+        self.pos += 1;
         let mut out: Vec<u8> = Vec::new();
         loop {
             let byte = self.peek().ok_or(VdfError::UnexpectedEnd)?;
@@ -116,7 +92,6 @@ impl<'a> Lexer<'a> {
                         b'n' => b'\n',
                         b't' => b'\t',
                         b'r' => b'\r',
-                        // Anything else stands for itself, matching Valve's reader.
                         other => other,
                     });
                 }
@@ -133,7 +108,6 @@ impl<'a> Lexer<'a> {
             }
             self.pos += 1;
         }
-        // In bounds by construction; the fallback keeps the no-panic rule.
         self.input
             .get(start..self.pos)
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
@@ -163,14 +137,12 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// Parses a KeyValues document into its top-level pairs.
 pub fn parse(input: &str) -> Result<Object, VdfError> {
     let mut lexer = Lexer::new(input);
     let object = parse_object(&mut lexer, 0, true)?;
     Ok(object)
 }
 
-/// Parses pairs until the matching `}`, or end of input at the top level.
 fn parse_object(lexer: &mut Lexer<'_>, depth: u32, top_level: bool) -> Result<Object, VdfError> {
     let mut object = Object::new();
 
@@ -259,7 +231,6 @@ mod tests {
 
     #[test]
     fn bare_tokens_are_accepted() {
-        // Some hand-edited server configs in the wild use bare tokens.
         let obj = parse("key value").expect("must parse");
         assert_eq!(obj.get_str("key"), Some("value"));
     }
@@ -308,12 +279,10 @@ mod tests {
 
     #[test]
     fn non_ascii_values_survive_being_quoted() {
-        // Fuzzer find: per-byte Latin-1 decoding split multi-byte characters on rewrite.
         let obj = parse("//+\no\n\u{310}").expect("must parse");
         let round_tripped = parse(&obj.to_string()).expect("must reparse");
         assert_eq!(obj, round_tripped);
 
-        // The same thing in the shape it would really arrive in.
         let name = "Kerbal Space Program — Démo 日本語";
         let text = format!("\"name\"\t\t\"{name}\"\n");
         let parsed = parse(&text).expect("must parse");

@@ -1,28 +1,14 @@
-//! Validating a manifest path before anything is opened.
-
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-/// Why a path from a manifest was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathError {
-    /// The path was empty, or resolved to the install root itself.
     Empty,
-    /// An absolute path, which would ignore the install directory entirely.
     Absolute,
-    /// A `..` component, anywhere in the path.
     ParentTraversal,
-    /// A drive letter, UNC share or other filesystem prefix.
     Prefix,
-    /// A NUL byte, which truncates the path at the syscall boundary.
     InteriorNul,
-    /// A symlink whose target resolves outside the install root.
-    SymlinkEscapes {
-        /// The link's own path.
-        link: String,
-        /// Where it pointed.
-        target: String,
-    },
+    SymlinkEscapes { link: String, target: String },
 }
 
 impl fmt::Display for PathError {
@@ -45,24 +31,20 @@ impl fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 
-/// A manifest path that has been checked and is safe to join onto a root.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SafePath(PathBuf);
 
 impl SafePath {
-    /// The relative path.
     #[must_use]
     pub fn as_path(&self) -> &Path {
         &self.0
     }
 
-    /// The path joined onto `root`.
     #[must_use]
     pub fn resolve(&self, root: &Path) -> PathBuf {
         root.join(&self.0)
     }
 
-    /// The path as the manifest wrote it, with forward slashes.
     #[must_use]
     pub fn as_str(&self) -> String {
         self.0.to_string_lossy().replace('\\', "/")
@@ -75,13 +57,11 @@ impl fmt::Display for SafePath {
     }
 }
 
-/// Checks a path from a manifest; a pure function that rejects on any doubt.
 pub fn validate_path(raw: &str) -> Result<SafePath, PathError> {
     if raw.contains('\0') {
         return Err(PathError::InteriorNul);
     }
 
-    // Both separators are separators, or `..\..\etc` would pass as one long filename.
     let normalised = raw.replace('\\', "/");
     if normalised.is_empty() {
         return Err(PathError::Empty);
@@ -93,7 +73,6 @@ pub fn validate_path(raw: &str) -> Result<SafePath, PathError> {
     for component in path.components() {
         match component {
             Component::Normal(part) => cleaned.push(part),
-            // `./a` is harmless and Valve does emit it.
             Component::CurDir => {}
             Component::ParentDir => return Err(PathError::ParentTraversal),
             Component::RootDir => return Err(PathError::Absolute),
@@ -107,7 +86,6 @@ pub fn validate_path(raw: &str) -> Result<SafePath, PathError> {
     Ok(SafePath(cleaned))
 }
 
-/// Checks a symlink's target, resolved against the link's own directory.
 pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathError> {
     if target.contains('\0') {
         return Err(PathError::InteriorNul);
@@ -125,7 +103,6 @@ pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathEr
         });
     }
 
-    // Depth going negative at any point means the path left the root.
     let mut depth: i64 = link
         .as_path()
         .parent()

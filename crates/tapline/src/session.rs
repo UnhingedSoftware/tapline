@@ -1,5 +1,3 @@
-//! A Steam session that can plan and perform installs.
-
 use crate::{InstallError, InstallOptions, InstallReport};
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,10 +31,8 @@ use tapline_rt_tokio::{CmTransport, FileSink, cm_list};
 use tapline_state::AppState;
 use tapline_wire::Message;
 
-/// Steam's result code for success.
 const RESULT_OK: i32 = 1;
 
-/// A logged-on Steam session.
 pub struct Session {
     cm: CmSession<CmTransport>,
     shared: Arc<crate::Shared>,
@@ -44,7 +40,6 @@ pub struct Session {
     pool: HostPool,
     cell_id: u32,
     keys: HashMap<DepotId, [u8; 32]>,
-    /// Steam drops a session that stops heartbeating, without saying why.
     heartbeat_interval: std::time::Duration,
     last_heartbeat: std::time::Instant,
     app_name: Option<String>,
@@ -52,7 +47,6 @@ pub struct Session {
     account: Option<String>,
 }
 
-/// Steam answers a wrong password by failing the RPC with a result code.
 fn login_failure(error: tapline_net::NetError) -> crate::LoginError {
     match error {
         tapline_net::NetError::Steam { eresult } => crate::LoginError::Refused {
@@ -70,12 +64,10 @@ struct ResolvedDepot {
 }
 
 impl Session {
-    /// Connects to Steam and logs on anonymously.
     pub async fn anonymous() -> Result<Self, InstallError> {
         Self::anonymous_shared(crate::Shared::new(InstallOptions::default().concurrency)).await
     }
 
-    /// Connects and logs on anonymously, sharing resources with other sessions.
     pub async fn anonymous_shared(shared: Arc<crate::Shared>) -> Result<Self, InstallError> {
         let servers = cm_list(0)
             .await
@@ -100,7 +92,6 @@ impl Session {
             pool: HostPool::new(Vec::new()),
             cell_id: outcome.cell_id,
             keys: HashMap::new(),
-            // Steam asks for ~9s; halved because heartbeats ride between chunk fetches.
             heartbeat_interval: std::time::Duration::from_secs(
                 (u64::from(outcome.heartbeat_seconds).clamp(2, 60)) / 2,
             ),
@@ -113,7 +104,6 @@ impl Session {
         Ok(session)
     }
 
-    /// Logs on as an account, using a refresh token from a completed login.
     pub async fn with_token(token: &tapline_auth::StoredToken) -> Result<Self, InstallError> {
         Self::with_token_shared(
             token,
@@ -122,7 +112,6 @@ impl Session {
         .await
     }
 
-    /// Logs on as an account, sharing resources with other sessions.
     pub async fn with_token_shared(
         token: &tapline_auth::StoredToken,
         shared: Arc<crate::Shared>,
@@ -140,7 +129,6 @@ impl Session {
             .await
             .map_err(|e| InstallError::Io(format!("could not connect to {endpoint}: {e}")))?;
 
-        // The logon header must name the account's SteamID, which the token carries.
         let steam_id = token.steam_id().ok_or_else(|| {
             InstallError::Io(
                 "the saved token is not a Steam refresh token; sign in again with \
@@ -173,7 +161,6 @@ impl Session {
         Ok(session)
     }
 
-    /// A session that signs in if it can, and stays anonymous if it cannot.
     pub async fn automatic(account: Option<&str>) -> Result<Self, InstallError> {
         Self::automatic_shared(
             account,
@@ -182,7 +169,6 @@ impl Session {
         .await
     }
 
-    /// A session that signs in if it can, sharing resources with others.
     pub async fn automatic_shared(
         account: Option<&str>,
         shared: Arc<crate::Shared>,
@@ -196,30 +182,24 @@ impl Session {
         if let Some(name) = wanted
             && let Ok(Some(token)) = store.load(&name)
         {
-            match Self::with_token_shared(&token, Arc::clone(&shared)).await {
-                Ok(session) => return Ok(session),
-                Err(_) => {
-                    // Falls through to anonymous; the caller sees which via `Session::account`.
-                }
+            if let Ok(session) = Self::with_token_shared(&token, Arc::clone(&shared)).await {
+                return Ok(session);
             }
         }
 
         Self::anonymous_shared(shared).await
     }
 
-    /// The account this session signed in as, or `None` when anonymous.
     #[must_use]
     pub fn account(&self) -> Option<&str> {
         self.account.as_deref()
     }
 
-    /// The cell Steam placed this session in; decides which CDN hosts are nearby.
     #[must_use]
     pub const fn cell_id(&self) -> u32 {
         self.cell_id
     }
 
-    /// 20 hosts stay warm; wider lists evict pooled connections and collapse throughput.
     const MAX_CDN_HOSTS: u32 = 20;
 
     async fn refresh_hosts(&mut self) -> Result<(), InstallError> {
@@ -243,7 +223,6 @@ impl Session {
                 Some(Host {
                     vhost: server.vhost.clone().unwrap_or_else(|| host.clone()),
                     host,
-                    // Load is int32 on the wire; absent must sort last, not first.
                     load: server
                         .load
                         .and_then(|value| u32::try_from(value).ok())
@@ -257,7 +236,6 @@ impl Session {
         Ok(())
     }
 
-    /// Sends a heartbeat now, whether or not one is due.
     pub async fn keep_alive(&mut self) -> Result<(), InstallError> {
         self.cm.heartbeat().await?;
         self.last_heartbeat = std::time::Instant::now();
@@ -334,7 +312,6 @@ impl Session {
 
         let mut resolved = Vec::with_capacity(depots.len());
         for depot in depots {
-            // A borrowed depot's key belongs to the app that owns it.
             let key = self.depot_key(depot.owner, depot.id).await?;
 
             let code = self
@@ -370,7 +347,6 @@ impl Session {
         Ok(resolved)
     }
 
-    /// Works out what an install would cost, without fetching any content.
     pub async fn plan(
         &mut self,
         app: AppId,
@@ -447,7 +423,6 @@ impl Session {
         })
     }
 
-    /// Opens a Workshop item for reading without downloading it.
     pub async fn open_workshop_item(
         &mut self,
         item: &crate::WorkshopItem,
@@ -483,7 +458,6 @@ impl Session {
         ))
     }
 
-    /// Streams a Workshop item's bytes to `consumer` in order, without writing it to disk.
     pub async fn stream_workshop_item(
         &mut self,
         item: &crate::WorkshopItem,
@@ -517,7 +491,6 @@ impl Session {
             },
         });
 
-        // The manifest does not promise offset order; the consumer needs it.
         let mut chunks = file.chunks.clone();
         chunks.sort_by_key(|chunk| chunk.offset);
 
@@ -531,7 +504,6 @@ impl Session {
         let mut tasks: StreamTasks = tokio::task::JoinSet::new();
         let mut next_to_fetch = 0_usize;
 
-        // Started in order, at most `window.size` in flight: the buffer stays bounded.
         while next_to_fetch < chunks.len() && tasks.len() < window.size {
             self.spawn_stream_chunk(
                 &chunks,
@@ -605,7 +577,6 @@ impl Session {
 
         tasks.spawn(async move {
             let outcome = async move {
-                // Draws on the same process-wide budget as ordinary downloads.
                 let _permit = shared_limit
                     .acquire_owned()
                     .await
@@ -651,18 +622,15 @@ impl Session {
         });
     }
 
-    /// Adds an extension, which runs against every file this session writes.
     pub fn register(&mut self, extension: Arc<dyn tapline_ext::Extension>) {
         Arc::make_mut(&mut self.extensions).push(extension);
     }
 
-    /// The extensions registered on this session.
     #[must_use]
     pub fn extensions(&self) -> &[Arc<dyn tapline_ext::Extension>] {
         &self.extensions
     }
 
-    /// Installs or updates an app.
     pub async fn install(
         &mut self,
         app: AppId,
@@ -671,7 +639,6 @@ impl Session {
         self.install_observed(app, options, &mut |_| {}).await
     }
 
-    /// Installs, reporting progress as it goes.
     pub async fn install_observed(
         &mut self,
         app: AppId,
@@ -680,7 +647,6 @@ impl Session {
     ) -> Result<InstallReport, InstallError> {
         let resolved = self.resolve(app, options).await?;
 
-        // Planned first: a progress bar needs the denominator before the numerator moves.
         let mut planned = Plan::default();
         for entry in &resolved {
             let (chunks, download_bytes) = entry.manifest.distinct_chunks();
@@ -713,7 +679,6 @@ impl Session {
             if state.installed_manifest(entry.depot.id) == Some(entry.depot.manifest)
                 && !options.force
             {
-                // Already at this build; verifying bytes is `validate`'s job.
                 report.depots_unchanged += 1;
                 report.chunks_reused += u64::from(entry.manifest.unique_chunks);
                 continue;
@@ -743,7 +708,6 @@ impl Session {
             );
         }
 
-        // A depot the app no longer ships must leave the record.
         let current: std::collections::HashSet<DepotId> =
             resolved.iter().map(|entry| entry.depot.id).collect();
         for depot in state.installed_depots().keys().copied().collect::<Vec<_>>() {
@@ -761,7 +725,6 @@ impl Session {
         Ok(report)
     }
 
-    /// Starts a QR login.
     pub async fn begin_qr_login(&mut self) -> Result<crate::PendingLogin, crate::LoginError> {
         let response = self
             .cm
@@ -785,12 +748,10 @@ impl Session {
             confirmations: crate::login::confirmations_from(&response.allowed_confirmations),
             challenge_url: response.challenge_url.clone(),
             account: None,
-            // A QR login does not know the account until it is approved.
             steam_id: 0,
         })
     }
 
-    /// Fetches the per-account RSA key Steam issues for a password login.
     pub async fn password_key(
         &mut self,
         account: &str,
@@ -806,7 +767,6 @@ impl Session {
         crate::login::key_from_response(&response)
     }
 
-    /// Starts a password login.
     pub async fn begin_password_login(
         &mut self,
         account: &str,
@@ -836,7 +796,6 @@ impl Session {
             .await
             .map_err(login_failure)?;
 
-        // Steam reports a failed password on the reply, not as an error.
         if response.client_id.is_none() {
             return Err(crate::LoginError::Refused {
                 eresult: 0,
@@ -855,7 +814,6 @@ impl Session {
         })
     }
 
-    /// Signs in with a username and a password, in one call.
     pub async fn sign_in(
         &mut self,
         username: &str,
@@ -876,7 +834,6 @@ impl Session {
         match (wanted, guard_code) {
             (Some(kind), Some(code)) => self.submit_guard_code(&pending, code, kind).await?,
             (Some(kind), None) => {
-                // Said now rather than after two minutes of doomed polling.
                 return Err(crate::LoginError::Password(format!(
                     "this account needs {kind}; pass it as guard_code"
                 )));
@@ -909,7 +866,6 @@ impl Session {
         ))
     }
 
-    /// Submits a Steam Guard code for a pending login.
     pub async fn submit_guard_code(
         &mut self,
         pending: &crate::PendingLogin,
@@ -934,7 +890,6 @@ impl Session {
         Ok(())
     }
 
-    /// Runs a QR login to completion, showing the code and refreshing it.
     pub async fn qr_login(
         &mut self,
         timeout: std::time::Duration,
@@ -942,7 +897,6 @@ impl Session {
     ) -> Result<tapline_auth::StoredToken, crate::LoginError> {
         let mut current = self.begin_qr_login().await?;
 
-        // Show the first code before any polling.
         if let Some(url) = &current.challenge_url {
             on_code(url);
         }
@@ -959,7 +913,6 @@ impl Session {
                     client_id,
                     challenge_url,
                 } => {
-                    // The old code expired; polling it again waits forever.
                     current.client_id = client_id;
                     current.challenge_url = challenge_url;
                     if let Some(url) = &current.challenge_url {
@@ -984,7 +937,6 @@ impl Session {
         ))
     }
 
-    /// Polls a login once.
     pub async fn poll_login(
         &mut self,
         pending: &crate::PendingLogin,
@@ -1015,7 +967,6 @@ impl Session {
             });
         }
 
-        // A refreshed QR code moves the session; the old client id is dead.
         if let Some(new_client_id) = response.new_client_id.filter(|id| *id != 0) {
             return Ok(crate::PollOutcome::Moved {
                 client_id: new_client_id,
@@ -1028,7 +979,6 @@ impl Session {
         })
     }
 
-    /// Makes a unified-message call on the session's CM connection.
     pub async fn call_raw<R: tapline_wire::Rpc>(
         &mut self,
         request: &R,
@@ -1036,12 +986,10 @@ impl Session {
         Ok(self.cm.call(request).await?)
     }
 
-    /// Fetches an app's PICS document.
     pub async fn app_info(&mut self, app: AppId) -> Result<tapline_pics::AppInfo, InstallError> {
         Ok(tapline_pics::product_info(&mut self.cm, app).await?)
     }
 
-    /// Describes Workshop items.
     pub async fn workshop_details(
         &mut self,
         ids: &[PublishedFileId],
@@ -1056,7 +1004,6 @@ impl Session {
             })
             .await?;
 
-        // PICS is asked once per app, not once per item.
         let mut depots: HashMap<AppId, Option<DepotId>> = HashMap::new();
         let mut out = Vec::with_capacity(ids.len());
 
@@ -1082,7 +1029,6 @@ impl Session {
             out.push(crate::classify(details, workshop_depot));
         }
 
-        // An item Steam did not return is still an answer.
         for id in ids {
             let mentioned = response
                 .publishedfiledetails
@@ -1096,7 +1042,6 @@ impl Session {
         Ok(out)
     }
 
-    /// Searches an app's Workshop.
     pub async fn browse_workshop(
         &mut self,
         query: &crate::BrowseQuery,
@@ -1104,7 +1049,6 @@ impl Session {
         query.validate()?;
         let response = self.cm.call(&query.to_request()).await?;
 
-        // One PICS lookup per page, not one per result.
         let workshop_depot = if query.app.get() == 0 {
             None
         } else {
@@ -1123,7 +1067,6 @@ impl Session {
             }
         }
 
-        // Steam repeats the cursor at the end; unchanged means stop, not loop.
         let sent = query.cursor.as_deref().unwrap_or(crate::FIRST_PAGE);
         let next_cursor = response
             .next_cursor
@@ -1137,7 +1080,6 @@ impl Session {
         })
     }
 
-    /// Counts what a search would match, without fetching any of it.
     pub async fn count_workshop(
         &mut self,
         query: &crate::BrowseQuery,
@@ -1145,13 +1087,11 @@ impl Session {
         query.validate()?;
         let mut request = query.to_request();
         request.totalonly = Some(true);
-        // Steam sends no items for a totalonly query; ask for the minimum.
         request.numperpage = Some(1);
         let response = self.cm.call(&request).await?;
         Ok(response.total.unwrap_or(0))
     }
 
-    /// Subscribes this account to a Workshop item.
     pub async fn subscribe_workshop_item(
         &mut self,
         app: AppId,
@@ -1161,9 +1101,7 @@ impl Session {
         self.cm
             .call(&CPublishedFile_Subscribe_Request {
                 publishedfileid: Some(item.get()),
-                // Without the appid the subscribe applies to nothing yet answers success.
                 appid: i32::try_from(app.get()).ok(),
-                // So a running Steam client notices immediately.
                 notify_client: Some(true),
                 include_dependencies: Some(include_dependencies),
                 ..CPublishedFile_Subscribe_Request::default()
@@ -1172,7 +1110,6 @@ impl Session {
         Ok(())
     }
 
-    /// Tells Steam this account no longer wants an item.
     pub async fn unsubscribe_workshop_item(
         &mut self,
         app: AppId,
@@ -1181,9 +1118,7 @@ impl Session {
         self.cm
             .call(&CPublishedFile_Unsubscribe_Request {
                 publishedfileid: Some(item.get()),
-                // Without the appid the unsubscribe applies to nothing yet answers success.
                 appid: i32::try_from(app.get()).ok(),
-                // So a running Steam client notices immediately.
                 notify_client: Some(true),
                 ..CPublishedFile_Unsubscribe_Request::default()
             })
@@ -1191,7 +1126,6 @@ impl Session {
         Ok(())
     }
 
-    /// Downloads one Workshop item.
     pub async fn download_workshop_item(
         &mut self,
         item: &crate::WorkshopItem,
@@ -1201,7 +1135,6 @@ impl Session {
             .await
     }
 
-    /// Downloads a Workshop item, reporting progress as it goes.
     pub async fn download_workshop_item_observed(
         &mut self,
         item: &crate::WorkshopItem,
@@ -1258,7 +1191,6 @@ impl Session {
                 report.depots.push(*depot);
                 let bytes_total = entry.manifest.total_size;
 
-                // Planned first, same contract as an app install.
                 let (chunks, download_bytes) = entry.manifest.distinct_chunks();
                 observe(Event::Planned {
                     plan: Plan {
@@ -1280,7 +1212,6 @@ impl Session {
             }
 
             crate::WorkshopContent::Legacy { url, filename } => {
-                // The filename is attacker-authored; validate it like any manifest path.
                 let name = filename.as_deref().unwrap_or("contents.bin");
                 let safe = validate_path(name).map_err(|reason| InstallError::UnsafePath {
                     path: name.to_owned(),
@@ -1316,7 +1247,6 @@ impl Session {
         Ok(report)
     }
 
-    /// Checks an install against its manifests, hashing every chunk on disk.
     pub async fn validate(
         &mut self,
         app: AppId,
@@ -1359,13 +1289,11 @@ impl Session {
     ) -> Result<(), InstallError> {
         create_directories(&entry.manifest, &options.install_dir)?;
 
-        // Snapshot: fetch tasks take no lock; health folds back afterwards.
         let hosts: Vec<String> = self.pool.snapshot();
         if hosts.is_empty() {
             return Err(InstallError::Pool(tapline_cdn::PoolError::Empty));
         }
 
-        // Both bounds are needed: shared caps the process, local stops one download hogging it.
         let shared_limit = Arc::clone(&self.shared.limit);
         let local_limit = Arc::new(tokio::sync::Semaphore::new(options.concurrency.max(1)));
         let fetch = ChunkContext {
@@ -1378,12 +1306,10 @@ impl Session {
         let mut tasks: tokio::task::JoinSet<(usize, Result<ChunkOutcome, InstallError>)> =
             tokio::task::JoinSet::new();
 
-        // An fsync must never stop the loop dispatching the next chunk.
         let mut finalizing: tokio::task::JoinSet<Result<Finished, InstallError>> =
             tokio::task::JoinSet::new();
 
         let mut files_written = 0_u64;
-        // A file closes its descriptor when its last chunk lands, or big depots hit EMFILE.
         let mut pending: std::collections::BTreeMap<usize, PendingFile> =
             std::collections::BTreeMap::new();
 
@@ -1396,7 +1322,6 @@ impl Session {
             })?;
             let target = safe.resolve(&options.install_dir);
 
-            // Right-length files may be partial; hashing each chunk answers directly.
             let existing = if options.resume {
                 std::fs::metadata(&target)
                     .ok()
@@ -1417,10 +1342,8 @@ impl Session {
             });
 
             for chunk in &file.chunks {
-                // Before the permit: acquiring blocks, and the CM must not go quiet.
                 self.maybe_heartbeat().await?;
 
-                // Local before shared, always: a consistent order cannot deadlock.
                 let local_permit = Arc::clone(&local_limit)
                     .acquire_owned()
                     .await
@@ -1435,7 +1358,6 @@ impl Session {
                 let chunk = chunk.clone();
 
                 tasks.spawn(async move {
-                    // Held for the task's life; this is what bounds concurrency.
                     let _permits = (local_permit, shared_permit);
                     let outcome = fetch_decode_write_chunk(&fetch, &chunk, &sink, resuming).await;
                     (index, outcome)
@@ -1457,13 +1379,11 @@ impl Session {
             files_written += 1;
 
             if outstanding == 0 {
-                // A zero-length file has no chunks; queue it or its descriptor leaks.
                 finalizing.spawn_blocking(move || finalize_file(entry_pending));
             } else {
                 pending.insert(index, entry_pending);
             }
 
-            // Drain as we go so descriptors release and the set stays bounded.
             while let Some(joined) = tasks.try_join_next() {
                 apply_outcome(
                     joined,
@@ -1481,9 +1401,7 @@ impl Session {
                 collect_finalize(joined, observe)?;
             }
 
-            // A hard ceiling on open descriptors, whatever the chunk distribution.
             while pending.len() + finalizing.len() >= MAX_OPEN_FILES {
-                // A syncing file still holds its descriptor.
                 if let Some(joined) = finalizing.try_join_next() {
                     collect_finalize(joined, observe)?;
                     continue;
@@ -1506,7 +1424,6 @@ impl Session {
             }
         }
 
-        // Pure waiting; without heartbeats here the CM connection dies.
         while let Some(joined) = tasks.join_next().await {
             apply_outcome(
                 joined,
@@ -1518,13 +1435,11 @@ impl Session {
             self.maybe_heartbeat().await?;
         }
 
-        // Every file must be on disk before the install record claims it is.
         while let Some(joined) = finalizing.join_next().await {
             collect_finalize(joined, observe)?;
             self.maybe_heartbeat().await?;
         }
 
-        // Anything left is a file silently unsynced: an error, not cleanup.
         if let Some((_, leftover)) = pending.pop_first() {
             return Err(InstallError::Io(format!(
                 "{} still had {} chunks outstanding after every task finished",
@@ -1564,7 +1479,6 @@ async fn fetch_decode_write_chunk(
 
     let mut last_error = None;
     for attempt in 0..4_usize {
-        // Round-robin: concentrating requests on one host triggers rate limiting.
         let index = ctx
             .next_host
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -1611,7 +1525,6 @@ async fn fetch_decode_write_chunk(
     }
 }
 
-/// Directories first, so a file never races the directory it lives in.
 fn create_directories(
     manifest: &Manifest,
     install_dir: &std::path::Path,
@@ -1629,7 +1542,6 @@ fn create_directories(
     Ok(())
 }
 
-/// Links go last, and are validated: a link is an indirect path traversal.
 fn create_symlinks(
     manifest: &Manifest,
     install_dir: &std::path::Path,
@@ -1708,16 +1620,13 @@ struct PendingFile {
     outstanding: usize,
 }
 
-/// The open-file ceiling; well under the usual 1,024 soft limit.
 const MAX_OPEN_FILES: usize = 64;
 
-/// Blocking on purpose; never called from the task that dispatches chunks.
 fn finalize_file(file: PendingFile) -> Result<Finished, InstallError> {
     file.sink
         .sync_blocking()
         .map_err(|error| InstallError::Io(error.to_string()))?;
     set_permissions(&file.target, file.mode)?;
-    // Extensions read the file back; the sync must land first.
     drop(file.sink);
 
     let mut extended = Vec::new();
@@ -1733,7 +1642,6 @@ fn finalize_file(file: PendingFile) -> Result<Finished, InstallError> {
             if !extension.claims(&landed) {
                 continue;
             }
-            // A failed extension fails the install rather than leaving a half-processed tree.
             let produced = extension
                 .run(&landed)
                 .map_err(|error| InstallError::Io(error.to_string()))?;
@@ -1764,7 +1672,6 @@ pub(crate) async fn fetch_and_decode(
     }
     let mut last_error = None;
     for attempt in 0..4_usize {
-        // Rotated per caller so concurrent reads spread across hosts.
         let host = hosts
             .get((rotation + attempt) % hosts.len())
             .cloned()
@@ -1813,7 +1720,6 @@ fn collect_finalize(
         extended,
     } = joined
         .map_err(|error| InstallError::Io(format!("a file could not be finalised: {error}")))??;
-    // Emitted only after the sync: before that the file is not on disk.
     observe(Event::FileCompleted {
         path: path.clone(),
         bytes,
@@ -1838,7 +1744,6 @@ fn apply_outcome(
     let (index, outcome) =
         joined.map_err(|error| InstallError::Io(format!("a download task failed: {error}")))?;
 
-    // Decrement before the `?` so a failure leaves no stale entry.
     let finished = match pending.get_mut(&index) {
         Some(file) => {
             file.outstanding = file.outstanding.saturating_sub(1);

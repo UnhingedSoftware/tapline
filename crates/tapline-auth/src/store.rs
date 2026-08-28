@@ -1,34 +1,25 @@
-//! Where a refresh token lives between runs.
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// A stored refresh token; zeroed on drop, never printed.
 #[derive(Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
 pub struct StoredToken {
-    /// The account the token belongs to.
     pub account: String,
-    /// The refresh token itself.
     pub refresh_token: String,
 }
 
 impl StoredToken {
-    /// The SteamID from the token's `sub` claim; `None` means "log in again".
     #[must_use]
     pub fn steam_id(&self) -> Option<u64> {
         steam_id_from_jwt(&self.refresh_token)
     }
 }
 
-/// Reads the JWT `sub` claim without verifying; Steam validates the token itself.
 fn steam_id_from_jwt(token: &str) -> Option<u64> {
-    // header.payload.signature — the middle part is the claims.
     let payload = token.split('.').nth(1)?;
     let decoded = base64url_decode(payload)?;
     let text = std::str::from_utf8(&decoded).ok()?;
 
-    // Targeted scan; one field does not justify a JSON parser.
     let start = text.find("\"sub\"")?;
     let rest = text.get(start + 5..)?;
     let quoted = rest.find('"')?;
@@ -40,7 +31,6 @@ fn steam_id_from_jwt(token: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// Decodes unpadded base64url, which is what a JWT uses.
 fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     fn value(byte: u8) -> Option<u8> {
         match byte {
@@ -57,7 +47,6 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     let mut accumulator = 0_u32;
     let mut bits = 0_u32;
     for byte in input.bytes() {
-        // JWTs are unpadded, but tolerate padding rather than failing on it.
         if byte == b'=' {
             break;
         }
@@ -80,18 +69,11 @@ impl fmt::Debug for StoredToken {
     }
 }
 
-/// What went wrong reading or writing a token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenStoreError {
-    /// The filesystem or keyring refused.
     Backend(String),
-    /// The stored data was not in the expected shape.
     Malformed,
-    /// The token file is readable by other users; refused rather than used.
-    Insecure {
-        /// The file's mode.
-        mode: u32,
-    },
+    Insecure { mode: u32 },
 }
 
 impl fmt::Display for TokenStoreError {
@@ -109,18 +91,13 @@ impl fmt::Display for TokenStoreError {
 
 impl std::error::Error for TokenStoreError {}
 
-/// Where tokens are kept.
 #[derive(Debug, Clone, Default)]
 pub enum TokenStore {
-    /// A `0600` file.
     File {
-        /// Its path.
         path: PathBuf,
     },
-    /// The OS keyring.
     #[cfg(feature = "keyring")]
     Keyring,
-    /// Nowhere: the token is discarded when the process ends.
     #[default]
     None,
 }
@@ -129,7 +106,6 @@ pub enum TokenStore {
 const KEYRING_SERVICE: &str = "tapline";
 
 impl TokenStore {
-    /// A file store under the user's config directory.
     #[must_use]
     pub fn default_file() -> Self {
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -142,7 +118,6 @@ impl TokenStore {
         }
     }
 
-    /// Saves a token.
     pub fn save(&self, token: &StoredToken) -> Result<(), TokenStoreError> {
         match self {
             Self::None => Ok(()),
@@ -158,7 +133,6 @@ impl TokenStore {
         }
     }
 
-    /// Loads an account's token, if one is stored.
     pub fn load(&self, account: &str) -> Result<Option<StoredToken>, TokenStoreError> {
         match self {
             Self::None => Ok(None),
@@ -179,7 +153,6 @@ impl TokenStore {
         }
     }
 
-    /// The accounts with a saved token; the keyring backend returns empty.
     pub fn accounts(&self) -> Result<Vec<String>, TokenStoreError> {
         match self {
             Self::None => Ok(Vec::new()),
@@ -189,7 +162,6 @@ impl TokenStore {
         }
     }
 
-    /// Forgets every saved token; file backend only.
     pub fn forget_all(&self) -> Result<(), TokenStoreError> {
         match self {
             Self::None => Ok(()),
@@ -199,7 +171,6 @@ impl TokenStore {
         }
     }
 
-    /// Forgets one account's token locally; it does not revoke with Steam.
     pub fn forget(&self, account: &str) -> Result<(), TokenStoreError> {
         match self {
             Self::None => Ok(()),
@@ -235,7 +206,6 @@ fn read_all(path: &Path) -> Result<Vec<(String, String)>, TokenStoreError> {
         if line.trim().is_empty() {
             continue;
         }
-        // `account\ttoken`; a tab needs no escaping in either field.
         let (account, token) = line.split_once('\t').ok_or(TokenStoreError::Malformed)?;
         out.push((account.to_owned(), token.to_owned()));
     }
@@ -260,12 +230,10 @@ fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStore
     Ok(())
 }
 
-/// Creates the file with `0600` before writing, so no world-readable window exists.
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
-    // Temp file + rename, so a crash cannot truncate the existing file.
     let temporary = path.with_extension("tmp");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -290,7 +258,6 @@ fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     let metadata = std::fs::metadata(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
     let mode = metadata.permissions().mode() & 0o777;
 
-    // Group or other having any access at all.
     if mode & 0o077 != 0 {
         return Err(TokenStoreError::Insecure { mode });
     }
@@ -318,7 +285,6 @@ fn read_file(path: &Path, account: &str) -> Result<Option<StoredToken>, TokenSto
 mod tests {
     use super::*;
 
-    /// header.payload.signature, unpadded base64url, with the SteamID in `sub`.
     const REAL_SHAPE: &str = "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiAic3RlYW0iLCAic3ViIjogIjc2NTYxMTk4MTYwNTcwMjA4IiwgImF1ZCI6IFsiY2xpZW50IiwgIndlYiJdLCAiZXhwIjogMTkwMDAwMDAwMH0.c2lnbmF0dXJl";
 
     #[test]
@@ -349,7 +315,6 @@ mod tests {
 
     #[test]
     fn base64url_reads_the_alphabet_a_jwt_uses() {
-        // `-`/`_` alphabet, no padding; a standard decoder rejects these.
         assert_eq!(base64url_decode("Zm9vYmFy"), Some(b"foobar".to_vec()));
         assert_eq!(base64url_decode("Zg"), Some(b"f".to_vec()));
         assert_eq!(base64url_decode("Zg=="), Some(b"f".to_vec()));
@@ -430,7 +395,6 @@ mod tests {
 
     #[test]
     fn the_file_is_created_private_and_never_widens() {
-        // The ordering is the point: 0600 at creation, not chmod afterwards.
         let scratch = Scratch::new("tokens-perms");
         let store = scratch.store();
         store.save(&token("someone")).expect("save");
@@ -439,7 +403,6 @@ mod tests {
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the token file is mode {mode:o}");
 
-        // A second save must not widen it.
         store.save(&token("another")).expect("save");
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);

@@ -1,40 +1,25 @@
-//! The file and chunk view of a manifest.
-
 use crate::{ManifestError, RawManifest};
 use tapline_ids::{DepotId, ManifestId};
 
-/// What a file's `flags` field means.
 pub mod flag {
-    /// A directory entry, with no content of its own.
     pub const DIRECTORY: u32 = 1 << 6;
-    /// A symbolic link; the target is in `linktarget`.
     pub const SYMLINK: u32 = 1 << 9;
-    /// The file should be executable.
     pub const EXECUTABLE: u32 = 1 << 0;
-    /// A custom executable, treated the same way.
     pub const CUSTOM_EXECUTABLE: u32 = 1 << 5;
-    /// Marked read-only.
     pub const READ_ONLY: u32 = 1 << 3;
-    /// Hidden on Windows.
     #[allow(dead_code, reason = "documents the flag word; no Linux behaviour")]
     pub const HIDDEN: u32 = 1 << 4;
 }
 
-/// A file's kind and permissions, as the manifest describes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FileFlags {
-    /// A directory rather than a file.
     pub directory: bool,
-    /// A symbolic link.
     pub symlink: bool,
-    /// Should be executable.
     pub executable: bool,
-    /// Marked read-only.
     pub read_only: bool,
 }
 
 impl FileFlags {
-    /// Decodes the manifest's flag word.
     #[must_use]
     pub const fn from_bits(bits: u32) -> Self {
         Self {
@@ -46,65 +31,43 @@ impl FileFlags {
     }
 }
 
-/// One chunk of one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
-    /// The chunk id: the SHA-1 of its plaintext.
     pub id: [u8; 20],
-    /// CRC-32 of the encrypted, compressed form, as the CDN stores it.
     pub crc: u32,
-    /// Where the chunk's plaintext belongs within its file.
     pub offset: u64,
-    /// The plaintext length.
     pub uncompressed_size: u32,
-    /// The stored length, encrypted and compressed.
     pub compressed_size: u32,
 }
 
 impl Chunk {
-    /// The chunk id in the lowercase hex the CDN's URLs use.
     #[must_use]
     pub fn id_hex(&self) -> String {
         self.id.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 }
 
-/// One file in a depot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
-    /// The path relative to the install root, as the manifest spells it.
     pub path: String,
-    /// The file's size in bytes.
     pub size: u64,
-    /// Decoded flags.
     pub flags: FileFlags,
-    /// The raw flag word, so nothing is lost to a flag we do not model.
     pub raw_flags: u32,
-    /// A symlink's target, when this is a symlink.
     pub link_target: Option<String>,
-    /// The chunks making up the file, in offset order.
     pub chunks: Vec<Chunk>,
 }
 
-/// A manifest, ready to drive a download.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
-    /// Which depot.
     pub depot: DepotId,
-    /// Which build.
     pub id: ManifestId,
-    /// When Steam created it, as a Unix timestamp.
     pub created: u32,
-    /// Total installed size.
     pub total_size: u64,
-    /// How many distinct chunks the depot has.
     pub unique_chunks: u32,
-    /// The files, in the order the manifest lists them.
     pub files: Vec<FileEntry>,
 }
 
 impl Manifest {
-    /// Builds a manifest from its raw blocks, decrypting filenames if needed.
     pub fn from_raw(
         raw: &RawManifest,
         depot_key: Option<&[u8; 32]>,
@@ -145,7 +108,6 @@ impl Manifest {
                 })
                 .collect();
 
-            // The manifest promises no chunk order; resume logic needs offset order.
             chunks.sort_by_key(|chunk| chunk.offset);
 
             files.push(FileEntry {
@@ -168,12 +130,10 @@ impl Manifest {
         })
     }
 
-    /// Parses a manifest as served by the CDN.
     pub fn parse(bytes: &[u8], depot_key: Option<&[u8; 32]>) -> Result<Self, ManifestError> {
         Self::from_raw(&RawManifest::parse(bytes)?, depot_key)
     }
 
-    /// Every distinct chunk in the depot, with the total bytes to download.
     #[must_use]
     pub fn distinct_chunks(&self) -> (Vec<&Chunk>, u64) {
         let mut seen = std::collections::HashSet::new();
@@ -191,7 +151,6 @@ impl Manifest {
         (chunks, bytes)
     }
 
-    /// Files that carry content, skipping directories and symlinks.
     pub fn regular_files(&self) -> impl Iterator<Item = &FileEntry> {
         self.files
             .iter()
@@ -199,13 +158,11 @@ impl Manifest {
     }
 }
 
-/// Decrypts one filename; backslashes become forward slashes (Valve writes Windows separators).
 fn decrypt_filename(encoded: &str, key: &[u8; 32]) -> Result<String, ManifestError> {
     let ciphertext = base64_decode(encoded).ok_or(ManifestError::FilenameUndecryptable)?;
     let plaintext = tapline_crypto::decrypt_content(key, &ciphertext)
         .map_err(|_| ManifestError::FilenameUndecryptable)?;
 
-    // Steam NUL-terminates the plaintext.
     let trimmed = plaintext.strip_suffix(&[0]).unwrap_or(&plaintext);
     let text =
         String::from_utf8(trimmed.to_vec()).map_err(|_| ManifestError::FilenameUndecryptable)?;

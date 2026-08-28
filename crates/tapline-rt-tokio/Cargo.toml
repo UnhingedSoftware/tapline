@@ -21,7 +21,6 @@ webpki-roots = { workspace = true }
 
 [dev-dependencies]
 tapline-io = { workspace = true, features = ["testing"] }
-# Nothing higher up the DAG here: an upward dev-dependency made an unpublishable cycle.
 tapline-net = { workspace = true }
 tapline-proto = { workspace = true }
 tapline-wire = { workspace = true }

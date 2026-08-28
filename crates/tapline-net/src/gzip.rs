@@ -1,11 +1,8 @@
-//! Just enough gzip (RFC 1952) to unwrap a `CMsgMulti` payload.
-
 use std::fmt;
 
 const MAGIC: [u8; 2] = [0x1F, 0x8B];
 const METHOD_DEFLATE: u8 = 8;
 const HEADER_LEN: usize = 10;
-// Trailer: CRC-32 then ISIZE.
 const TRAILER_LEN: usize = 8;
 
 const FLG_FHCRC: u8 = 1 << 1;
@@ -13,26 +10,14 @@ const FLG_FEXTRA: u8 = 1 << 2;
 const FLG_FNAME: u8 = 1 << 3;
 const FLG_FCOMMENT: u8 = 1 << 4;
 
-/// What went wrong unwrapping a gzip stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GzipError {
-    /// The stream did not start with the gzip magic, or ended too early.
     Malformed,
-    /// A compression method other than deflate.
     UnsupportedMethod(u8),
-    /// Inflation failed.
     Inflate(String),
-    /// The output would have exceeded the caller's limit.
     TooLarge,
-    /// The trailer's CRC-32 did not match what we decompressed.
     ChecksumMismatch,
-    /// The trailer's length did not match what we decompressed.
-    LengthMismatch {
-        /// What the trailer claimed.
-        expected: u32,
-        /// What came out.
-        actual: usize,
-    },
+    LengthMismatch { expected: u32, actual: usize },
 }
 
 impl fmt::Display for GzipError {
@@ -52,7 +37,6 @@ impl fmt::Display for GzipError {
 
 impl std::error::Error for GzipError {}
 
-/// Decompresses a gzip stream, refusing to produce more than `limit` bytes.
 pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, GzipError> {
     let magic = data.get(..2).ok_or(GzipError::Malformed)?;
     if magic != MAGIC {
@@ -114,7 +98,6 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, GzipError> {
             .ok_or(GzipError::Malformed)?,
     );
 
-    // ISIZE is the length modulo 2^32, which is the only thing gzip promises.
     if expected_len != (out.len() as u64 % (1_u64 << 32)) as u32 {
         return Err(GzipError::LengthMismatch {
             expected: expected_len,
@@ -137,16 +120,15 @@ fn skip_nul_terminated(data: &[u8], from: usize) -> Result<usize, GzipError> {
     from.checked_add(nul + 1).ok_or(GzipError::Malformed)
 }
 
-/// Builds test fixtures; nothing in the protocol asks tapline to produce gzip.
 #[cfg(test)]
 pub fn compress(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&MAGIC);
     out.push(METHOD_DEFLATE);
-    out.push(0); // no optional fields
-    out.extend_from_slice(&0_u32.to_le_bytes()); // MTIME
-    out.push(0); // XFL
-    out.push(255); // OS: unknown
+    out.push(0);
+    out.extend_from_slice(&0_u32.to_le_bytes());
+    out.push(0);
+    out.push(255);
     out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, 6));
     out.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -228,7 +210,6 @@ mod tests {
             decompress(b"not gzip at all", 1024),
             Err(GzipError::Malformed)
         );
-        // Right magic, wrong method.
         let mut wrong = vec![0x1F, 0x8B, 99, 0];
         wrong.extend_from_slice(&[0; 14]);
         assert_eq!(

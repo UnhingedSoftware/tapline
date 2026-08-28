@@ -1,18 +1,14 @@
-//! Writing content to disk with positional writes.
-
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use tapline_io::Sink;
 
-/// A file open for positional writes.
 pub struct FileSink {
     file: File,
 }
 
 impl FileSink {
-    /// Creates the file and its parents; the path must be pre-validated by `tapline-fs`.
     pub fn create(path: &Path) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -21,18 +17,15 @@ impl FileSink {
         Ok(Self { file })
     }
 
-    /// Opens an existing file for update, keeping its contents.
     pub fn open_existing(path: &Path) -> io::Result<Self> {
         let file = File::options().write(true).read(true).open(path)?;
         Ok(Self { file })
     }
 
-    /// Flushes to disk, blocking; put it on a blocking thread.
     pub fn sync_blocking(&self) -> io::Result<()> {
         self.file.sync_all()
     }
 
-    /// Reads `len` bytes at `offset`, for verifying what is already on disk.
     pub fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0_u8; len];
         self.file.read_exact_at(&mut buffer, offset)?;
@@ -42,7 +35,6 @@ impl FileSink {
 
 impl Sink for FileSink {
     async fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
-        // Positional write: no shared offset, so concurrent callers cannot interleave.
         self.file.write_all_at(data, offset)
     }
 
@@ -60,7 +52,6 @@ mod tests {
     use super::*;
     use tapline_io::testing::block_on;
 
-    /// Scratch dir, never under `/tmp`: that is tmpfs on the dev machine.
     struct Scratch(std::path::PathBuf);
 
     impl Scratch {

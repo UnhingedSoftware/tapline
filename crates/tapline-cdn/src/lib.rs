@@ -1,5 +1,3 @@
-//! The SteamPipe CDN: host pool, chunk fetch, decrypt, decode, verify.
-
 mod pool;
 
 pub use pool::{Host, HostPool, PoolError, usable_over_tls};
@@ -9,39 +7,24 @@ use tapline_ids::DepotId;
 use tapline_io::{Fetch, Request};
 use tapline_manifest::{Chunk, Manifest};
 
-/// What went wrong fetching content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CdnError {
-    /// The fetch itself failed.
     Fetch(String),
-    /// The host answered with a status that is not 2xx.
     Status {
-        /// The code.
         code: u16,
-        /// The host that sent it.
         host: String,
     },
-    /// The chunk did not decrypt with the depot key.
     Decrypt,
-    /// The container did not decode.
     Container(String),
-    /// The plaintext did not hash to the id the manifest named.
     IntegrityFailure {
-        /// The id the manifest named.
         expected: String,
-        /// What the bytes actually hash to.
         actual: String,
-        /// Which host served them.
         host: String,
     },
-    /// The response length disagreed with the manifest.
     WrongLength {
-        /// What the manifest said.
         expected: u32,
-        /// What arrived.
         actual: usize,
     },
-    /// Every host in the pool has been exhausted.
     NoHostsLeft,
 }
 
@@ -70,7 +53,6 @@ impl fmt::Display for CdnError {
 
 impl std::error::Error for CdnError {}
 
-/// Fetches one chunk, returning bytes only when they hash to the manifest's id.
 pub async fn fetch_chunk<F: Fetch>(
     fetcher: &F,
     host: &str,
@@ -82,7 +64,6 @@ pub async fn fetch_chunk<F: Fetch>(
     decode_chunk(&stored, chunk, depot_key, host)
 }
 
-/// Fetches a chunk's stored bytes, without decoding them.
 pub async fn fetch_chunk_bytes<F: Fetch>(
     fetcher: &F,
     host: &str,
@@ -92,7 +73,6 @@ pub async fn fetch_chunk_bytes<F: Fetch>(
     let id = chunk.id_hex();
     let url = format!("https://{host}/depot/{depot}/chunk/{id}");
 
-    // An over-long response is cut off as it arrives, not after.
     let limit = u64::from(chunk.compressed_size).max(1) + 4096;
     let response = fetcher
         .get(Request::get(url), limit)
@@ -115,7 +95,6 @@ pub async fn fetch_chunk_bytes<F: Fetch>(
     Ok(response.body)
 }
 
-/// Decrypts, decompresses and verifies a chunk's stored bytes.
 pub fn decode_chunk(
     stored: &[u8],
     chunk: &Chunk,
@@ -125,7 +104,6 @@ pub fn decode_chunk(
     decode_chunk_owned(stored.to_vec(), chunk, depot_key, host)
 }
 
-/// Decodes a chunk, reusing the buffer it arrived in.
 pub fn decode_chunk_owned(
     stored: Vec<u8>,
     chunk: &Chunk,
@@ -137,7 +115,6 @@ pub fn decode_chunk_owned(
     Ok(out)
 }
 
-/// Decodes a chunk into a buffer the caller owns, reusing the fetched one.
 pub fn decode_chunk_into(
     stored: Vec<u8>,
     chunk: &Chunk,
@@ -152,7 +129,6 @@ pub fn decode_chunk_into(
         .map_err(|e| CdnError::Container(e.to_string()))?;
     let plaintext = &*plaintext;
 
-    // The check the whole pipeline exists to reach.
     let digest = tapline_crypto::sha1(plaintext);
     if digest != chunk.id {
         return Err(CdnError::IntegrityFailure {
@@ -162,7 +138,6 @@ pub fn decode_chunk_into(
         });
     }
 
-    // A chunk that verifies but is the wrong length would corrupt its file.
     if plaintext.len() != chunk.uncompressed_size as usize {
         return Err(CdnError::WrongLength {
             expected: chunk.uncompressed_size,
@@ -173,7 +148,6 @@ pub fn decode_chunk_into(
     Ok(())
 }
 
-/// Fetches and parses a depot manifest.
 pub async fn fetch_manifest<F: Fetch>(
     fetcher: &F,
     host: &str,
@@ -199,7 +173,6 @@ pub async fn fetch_manifest<F: Fetch>(
     let manifest = Manifest::parse(&response.body, depot_key)
         .map_err(|e| CdnError::Container(e.to_string()))?;
 
-    // A cache serving the wrong manifest would produce a confidently wrong install.
     if manifest.id.get() != manifest_id {
         return Err(CdnError::Container(format!(
             "asked for manifest {manifest_id}, received {}",
@@ -216,7 +189,6 @@ mod tests {
     const CONTAINER: &[u8] =
         include_bytes!("../tests/fixtures/chunk_610f4c4e6d26a61f0a35ed66117a7e693cceb4b8.bin");
 
-    /// The chunk id: the SHA-1 of the plaintext inside `CONTAINER`.
     const REAL_ID: [u8; 20] = [
         0x61, 0x0f, 0x4c, 0x4e, 0x6d, 0x26, 0xa6, 0x1f, 0x0a, 0x35, 0xed, 0x66, 0x11, 0x7a, 0x7e,
         0x69, 0x3c, 0xce, 0xb4, 0xb8,

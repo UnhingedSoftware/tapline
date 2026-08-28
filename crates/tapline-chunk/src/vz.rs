@@ -1,28 +1,18 @@
-//! The `VZ` chunk container: LZMA.
-
 use crate::ChunkError;
 
-/// The header magic.
 const MAGIC: [u8; 2] = *b"VZ";
-/// The only version observed.
 const VERSION: u8 = b'a';
-/// The footer magic.
 const FOOTER_MAGIC: [u8; 2] = *b"zv";
 
-/// Header bytes before the LZMA properties.
 const HEADER_LEN: usize = 7;
-/// LZMA property bytes.
 const PROPS_LEN: usize = 5;
-/// Footer bytes: crc, size, magic.
 const FOOTER_LEN: usize = 10;
 
-/// Whether these bytes look like a `VZ` container.
 #[must_use]
 pub fn matches(input: &[u8]) -> bool {
     input.get(..2) == Some(&MAGIC)
 }
 
-/// Decodes a `VZ` chunk.
 #[cfg(test)]
 pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     let mut out = Vec::new();
@@ -30,7 +20,6 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     Ok(out)
 }
 
-/// Decodes into a buffer the caller owns.
 pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     if input.len() < HEADER_LEN + PROPS_LEN + FOOTER_LEN {
         return Err(ChunkError::Truncated);
@@ -54,7 +43,6 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
     if footer_magic != FOOTER_MAGIC {
         return Err(ChunkError::BadFooter(footer_magic.to_vec()));
     }
-    // Two copies of one number; if they differ, believing either is a guess.
     if header_crc != footer_crc {
         return Err(ChunkError::InconsistentChecksum {
             header: header_crc,

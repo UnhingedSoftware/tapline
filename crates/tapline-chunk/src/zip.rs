@@ -1,23 +1,15 @@
-//! The ZIP chunk container: one deflated entry named `z`, no Steam footer.
-
 use crate::ChunkError;
 
-/// The ZIP local file header magic.
 const MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
-/// Fixed header length before the name and extra fields.
 const HEADER_LEN: usize = 30;
-/// Stored, no compression.
 const METHOD_STORE: u16 = 0;
-/// Deflate, which is what Steam uses.
 const METHOD_DEFLATE: u16 = 8;
 
-/// Whether these bytes look like a ZIP-wrapped chunk.
 #[must_use]
 pub fn matches(input: &[u8]) -> bool {
     input.get(..4) == Some(&MAGIC)
 }
 
-/// Decodes a ZIP-wrapped chunk from its local header alone; one entry, no directory.
 pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     if input.len() < HEADER_LEN {
         return Err(ChunkError::Truncated);
@@ -91,7 +83,6 @@ mod tests {
         "../tests/fixtures/smallest_zip_ba8ab5a0280b953aa97435ff8946cbcbb2755a27.bin"
     );
 
-    /// The chunk id: the SHA-1 of the plaintext.
     const REAL_ID: [u8; 20] = [
         0xba, 0x8a, 0xb5, 0xa0, 0x28, 0x0b, 0x95, 0x3a, 0xa9, 0x74, 0x35, 0xff, 0x89, 0x46, 0xcb,
         0xcb, 0xb2, 0x75, 0x5a, 0x27,
@@ -99,7 +90,6 @@ mod tests {
 
     #[test]
     fn the_decoded_bytes_hash_to_the_chunk_id() {
-        // The chunk id is the SHA-1 of the plaintext.
         let out = decode(REAL, MAX_CHUNK).expect("must decode");
         let mut hasher = <sha1::Sha1 as sha1::Digest>::new();
         sha1::Digest::update(&mut hasher, &out);
@@ -117,7 +107,6 @@ mod tests {
 
     #[test]
     fn a_corrupted_payload_is_caught() {
-        // Damage the payload specifically; the CRC protects nothing else.
         const LOCAL_HEADER: usize = 30;
         let name_len = usize::from(read_u16(REAL, 26).expect("a name length"));
         let payload = LOCAL_HEADER + name_len;
@@ -170,7 +159,6 @@ mod tests {
 
     #[test]
     fn truncation_is_an_error_not_a_panic() {
-        // Stepped: inflating every prefix is not free.
         for cut in (0..REAL.len()).step_by(4099) {
             let prefix = REAL.get(..cut).expect("in range");
             assert!(

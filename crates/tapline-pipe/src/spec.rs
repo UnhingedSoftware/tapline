@@ -1,38 +1,14 @@
-//! The pipeline as a value, and its text form.
-
 use tapline_ext::ExtensionError;
 
-/// The formats a pipeline can decode.
 pub const KNOWN_FORMATS: [&str; 2] = ["gma", "zip"];
 
-/// Why a pipeline could not be read or used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpecError {
-    /// A line was not understood.
-    UnknownDirective {
-        /// The keyword found.
-        directive: String,
-        /// Which line it was on, counting from one.
-        line: usize,
-    },
-    /// A directive needed a value and had none.
-    MissingValue {
-        /// The keyword.
-        directive: String,
-        /// Which line.
-        line: usize,
-    },
-    /// The decoder named is not one this build has.
+    UnknownDirective { directive: String, line: usize },
+    MissingValue { directive: String, line: usize },
     UnknownFormat(String),
-    /// There was nothing to write to.
     NoSinks,
-    /// A named file is not in the archive.
-    NoSuchEntry {
-        /// What was asked for.
-        path: String,
-        /// How many entries the archive does have, for context.
-        available: usize,
-    },
+    NoSuchEntry { path: String, available: usize },
 }
 
 impl std::fmt::Display for SpecError {
@@ -65,18 +41,10 @@ impl std::fmt::Display for SpecError {
 
 impl std::error::Error for SpecError {}
 
-/// Where a pipeline writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sink {
-    /// Unpack into a directory.
     Directory(String),
-    /// Write a ZIP.
-    Zip {
-        /// Where.
-        path: String,
-        /// Whether to deflate entries that get smaller for it.
-        compress: bool,
-    },
+    Zip { path: String, compress: bool },
 }
 
 impl Sink {
@@ -93,21 +61,15 @@ impl Sink {
     }
 }
 
-/// What to do with a download.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pipeline {
-    /// The format to read it as.
     pub format: String,
-    /// Globs selecting entries. Empty selects everything.
     pub filters: Vec<String>,
-    /// Exact paths to take, whatever the globs say.
     pub picks: Vec<String>,
-    /// Where to write. Exactly one.
     pub sink: Option<Sink>,
 }
 
 impl Pipeline {
-    /// A pipeline reading a Garry's Mod addon, with nothing configured yet.
     #[must_use]
     pub fn gma() -> Self {
         Self {
@@ -118,13 +80,11 @@ impl Pipeline {
         }
     }
 
-    /// Whether anything narrows what is taken.
     #[must_use]
     pub fn is_selective(&self) -> bool {
         !self.filters.is_empty() || !self.picks.is_empty()
     }
 
-    /// Checks the pipeline can run.
     pub fn validate(&self) -> Result<(), SpecError> {
         if !KNOWN_FORMATS.contains(&self.format.as_str()) {
             return Err(SpecError::UnknownFormat(self.format.clone()));
@@ -135,7 +95,6 @@ impl Pipeline {
         Ok(())
     }
 
-    /// The text form.
     #[must_use]
     pub fn to_text(&self) -> String {
         let mut out = format!("decode {}\n", self.format);
@@ -161,7 +120,6 @@ impl Pipeline {
         out
     }
 
-    /// Reads the text form.
     pub fn parse(text: &str) -> Result<Self, SpecError> {
         let mut pipeline = Self {
             format: "gma".to_owned(),
@@ -194,7 +152,6 @@ impl Pipeline {
                 "decode" => pipeline.format = need(value)?,
                 "only" => pipeline.filters.push(need(value)?),
                 "pick" => pipeline.picks.push(need(value)?),
-                // Last destination wins: one sink, never silently two.
                 "dir" => pipeline.sink = Some(Sink::Directory(need(value)?)),
                 "zip" => {
                     pipeline.sink = Some(Sink::Zip {

@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# Unpublished: the one place tapline touches Valve's closed SDK.
 publish = false
 
 [dependencies]
@@ -15,9 +14,7 @@ tapline-ids = { workspace = true }
 libloading = "0.8"
 
 [lints.rust]
-# The workspace `forbid(unsafe_code)` cannot be lifted, so lints are restated here.
 unsafe_code = "allow"
-missing_docs = "warn"
 
 [lints.clippy]
 unwrap_used = "deny"

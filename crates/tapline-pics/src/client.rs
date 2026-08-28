@@ -1,5 +1,3 @@
-//! The PICS exchange: access token first, then product info.
-
 use crate::AppInfo;
 use std::fmt;
 use tapline_ids::AppId;
@@ -13,24 +11,13 @@ use tapline_proto::steammessages_clientserver_appinfo::{
 };
 use tapline_wire::Message;
 
-/// What went wrong asking PICS about an app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PicsError {
-    /// The session failed.
     Net(NetError),
-    /// Steam does not know this app.
     UnknownApp(AppId),
-    /// The account may not see this app, though it exists.
     AccessDenied(AppId),
-    /// Steam answered without the document (large responses are offered over HTTP).
     NoBuffer(AppId),
-    /// The document did not parse.
-    Malformed {
-        /// Which app.
-        app: AppId,
-        /// Why.
-        reason: String,
-    },
+    Malformed { app: AppId, reason: String },
 }
 
 impl fmt::Display for PicsError {
@@ -55,7 +42,6 @@ impl From<NetError> for PicsError {
     }
 }
 
-/// Fetches and parses one app's PICS document.
 pub async fn product_info<T: Transport>(
     session: &mut Session<T>,
     app: AppId,
@@ -85,7 +71,6 @@ pub async fn product_info<T: Transport>(
         .find(|candidate| candidate.appid == Some(app.get()))
         .ok_or(PicsError::UnknownApp(app))?;
 
-    // `missing_token` means a stub that parses fine and describes nothing.
     if entry.missing_token == Some(true) {
         return Err(PicsError::AccessDenied(app));
     }
@@ -98,7 +83,6 @@ pub async fn product_info<T: Transport>(
     })
 }
 
-/// Asks for an app's access token; `None` means none needed, not a denial.
 async fn access_token<T: Transport>(
     session: &mut Session<T>,
     app: AppId,

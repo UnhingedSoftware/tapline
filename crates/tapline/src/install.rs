@@ -1,5 +1,3 @@
-//! Turning a manifest into files on disk.
-
 use std::fmt;
 use std::path::PathBuf;
 use tapline_cdn::{CdnError, PoolError};
@@ -9,51 +7,34 @@ use tapline_manifest::ManifestError;
 use tapline_net::NetError;
 use tapline_pics::{DepotFilter, Os, PicsError};
 
-/// What to install, and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallOptions {
-    /// The directory to install into. Created if absent.
     pub install_dir: PathBuf,
-    /// The target platform.
     pub os: Os,
-    /// The branch, `public` unless a beta was asked for.
     pub branch: String,
-    /// Whether to include DLC depots.
     pub include_dlc: bool,
-    /// Check what is already on disk before fetching each chunk.
     pub resume: bool,
-    /// Reinstall even when the install record says the depot is already at this build.
     pub force: bool,
-    /// How many chunks to fetch at once; 48 is the measured plateau.
     pub concurrency: usize,
-    /// What permissions to give installed files.
     pub file_modes: FileModes,
-    /// Where a Workshop item's files land. Ignored by app installs.
     pub workshop_layout: WorkshopLayout,
 }
 
-/// Where a Workshop item's files are written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkshopLayout {
-    /// `<dir>/steamapps/workshop/content/<app>/<item>/`, which is what steamcmd does.
     #[default]
     SteamCmd,
-    /// Straight into the directory given, with no path built underneath it.
     Flat,
 }
 
-/// What permissions installed files get.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FileModes {
-    /// `0o755` on everything, which is what steamcmd does.
     #[default]
     SteamCmd,
-    /// `0o755` for files the manifest flags executable, `0o644` for the rest.
     Manifest,
 }
 
 impl FileModes {
-    /// The mode for a file the manifest did or did not flag executable.
     #[must_use]
     pub const fn mode_for(self, executable: bool) -> u32 {
         match self {
@@ -81,7 +62,6 @@ impl Default for InstallOptions {
 }
 
 impl InstallOptions {
-    /// The depot filter these options describe.
     #[must_use]
     pub fn filter(&self) -> DepotFilter {
         DepotFilter {
@@ -92,63 +72,29 @@ impl InstallOptions {
     }
 }
 
-/// What an install actually did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InstallReport {
-    /// The app installed.
     pub app: AppId,
-    /// Which depots were taken.
     pub depots: Vec<DepotId>,
-    /// How many files were written.
     pub files: u64,
-    /// Bytes written to disk.
     pub bytes_written: u64,
-    /// Bytes fetched from the CDN, before decompression.
     pub bytes_downloaded: u64,
-    /// Chunks that were already correct on disk and so were not refetched.
     pub chunks_reused: u64,
-    /// Depots that were already at the requested build and so were skipped.
     pub depots_unchanged: u64,
-    /// Files the manifest named that were skipped, with the reason.
     pub skipped: Vec<(String, String)>,
 }
 
-/// What went wrong installing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
-    /// The Steam session failed.
     Net(NetError),
-    /// PICS could not describe the app.
     Pics(PicsError),
-    /// A manifest could not be read.
     Manifest(ManifestError),
-    /// Content could not be fetched or verified.
     Cdn(CdnError),
-    /// No CDN host is usable.
     Pool(PoolError),
-    /// A path in the manifest was refused.
-    UnsafePath {
-        /// The path as the manifest wrote it.
-        path: String,
-        /// Why it was refused.
-        reason: PathError,
-    },
-    /// The filesystem refused.
+    UnsafePath { path: String, reason: PathError },
     Io(String),
-    /// Steam granted no decryption key for a depot.
-    NoDepotKey {
-        /// Which depot.
-        depot: DepotId,
-        /// Steam's own result code.
-        eresult: i32,
-    },
-    /// The app resolved to no depots for the requested platform and branch.
-    NothingToInstall {
-        /// The app.
-        app: AppId,
-        /// The branch asked for.
-        branch: String,
-    },
+    NoDepotKey { depot: DepotId, eresult: i32 },
+    NothingToInstall { app: AppId, branch: String },
 }
 
 impl fmt::Display for InstallError {
@@ -187,11 +133,9 @@ impl fmt::Display for InstallError {
     }
 }
 
-/// Steam's `EResult` for a refusal on permission grounds.
 pub const ACCESS_DENIED: i32 = 15;
 
 impl InstallError {
-    /// Whether this failed for lack of a signed-in account that owns the content.
     #[must_use]
     pub fn needs_login(&self) -> bool {
         match self {

@@ -13,7 +13,6 @@ rust-version.workspace = true
 
 [lib]
 name = "tapline_ffi"
-# cdylib for the JS runtimes; staticlib for C hosts.
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
@@ -23,10 +22,8 @@ tapline-gmad = { workspace = true }
 tapline-pipe = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
-# The workspace `forbid(unsafe_code)` cannot be lifted, so lints are restated here.
 [lints.rust]
 unsafe_code = "allow"
-missing_docs = "warn"
 
 [lints.clippy]
 unwrap_used = "deny"

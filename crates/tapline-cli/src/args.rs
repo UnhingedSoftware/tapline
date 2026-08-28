@@ -1,5 +1,3 @@
-//! Parsing both command lines: steamcmd's `+command` grammar and the native one.
-
 use std::path::PathBuf;
 use tapline_ids::{AppId, PublishedFileId};
 
@@ -207,7 +205,6 @@ fn step_from(command: &str, operands: &[String]) -> Result<Step, ArgError> {
                 match operand.as_str() {
                     "validate" => validate = true,
                     "-beta" => branch = rest.next().cloned(),
-                    // steamcmd ignores unrecognised operands; a drop-in must too.
                     _ => {}
                 }
             }

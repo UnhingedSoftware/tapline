@@ -1,5 +1,3 @@
-//! Finding Workshop items, rather than being told their ids.
-
 use crate::{InstallError, WorkshopItem};
 use tapline_ids::AppId;
 use tapline_proto::enums_productinfo::EContentDescriptorID;
@@ -8,26 +6,18 @@ use tapline_proto::steammessages_publishedfile_steamclient::{
     c_published_file_query_files_request::{DateRange, TagGroup},
 };
 
-/// How Steam should order the results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BrowseSort {
-    /// Highest rated. Valve's default, and a reasonable one.
     #[default]
     Vote,
-    /// Most recently published.
     Recent,
-    /// Most recently updated.
     Updated,
-    /// Trending: what is being subscribed to now rather than in total.
     Trend,
-    /// Most subscribed, all time.
     Subscribed,
-    /// Best match for the search text.
     TextMatch,
 }
 
 impl BrowseSort {
-    /// Valve's `EPublishedFileQueryType` value.
     const fn query_type(self) -> u32 {
         match self {
             Self::Vote => 0,
@@ -39,7 +29,6 @@ impl BrowseSort {
         }
     }
 
-    /// Parses the name the CLI and the bindings use.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -53,28 +42,20 @@ impl BrowseSort {
         }
     }
 
-    /// Every name [`BrowseSort::parse`] accepts, canonical form first.
     pub const NAMES: [&'static str; 6] =
         ["vote", "recent", "updated", "trend", "subscribed", "text"];
 }
 
-/// Content Steam labels, so a search can leave it out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentDescriptor {
-    /// Nudity or sexual content.
     NudityOrSexual,
-    /// Frequent violence or gore.
     ViolenceOrGore,
-    /// Adult-only sexual content.
     AdultOnlySexual,
-    /// Gratuitous sexual content.
     GratuitousSexual,
-    /// Anything Steam considers mature.
     AnyMature,
 }
 
 impl ContentDescriptor {
-    /// Valve's `EContentDescriptorID`.
     const fn id(self) -> i32 {
         match self {
             Self::NudityOrSexual => 1,
@@ -85,7 +66,6 @@ impl ContentDescriptor {
         }
     }
 
-    /// Parses the name the CLI and the bindings use.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -98,35 +78,27 @@ impl ContentDescriptor {
         }
     }
 
-    /// Every name [`ContentDescriptor::parse`] accepts, canonical form first.
     pub const NAMES: [&'static str; 5] =
         ["nudity", "violence", "adult-only", "gratuitous", "mature"];
 }
 
-/// Where [`BrowseQuery::text`] is matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextTarget {
-    /// Titles and descriptions, which is Steam's default.
     #[default]
     Everything,
-    /// Titles only.
     Title,
-    /// Descriptions only.
     Description,
 }
 
 impl TextTarget {
-    /// Valve's `EQueryFilesSearchTextTarget`, or `None` for its default.
     const fn target(self) -> Option<i32> {
         match self {
-            // Sending 0 equals sending nothing; keep the default off the wire.
             Self::Everything => None,
             Self::Title => Some(1),
             Self::Description => Some(2),
         }
     }
 
-    /// Parses the name the CLI and the bindings use.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -137,16 +109,12 @@ impl TextTarget {
         }
     }
 
-    /// Every name [`TextTarget::parse`] accepts, canonical form first.
     pub const NAMES: [&'static str; 3] = ["all", "title", "description"];
 }
 
-/// A window of time, in Unix seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TimeRange {
-    /// The earliest moment to accept, inclusive.
     pub start: Option<u32>,
-    /// The latest moment to accept, inclusive.
     pub end: Option<u32>,
 }
 
@@ -166,44 +134,26 @@ impl TimeRange {
     }
 }
 
-/// The cursor that starts a search: Steam wants a literal `"*"`, not an empty string.
 pub const FIRST_PAGE: &str = "*";
 
-/// The most items Steam will return in one page.
 pub const MAX_PER_PAGE: u32 = 100;
 
-/// What to search for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowseQuery {
-    /// Which app's Workshop.
     pub app: AppId,
-    /// Free text to match, if any.
     pub text: Option<String>,
-    /// Where that text is matched.
     pub search_in: TextTarget,
-    /// Tags an item must carry.
     pub required_tags: Vec<String>,
-    /// Groups of tags, of which an item must carry at least one from each.
     pub tag_groups: Vec<Vec<String>>,
-    /// Tags that exclude an item.
     pub excluded_tags: Vec<String>,
-    /// Content labels that exclude an item.
     pub excluded_descriptors: Vec<ContentDescriptor>,
-    /// Whether an item must carry *every* required tag rather than any of them.
     pub match_all_tags: bool,
-    /// How to order results.
     pub sort: BrowseSort,
-    /// When an item must have been first published.
     pub created: Option<TimeRange>,
-    /// When an item must have been revised.
     pub updated: Option<TimeRange>,
-    /// How many days of activity [`BrowseSort::Trend`] ranks over.
     pub trend_days: Option<u32>,
-    /// How many to return, capped at [`MAX_PER_PAGE`].
     pub per_page: u32,
-    /// Where to resume from. `None` starts at the beginning.
     pub cursor: Option<String>,
-    /// Which page to jump straight to, 1-based.
     pub page: Option<u32>,
 }
 
@@ -230,7 +180,6 @@ impl Default for BrowseQuery {
 }
 
 impl BrowseQuery {
-    /// Checks the query is one Steam can answer usefully.
     pub fn validate(&self) -> Result<(), BrowseError> {
         if self.app.get() == 0 {
             return Err(BrowseError::NoApp);
@@ -282,107 +231,70 @@ impl BrowseQuery {
             match_all_tags: Some(self.match_all_tags),
             numperpage: Some(self.per_page.clamp(1, MAX_PER_PAGE)),
             page: self.page,
-            // validate refuses cursor+page; here a page excludes the cursor.
             cursor: if self.page.is_some() {
                 None
             } else {
                 Some(self.cursor.clone().unwrap_or_else(|| FIRST_PAGE.to_owned()))
             },
-            // Without these the reply carries ids and little else.
             return_tags: Some(true),
             return_short_description: Some(true),
             return_previews: Some(true),
             return_vote_data: Some(true),
             return_details: Some(true),
-            // Otherwise descriptions arrive as BBCode.
             strip_description_bbcode: Some(true),
             ..CPublishedFile_QueryFiles_Request::default()
         }
     }
 }
 
-/// One image, video or linked preview attached to an item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
-    /// Where the image lives, when it is an image.
     pub url: Option<String>,
-    /// The YouTube id, when it is a video.
     pub youtube_id: Option<String>,
-    /// Valve's `preview_type`, kept raw.
     pub kind: u32,
-    /// Where it sits in the strip.
     pub order: u32,
 }
 
-/// One search result.
-// No `Eq`: the score is a float.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowseResult {
-    /// The item, in the same shape a download takes.
     pub item: WorkshopItem,
-    /// A short description, with BBCode already stripped.
     pub description: String,
-    /// The item's tags, display names where Steam gives one.
     pub tags: Vec<String>,
-    /// Where its preview image lives, when it has one.
     pub preview_url: Option<String>,
-    /// Every preview, in Steam's own order.
     pub previews: Vec<Preview>,
-    /// Who published it, as a SteamID64.
     pub creator: Option<u64>,
-    /// When it was first published, as a Unix timestamp.
     pub created: u32,
-    /// Current subscribers.
     pub subscriptions: u64,
-    /// Current favourites.
     pub favorites: u64,
-    /// How many times its page has been viewed.
     pub views: u64,
-    /// Steam's own score, 0.0 to 1.0, when it has been rated.
     pub score: Option<f32>,
-    /// Votes up.
     pub votes_up: u64,
-    /// Votes down.
     pub votes_down: u64,
 }
 
-/// A page of results.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowsePage {
-    /// The items on this page.
     pub items: Vec<BrowseResult>,
-    /// How many the whole search matched, which is usually far more than a page.
     pub total: u32,
-    /// The cursor for the next page, or `None` at the end.
     pub next_cursor: Option<String>,
-    /// Items Steam returned that could not be described, and why.
     pub skipped: Vec<(u64, String)>,
 }
 
 impl BrowsePage {
-    /// Whether another page exists.
     #[must_use]
     pub fn has_more(&self) -> bool {
         self.next_cursor.is_some()
     }
 }
 
-/// Why a search could not be run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowseError {
-    /// No app was given.
     NoApp,
-    /// Sorting by text relevance without any text to match.
     TextSortWithoutText,
-    /// A tag group with no tags in it.
     EmptyTagGroup,
-    /// A trend window given to a sort that does not rank by trend.
     TrendDaysWithoutTrendSort,
-    /// A time window that ends before it starts.
     BackwardsTimeRange,
-    /// Narrowing where text is matched, with no text to match.
     TextTargetWithoutText,
-    /// A cursor and a page number at once.
     CursorAndPage,
 }
 
@@ -470,7 +382,6 @@ pub(crate) fn describe(
                 order: preview.sortorder.unwrap_or(0),
             })
             .collect(),
-        // Zero is Valve's own "nobody", and an id of zero links nowhere.
         creator: details.creator.filter(|creator| *creator != 0),
         created: details.time_created.unwrap_or(0),
         subscriptions: u64::from(details.subscriptions.unwrap_or(0)),
@@ -775,7 +686,6 @@ mod tests {
 
     #[test]
     fn every_sort_maps_to_a_query_type_valve_defines() {
-        // Valve's enum is sparse: 2 is not a query type.
         const DEFINED: [u32; 6] = [0, 1, 3, 9, 12, 21];
         for name in BrowseSort::NAMES {
             let sort = BrowseSort::parse(name).expect("a listed name must parse");

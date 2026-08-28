@@ -1,5 +1,3 @@
-//! Doing what the command line asked for.
-
 use crate::args::{Command, Moment, SearchFilters, Step};
 use std::path::PathBuf;
 use tapline::{AppId, InstallOptions, Os, PublishedFileId, Session};
@@ -182,7 +180,6 @@ async fn download(
     let defaults = InstallOptions::default();
     let concurrency = concurrency.unwrap_or(defaults.concurrency);
 
-    // The process budget caps `--concurrency` unless the session is built with it.
     let mut session = Session::anonymous_shared(tapline::Shared::new(concurrency))
         .await
         .map_err(|e| e.to_string())?;
@@ -397,7 +394,6 @@ fn emit_search_page(page: &tapline::BrowsePage) {
         emit(&serde_json::json!({
             "event": "result",
             "app": found.item.app.get(),
-            // A string: item ids exceed what JSON numbers hold exactly.
             "item": found.item.id.get().to_string(),
             "title": found.item.title,
             "size": found.item.size,
@@ -512,7 +508,6 @@ fn via_running_client(
     remove: bool,
     json: bool,
 ) -> Result<(), String> {
-    // Held briefly, or Steam keeps counting the app as running.
     let steam = tapline_steamworks::Steam::connect(app).map_err(|e| e.to_string())?;
     let timeout = std::time::Duration::from_secs(20);
     if remove {
@@ -891,7 +886,6 @@ async fn login(
         }
     }
 
-    // Anonymous on purpose: a reused token would hide a failed login.
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
 
     if let Some(name) = account.filter(|_| !qr) {

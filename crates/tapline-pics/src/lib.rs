@@ -1,5 +1,3 @@
-//! PICS product info: which depots an app has, at which manifest ids.
-
 mod app;
 mod client;
 

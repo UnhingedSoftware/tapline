@@ -1,22 +1,3 @@
-//! Install Steam apps.
-//!
-//! ```no_run
-//! # async fn example() -> Result<(), tapline::InstallError> {
-//! use tapline::{Session, InstallOptions};
-//! use tapline_ids::AppId;
-//!
-//! let mut session = Session::anonymous().await?;
-//!
-//! // What would it cost? No bytes are fetched to answer this.
-//! let plan = session.plan(AppId(232_250), &InstallOptions::default()).await?;
-//! println!("{} to download, {} reused", plan.download_bytes, plan.reused_bytes);
-//!
-//! // Do it.
-//! session.install(AppId(232_250), &InstallOptions::default()).await?;
-//! # Ok(())
-//! # }
-//! ```
-
 mod browse;
 mod delta;
 mod install;

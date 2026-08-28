@@ -1,41 +1,29 @@
-//! Reading a ZIP that has not been downloaded.
-
 #![forbid(unsafe_code)]
 
 use tapline_ext::{ArchiveEntry, Compression, ExtensionError, IndexLocation, IndexPlan};
 
-/// End of central directory signature.
 const END_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
-/// Central directory record signature.
 const CENTRAL_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
-/// Local file header signature.
 const LOCAL_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x03, 0x04];
 
-/// Fixed part of a local header, before its name and extra fields.
 const LOCAL_HEADER: u64 = 30;
 
-/// Stored, no compression.
 const STORE: u16 = 0;
-/// Deflate.
 const DEFLATE: u16 = 8;
 
-/// Tail window: the 22-byte end record plus a comment of up to 65,535.
 #[must_use]
 pub const fn index_location() -> IndexLocation {
     IndexLocation::Tail(66 * 1024)
 }
 
-/// Every candidate is verified: a comment can contain a decoy signature.
 fn find_end_record(tail: &[u8]) -> Option<usize> {
     let mut at = tail.len().checked_sub(4)?;
     loop {
         if tail.get(at..at.saturating_add(4)) == Some(&END_SIGNATURE) {
-            // Reject implausible candidates and keep searching; a decoy may sit too near the end.
             let plausible = tail
                 .get(at..)
                 .and_then(|rest| u16_at(rest, 20))
                 .and_then(|comment_len| {
-                    // 22 bytes of record, then exactly the comment it declares.
                     at.checked_add(22)?
                         .checked_add(comment_len as usize)
                         .map(|end| end == tail.len())
@@ -66,7 +54,6 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..end)?.try_into().ok()?))
 }
 
-/// Reads the index out of the archive's tail.
 pub fn plan(tail: &[u8], tail_start: u64) -> Result<IndexPlan, ExtensionError> {
     let end_at = find_end_record(tail).ok_or(ExtensionError::Malformed {
         extension: "zip",
@@ -101,7 +88,6 @@ pub fn plan(tail: &[u8], tail_start: u64) -> Result<IndexPlan, ExtensionError> {
     read_directory(directory, entry_count)
 }
 
-/// Reads a central directory into entries plus the local-header ranges needed.
 pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, ExtensionError> {
     let mut entries = Vec::with_capacity(expected);
     let mut needs = Vec::with_capacity(expected);
@@ -130,7 +116,6 @@ pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, Ex
         let comment_len = u16_at(record, 32).ok_or_else(|| short("central directory"))? as usize;
         let local = u64::from(u32_at(record, 42).ok_or_else(|| short("central directory"))?);
 
-        // Bit 0 is encryption; ignoring it would write ciphertext to disk.
         if flags & 1 != 0 {
             return Err(ExtensionError::Malformed {
                 extension: "zip",
@@ -156,18 +141,15 @@ pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, Ex
         let name_bytes = record
             .get(name_at..name_at + name_len)
             .ok_or_else(|| short("an entry name"))?;
-        // Lossy on purpose; the path validator sees the result.
         let path = String::from_utf8_lossy(name_bytes).into_owned();
 
         entries.push(ArchiveEntry {
             path,
             size,
-            // The local header for now; `finalize` turns it into the data.
             offset: local,
             stored_size,
             compression,
         });
-        // Enough of the local header to read its own name and extra lengths.
         needs.push((local, LOCAL_HEADER));
 
         at = at
@@ -178,7 +160,6 @@ pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, Ex
     Ok(IndexPlan { entries, needs })
 }
 
-/// Turns local-header offsets into data offsets.
 pub fn finalize(
     mut entries: Vec<ArchiveEntry>,
     headers: &[Vec<u8>],
@@ -204,7 +185,6 @@ pub fn finalize(
                 ),
             });
         }
-        // The local header's name and extra lengths need not match the central directory's.
         let name_len = u64::from(u16_at(header, 26).ok_or_else(|| short("a local header"))?);
         let extra_len = u64::from(u16_at(header, 28).ok_or_else(|| short("a local header"))?);
         entry.offset = entry
@@ -215,7 +195,6 @@ pub fn finalize(
     Ok(entries)
 }
 
-/// Unpacks an entry's stored bytes.
 pub fn decode(entry: &ArchiveEntry, stored: &[u8]) -> Result<Vec<u8>, ExtensionError> {
     match entry.compression {
         Compression::Stored => Ok(stored.to_vec()),
@@ -266,7 +245,6 @@ mod tests {
             out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             out.extend_from_slice(&(body.len() as u32).to_le_bytes());
             out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            // A non-empty extra field catches readers that assume it matches the central record.
             out.extend_from_slice(&4_u16.to_le_bytes());
             out.extend_from_slice(name.as_bytes());
             out.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
@@ -396,7 +374,6 @@ mod tests {
     #[test]
     fn an_unknown_compression_method_names_itself() {
         let mut raw = build(&[("a.txt", b"body", false)]);
-        // Method lives at offset 10 of the central record.
         let end_at = raw
             .windows(4)
             .rposition(|w| w == END_SIGNATURE)
@@ -420,7 +397,6 @@ mod tests {
             .rposition(|w| w == END_SIGNATURE)
             .expect("end record");
         let directory_start = u32_at(raw.get(end_at..).expect("end"), 16).expect("offset") as usize;
-        // Flags at offset 8, bit 0.
         raw.splice(
             directory_start + 8..directory_start + 10,
             1_u16.to_le_bytes(),
@@ -443,7 +419,6 @@ mod tests {
     #[test]
     fn a_directory_before_the_tail_is_asked_for() {
         let raw = build(&[("a.txt", b"one", false)]);
-        // Pretend the tail we hold starts after the directory does.
         let tail_start = raw.len() as u64 - 30;
         let plan = plan(raw.get(tail_start as usize..).expect("tail"), tail_start);
         match plan {
@@ -454,7 +429,6 @@ mod tests {
                 );
                 assert!(plan.entries.is_empty());
             }
-            // Also acceptable: the end record itself was outside the window.
             Err(error) => assert!(error.to_string().contains("end-of-central-directory")),
         }
     }

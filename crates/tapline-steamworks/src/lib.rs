@@ -1,17 +1,12 @@
-//! Account-scoped Workshop actions, through a running Steam client.
-
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tapline_ids::{AppId, PublishedFileId};
 
-/// Steam's success result code.
 const RESULT_OK: i32 = 1;
 
-/// `RemoteStorageSubscribePublishedFileResult_t` — `k_iSteamRemoteStorageCallbacks + 13`.
 const SUBSCRIBE_RESULT: i32 = 1313;
 
-/// Versioned accessors; an SDK rename surfaces as `SymbolMissing`, not a crash.
 const UGC_ACCESSOR: &[u8] = b"SteamAPI_SteamUGC_v021\0";
 const UTILS_ACCESSOR: &[u8] = b"SteamAPI_SteamUtils_v011\0";
 const APPS_ACCESSOR: &[u8] = b"SteamAPI_SteamApps_v009\0";
@@ -32,7 +27,6 @@ struct Api {
         unsafe extern "C" fn(Handle, u64, *mut c_void, c_int, c_int, *mut bool) -> bool,
 }
 
-/// A connection to the running client, initialised as one owned app.
 pub struct Steam {
     api: Api,
     ugc: Handle,
@@ -41,24 +35,15 @@ pub struct Steam {
     app: AppId,
 }
 
-/// Why a Steamworks action could not be done.
 #[derive(Debug)]
 pub enum SteamError {
-    /// `libsteam_api.so` was not found under any known Steam root.
     LibraryNotFound(String),
-    /// The library loaded but a symbol was missing.
     SymbolMissing(String),
-    /// Steam is not running.
     NotRunning,
-    /// `SteamAPI_Init` refused, with the reason it gave.
     InitFailed(String),
-    /// An interface pointer came back null.
     NoInterface(&'static str),
-    /// The account does not own the app this was initialised as.
     NotOwned(AppId),
-    /// Steam accepted the call but reported it failed.
     CallFailed(String),
-    /// Steam did not answer within the time allowed.
     TimedOut,
 }
 
@@ -111,7 +96,6 @@ fn find_library(roots: &[PathBuf]) -> Option<PathBuf> {
 }
 
 impl Steam {
-    /// Connects to the running client, initialised as `app`.
     pub fn connect(app: AppId) -> Result<Self, SteamError> {
         let roots = steam_roots();
         let path = find_library(&roots).ok_or_else(|| {
@@ -124,7 +108,6 @@ impl Steam {
             )
         })?;
 
-        // Steam reads the app identity from the environment at init.
         // SAFETY: still single-threaded; no other thread observes the environment.
         unsafe {
             std::env::set_var("SteamAppId", app.get().to_string());
@@ -169,7 +152,6 @@ impl Steam {
                 }));
             }
 
-            // Resolve symbols first so `sym`'s borrow ends before `lib` moves into `Api`.
             let shutdown = sym(b"SteamAPI_Shutdown\0")?;
             let subscribe = sym(b"SteamAPI_ISteamUGC_SubscribeItem\0")?;
             let unsubscribe = sym(b"SteamAPI_ISteamUGC_UnsubscribeItem\0")?;
@@ -237,14 +219,12 @@ impl Steam {
         }
     }
 
-    /// Whether the signed-in account owns the app this connected as.
     #[must_use]
     pub fn owns_app(&self) -> bool {
         // SAFETY: the interface pointer Steam returned plus an integer.
         unsafe { (self.api.owns_app)(self.apps, self.app.get()) }
     }
 
-    /// Subscribes the signed-in account to an item, waiting for Steam's answer.
     pub fn subscribe(&self, item: PublishedFileId, timeout: Duration) -> Result<(), SteamError> {
         if !self.owns_app() {
             return Err(SteamError::NotOwned(self.app));
@@ -290,7 +270,6 @@ impl Steam {
         Ok(())
     }
 
-    /// Removes the signed-in account's subscription to an item.
     pub fn unsubscribe(&self, item: PublishedFileId, timeout: Duration) -> Result<(), SteamError> {
         // SAFETY: interface pointer and integer.
         let call = unsafe { (self.api.unsubscribe)(self.ugc, item.get()) };
@@ -302,14 +281,12 @@ impl Steam {
         self.await_call(call, timeout)
     }
 
-    /// Steam's raw item-state bitflags; bit 0 set means subscribed.
     #[must_use]
     pub fn item_state(&self, item: PublishedFileId) -> u32 {
         // SAFETY: interface pointer and integer.
         unsafe { (self.api.item_state)(self.ugc, item.get()) }
     }
 
-    /// Whether the account is currently subscribed to an item.
     #[must_use]
     pub fn is_subscribed(&self, item: PublishedFileId) -> bool {
         self.item_state(item) & 1 != 0

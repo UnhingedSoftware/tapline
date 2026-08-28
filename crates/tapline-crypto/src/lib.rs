@@ -1,5 +1,3 @@
-//! The cryptography Steam's protocol needs: RustCrypto wrappers plus Steam's compositions.
-
 mod symmetric;
 
 pub use symmetric::{
@@ -11,7 +9,6 @@ use hmac::{Hmac, Mac};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
-/// SHA-1 of `data`; content addressing, not a security boundary.
 #[must_use]
 pub fn sha1(data: &[u8]) -> [u8; 20] {
     let mut hasher = Sha1::new();
@@ -19,7 +16,6 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
     hasher.finalize().into()
 }
 
-/// SHA-256 of `data`.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -27,17 +23,14 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// HMAC-SHA1 of `data` under `key`.
 #[must_use]
 pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
-    // HMAC accepts keys of any length, so this cannot fail.
     let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(key)
         .unwrap_or_else(|_| unreachable!("HMAC accepts keys of any length"));
     mac.update(data);
     mac.finalize().into_bytes().into()
 }
 
-/// Fills an array from the operating system's RNG.
 #[must_use]
 pub fn random_bytes<const N: usize>() -> [u8; N] {
     use rand_core::{OsRng, RngCore};
@@ -46,13 +39,11 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
     bytes
 }
 
-/// Compares two byte strings in time independent of their contents.
 #[must_use]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    // Lengths are protocol constants, so the early return leaks nothing.
     let mut diff = 0_u8;
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;
@@ -66,7 +57,6 @@ mod tests {
 
     #[test]
     fn sha1_matches_the_known_answer() {
-        // FIPS 180-1 test vector.
         let digest = sha1(b"abc");
         assert_eq!(
             digest,
@@ -92,7 +82,6 @@ mod tests {
 
     #[test]
     fn hmac_sha1_matches_rfc_2202() {
-        // RFC 2202 test case 2.
         let mac = hmac_sha1(b"Jefe", b"what do ya want for nothing?");
         assert_eq!(
             mac,
@@ -109,7 +98,6 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
-        // A first-byte mismatch must be indistinguishable from a last-byte one.
         assert!(!constant_time_eq(b"xbc", b"abc"));
     }
 }

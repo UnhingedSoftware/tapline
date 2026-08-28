@@ -1,23 +1,16 @@
-//! Finding a CM via `ISteamDirectory/GetCMListForConnect`, the one WebAPI bootstrap.
-
 use crate::tls::connect_tls;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const DIRECTORY_HOST: &str = "api.steampowered.com";
 
-/// A CM the directory offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmServer {
-    /// `host:port`, ready for [`crate::CmTransport::connect`].
     pub endpoint: String,
-    /// The datacentre code, useful in a log line when one is misbehaving.
     pub datacentre: String,
-    /// Steam's own load figure, lower being better.
     pub load: u32,
 }
 
-/// Fetches CMs for `cell_id`, best first; only `websockets` servers are returned.
 pub async fn cm_list(cell_id: u32) -> io::Result<Vec<CmServer>> {
     let path = format!("/ISteamDirectory/GetCMListForConnect/v1/?cellid={cell_id}&maxcount=64");
     let body = get(DIRECTORY_HOST, &path).await?;
@@ -30,11 +23,9 @@ pub async fn cm_list(cell_id: u32) -> io::Result<Vec<CmServer>> {
 fn parse_cm_list(body: &str) -> Vec<CmServer> {
     let mut servers = Vec::new();
 
-    // Entries are flat objects, so splitting on braces cannot mis-nest.
     for fragment in body.split('{').skip(1) {
         let fragment = fragment.split('}').next().unwrap_or(fragment);
 
-        // `netfilter` is Steam Datagram Relay, a different protocol.
         if field(fragment, "type").as_deref() != Some("websockets") {
             continue;
         }
@@ -69,7 +60,6 @@ fn number(fragment: &str, name: &str) -> Option<u32> {
     rest.get(..end)?.parse().ok()
 }
 
-/// A minimal HTTPS GET, enough for the one bootstrap endpoint.
 async fn get(host: &str, path: &str) -> io::Result<String> {
     let mut stream = connect_tls(host, 443).await?;
 
@@ -84,7 +74,6 @@ async fn get(host: &str, path: &str) -> io::Result<String> {
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    // `Connection: close` means the body ends at EOF; no chunked decoding.
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await?;
     let text = String::from_utf8_lossy(&raw).into_owned();
@@ -106,7 +95,6 @@ async fn get(host: &str, path: &str) -> io::Result<String> {
 mod tests {
     use super::*;
 
-    /// A trimmed copy of a real response, captured 2026-08-26.
     const REAL_RESPONSE: &str = r#"{"response":{"serverlist":[
         {"endpoint":"cmp1-iad1.steamserver.net:443","legacy_endpoint":"cmp1-iad1.steamserver.net:443","type":"websockets","dc":"iad1","realm":"steamglobal","load":13,"wtd_load":45.24},
         {"endpoint":"cmp2-ord1.steamserver.net:27018","legacy_endpoint":"cmp2-ord1.steamserver.net:27018","type":"websockets","dc":"ord1","realm":"steamglobal","load":12,"wtd_load":45.14},

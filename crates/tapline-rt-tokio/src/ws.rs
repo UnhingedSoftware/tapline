@@ -1,10 +1,7 @@
-//! A WebSocket client, per RFC 6455, scoped to what Steam's CMs need.
-
 use crate::tls::TlsStream;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// The largest message we will assemble; frame lengths are untrusted 64-bit claims.
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
 mod opcode {
@@ -22,10 +19,8 @@ struct RawFrame {
     payload: Vec<u8>,
 }
 
-/// A WebSocket connection over TLS.
 pub struct WebSocket {
     stream: TlsStream,
-    /// Set once a close frame has been sent or received.
     closed: bool,
 }
 
@@ -37,7 +32,6 @@ impl WebSocket {
         }
     }
 
-    /// Sends one binary message.
     pub async fn send_binary(&mut self, payload: &[u8]) -> io::Result<()> {
         if self.closed {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe));
@@ -45,7 +39,6 @@ impl WebSocket {
         self.write_frame(opcode::BINARY, payload).await
     }
 
-    /// Receives the next binary message, answering pings and reassembling fragments.
     pub async fn recv_binary(&mut self) -> io::Result<Vec<u8>> {
         let mut assembled: Vec<u8> = Vec::new();
         let mut assembling = false;
@@ -55,13 +48,11 @@ impl WebSocket {
 
             match frame.opcode {
                 opcode::PING => {
-                    // A CM that pings and hears nothing back hangs up.
                     self.write_frame(opcode::PONG, &frame.payload).await?;
                 }
                 opcode::PONG => {}
                 opcode::CLOSE => {
                     self.closed = true;
-                    // Echo the close so the peer sees a clean shutdown.
                     let _ = self.write_frame(opcode::CLOSE, &[]).await;
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
                 }
@@ -108,11 +99,9 @@ impl WebSocket {
         }
     }
 
-    /// Sends a close frame and shuts the stream down.
     pub async fn close(&mut self) -> io::Result<()> {
         if !self.closed {
             self.closed = true;
-            // 1000: normal closure.
             let _ = self
                 .write_frame(opcode::CLOSE, &1000_u16.to_be_bytes())
                 .await;
@@ -120,10 +109,9 @@ impl WebSocket {
         self.stream.shutdown().await
     }
 
-    /// Writes one frame, masked as a client frame must be.
     async fn write_frame(&mut self, opcode: u8, payload: &[u8]) -> io::Result<()> {
         let mut header = Vec::with_capacity(14);
-        header.push(0x80 | opcode); // FIN set: we never fragment outbound.
+        header.push(0x80 | opcode);
 
         let mask_bit = 0x80_u8;
         match payload.len() {
@@ -138,7 +126,6 @@ impl WebSocket {
             }
         }
 
-        // A predictable mask defeats the anti-cache-poisoning purpose; use the OS RNG.
         let mask = tapline_crypto::random_bytes::<4>();
         header.extend_from_slice(&mask);
 
@@ -166,7 +153,6 @@ impl WebSocket {
         let masked = byte1 & 0x80 != 0;
         let short_len = byte1 & 0x7F;
 
-        // RFC 6455: a server must not mask.
         if masked {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -190,7 +176,6 @@ impl WebSocket {
             other => usize::from(other),
         };
 
-        // The claimed length is untrusted; cap it before allocating.
         if length > MAX_MESSAGE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -231,7 +216,6 @@ mod tests {
 
     #[test]
     fn length_encoding_switches_at_the_right_boundaries() {
-        // 125/126 and 65535/65536 are where the wire format changes shape.
         assert_eq!(encode_header(opcode::BINARY, 0).len(), 2);
         assert_eq!(encode_header(opcode::BINARY, 125).len(), 2);
         assert_eq!(encode_header(opcode::BINARY, 126).len(), 4);
@@ -241,7 +225,6 @@ mod tests {
 
     #[test]
     fn the_mask_bit_is_always_set_on_client_frames() {
-        // Steam's servers close the connection on an unmasked client frame.
         for len in [0_usize, 125, 126, 70_000] {
             let header = encode_header(opcode::BINARY, len);
             let second = *header.get(1).expect("two bytes");

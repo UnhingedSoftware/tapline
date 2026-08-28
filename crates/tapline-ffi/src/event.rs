@@ -1,9 +1,6 @@
-//! Events, as JSON objects a JS runtime can hand straight to `JSON.parse`.
-
 use crate::json::{push_str_field, push_u64};
 use tapline::{Event, InstallReport, Plan, RetryReason};
 
-/// Encodes one event.
 #[must_use]
 pub fn encode(event: &Event) -> String {
     let mut out = String::from("{");
@@ -19,7 +16,6 @@ pub fn encode(event: &Event) -> String {
         } => {
             push_str_field(&mut out, "kind", "depotStarted");
             push_u64(&mut out, "depot", u64::from(depot.get()));
-            // Manifest ids exceed 2^53, so they cross as strings to stay exact in JS.
             push_str_field(&mut out, "manifest", &manifest.get().to_string());
             push_u64(&mut out, "bytes", *bytes);
         }
@@ -74,7 +70,6 @@ pub fn encode(event: &Event) -> String {
             push_u64(&mut out, "downloadedBytes", *downloaded_bytes);
             push_u64(&mut out, "reusedBytes", *reused_bytes);
         }
-        // `Event` is `#[non_exhaustive]`; unknown variants surface instead of dropping.
         other => {
             push_str_field(&mut out, "kind", "unknown");
             push_str_field(&mut out, "debug", &format!("{other:?}"));
@@ -84,7 +79,6 @@ pub fn encode(event: &Event) -> String {
     out
 }
 
-/// Encodes the final report as a `finished` event.
 #[must_use]
 pub fn encode_report(report: &InstallReport) -> String {
     let mut out = String::from("{");
@@ -112,7 +106,6 @@ pub fn encode_report(report: &InstallReport) -> String {
     out
 }
 
-/// Encodes a plan on its own, for the `plan` job.
 #[must_use]
 pub fn encode_plan(plan: &Plan) -> String {
     let mut out = String::from("{");
@@ -170,7 +163,6 @@ mod tests {
 
     #[test]
     fn a_manifest_id_crosses_as_a_string() {
-        // Real GMod manifest id, larger than Number.MAX_SAFE_INTEGER.
         let json = encode(&Event::DepotStarted {
             depot: DepotId(4021),
             manifest: ManifestId(964_598_927_051_546_960),

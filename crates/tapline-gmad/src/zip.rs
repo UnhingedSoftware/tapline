@@ -1,46 +1,28 @@
-//! A minimal internal ZIP writer: flat files, stored or deflated, no ZIP64.
-
 use std::io::Write;
 use tapline_ext::ExtensionError;
 
-/// Local file header signature.
 const LOCAL_SIGNATURE: u32 = 0x0403_4b50;
-/// Central directory record signature.
 const CENTRAL_SIGNATURE: u32 = 0x0201_4b50;
-/// End of central directory signature.
 const END_SIGNATURE: u32 = 0x0605_4b50;
 
-/// Stored, no compression.
 const STORE: u16 = 0;
-/// Deflate.
 const DEFLATE: u16 = 8;
 
-/// The version needed to extract: 2.0, which is what deflate requires.
 const VERSION: u16 = 20;
 
-/// What a 32-bit ZIP can address.
 const MAX_SIZE: u64 = u32::MAX as u64;
-/// What the end-of-central-directory record can count.
 const MAX_ENTRIES: usize = u16::MAX as usize;
 
-/// Deflate level. 6 is zlib's default: the knee of the ratio/time curve.
 const LEVEL: u8 = 6;
 
-/// A pre-compressed entry, ready to write.
 pub struct Prepared {
-    /// The entry's path inside the archive.
     pub name: String,
-    /// CRC-32 of the *uncompressed* bytes, which is what a reader checks.
     pub crc: u32,
-    /// Uncompressed length.
     pub uncompressed: usize,
-    /// What actually goes in the file: deflated, or the original.
     pub payload: Vec<u8>,
-    /// Which of those it is.
     pub method: u16,
 }
 
-/// Compresses one entry, deciding whether deflating it was worth it.
 #[must_use]
 pub fn prepare(name: String, body: &[u8], compress: bool) -> Prepared {
     let crc = crc32fast::hash(body);
@@ -75,7 +57,6 @@ struct Record {
     offset: u32,
 }
 
-/// Writes a ZIP archive.
 pub struct Writer<W: Write> {
     out: W,
     records: Vec<Record>,
@@ -83,7 +64,6 @@ pub struct Writer<W: Write> {
 }
 
 impl<W: Write> Writer<W> {
-    /// A writer over `out`.
     pub const fn new(out: W) -> Self {
         Self {
             out,
@@ -92,7 +72,6 @@ impl<W: Write> Writer<W> {
         }
     }
 
-    /// Adds an entry compressed elsewhere, possibly on another thread.
     pub fn add_prepared(&mut self, entry: Prepared) -> Result<(), ExtensionError> {
         let Prepared {
             name,
@@ -144,18 +123,17 @@ impl<W: Write> Writer<W> {
             reason: format!("the path {name:?} is longer than a ZIP name field allows"),
         })?;
 
-        // Local header.
         self.u32(LOCAL_SIGNATURE)?;
         self.u16(VERSION)?;
-        self.u16(0)?; // flags
+        self.u16(0)?;
         self.u16(method)?;
-        self.u16(0)?; // time
-        self.u16(0)?; // date
+        self.u16(0)?;
+        self.u16(0)?;
         self.u32(crc)?;
         self.u32(compressed)?;
         self.u32(uncompressed)?;
         self.u16(name_len)?;
-        self.u16(0)?; // extra length
+        self.u16(0)?;
         self.write(name_bytes)?;
         self.write(payload)?;
 
@@ -170,7 +148,6 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
-    /// Writes the central directory and closes the archive.
     pub fn finish(mut self) -> Result<W, ExtensionError> {
         let directory_start = self.offset;
 
@@ -183,38 +160,37 @@ impl<W: Write> Writer<W> {
         let count = u16::try_from(records.len()).unwrap_or(u16::MAX);
 
         self.u32(END_SIGNATURE)?;
-        self.u16(0)?; // this disk
-        self.u16(0)?; // disk with the directory
+        self.u16(0)?;
+        self.u16(0)?;
         self.u16(count)?;
         self.u16(count)?;
         self.u32(u32::try_from(directory_size).unwrap_or(u32::MAX))?;
         self.u32(u32::try_from(directory_start).unwrap_or(u32::MAX))?;
-        self.u16(0)?; // comment length
+        self.u16(0)?;
 
         self.out.flush()?;
         Ok(self.out)
     }
 
-    /// The fixed 46-byte central-directory record, followed by the name.
     fn write_central_header(&mut self, record: &Record) -> Result<(), ExtensionError> {
         let name_len = u16::try_from(record.name.len()).unwrap_or(u16::MAX);
 
         self.u32(CENTRAL_SIGNATURE)?;
-        self.u16(VERSION)?; // version made by
-        self.u16(VERSION)?; // version needed
-        self.u16(0)?; // flags
+        self.u16(VERSION)?;
+        self.u16(VERSION)?;
+        self.u16(0)?;
         self.u16(record.method)?;
-        self.u16(0)?; // time
-        self.u16(0)?; // date
+        self.u16(0)?;
+        self.u16(0)?;
         self.u32(record.crc)?;
         self.u32(record.compressed)?;
         self.u32(record.uncompressed)?;
         self.u16(name_len)?;
-        self.u16(0)?; // extra
-        self.u16(0)?; // comment
-        self.u16(0)?; // disk number
-        self.u16(0)?; // internal attributes
-        self.u32(0)?; // external attributes
+        self.u16(0)?;
+        self.u16(0)?;
+        self.u16(0)?;
+        self.u16(0)?;
+        self.u32(0)?;
         self.u32(record.offset)?;
         self.write(record.name.as_bytes())
     }
@@ -291,7 +267,6 @@ mod tests {
             })
             .collect();
         let zip = build(&[("a.bin", &incompressible)], true);
-        // method is at offset 8 of the local header
         let method = u16::from_le_bytes([
             *zip.get(8).expect("in range"),
             *zip.get(9).expect("in range"),
@@ -329,7 +304,6 @@ mod tests {
 
     #[test]
     fn an_empty_archive_is_still_a_valid_one() {
-        // 22 bytes: just the end-of-central-directory record.
         let zip = build(&[], false);
         assert_eq!(zip.len(), 22);
         assert_eq!(zip.get(..4), Some(&END_SIGNATURE.to_le_bytes()[..]));

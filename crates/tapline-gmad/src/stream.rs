@@ -1,14 +1,10 @@
-//! Extracting an addon while it is still arriving.
-
 use crate::format::{Addon, parse_index};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tapline_ext::ExtensionError;
 
-/// Caps header buffering: an index unterminated by here is a hostile out-of-memory attempt.
 const HEADER_LIMIT: usize = 1 << 26;
 
-/// Writes an addon's files as its bytes arrive.
 pub struct StreamingExtractor {
     dest: PathBuf,
     header: Vec<u8>,
@@ -22,7 +18,6 @@ pub struct StreamingExtractor {
 }
 
 impl StreamingExtractor {
-    /// An extractor that writes into `dest`.
     #[must_use]
     pub fn new(dest: &Path) -> Self {
         Self {
@@ -38,13 +33,11 @@ impl StreamingExtractor {
         }
     }
 
-    /// The addon's metadata, once enough bytes have arrived to know it.
     #[must_use]
     pub const fn addon(&self) -> Option<&Addon> {
         self.addon.as_ref()
     }
 
-    /// Feeds the next bytes of the archive, in order.
     pub fn push(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
         self.seen = self.seen.saturating_add(bytes.len() as u64);
 
@@ -63,13 +56,11 @@ impl StreamingExtractor {
                         .first()
                         .map_or(self.header.len(), |entry| entry.offset);
                     self.begin(addon, start)?;
-                    // Anything already buffered past the index is file content.
                     let leftover = self.header.split_off(start.min(self.header.len()));
                     self.header = Vec::new();
                     return self.write_content(&leftover);
                 }
                 Err(error) => {
-                    // Incomplete is expected here; anything else is fatal.
                     if is_incomplete(&error) {
                         return Ok(());
                     }
@@ -78,7 +69,6 @@ impl StreamingExtractor {
             }
         }
 
-        // Trailing bytes past the last entry are the archive checksum; dropped, not written.
         if self.at >= self.targets.len() {
             return Ok(());
         }
@@ -86,7 +76,6 @@ impl StreamingExtractor {
     }
 
     fn begin(&mut self, addon: Addon, _content_start: usize) -> Result<(), ExtensionError> {
-        // Every path is validated before a single byte is written.
         self.targets = addon
             .entries
             .iter()
@@ -162,7 +151,6 @@ impl StreamingExtractor {
         Ok(())
     }
 
-    /// Finishes, returning the paths written; a stream that ended early is an error.
     pub fn finish(mut self) -> Result<Vec<String>, ExtensionError> {
         if let Some(mut writer) = self.current.take() {
             writer.flush()?;
@@ -378,7 +366,6 @@ mod tests {
         let mut extractor = StreamingExtractor::new(&dir.0);
         assert!(extractor.addon().is_none());
 
-        // Everything up to the first byte of content.
         let header_len = raw.len() - 7;
         extractor
             .push(raw.get(..header_len).expect("prefix"))

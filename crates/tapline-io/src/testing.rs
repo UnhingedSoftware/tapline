@@ -1,12 +1,9 @@
-//! Test doubles for the IO traits, and a runtime-free executor.
-
 use crate::{Sink, Transport};
 use std::future::Future;
 use std::io;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 
-/// Drives a future on the calling thread; the doubles never suspend, so no waker.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = Box::pin(future);
     let waker = Waker::noop();
@@ -18,7 +15,6 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// A [`Transport`] that serves queued messages and records what was sent.
 #[derive(Debug, Default)]
 pub struct MemoryTransport {
     incoming: std::collections::VecDeque<Vec<u8>>,
@@ -27,7 +23,6 @@ pub struct MemoryTransport {
 }
 
 impl MemoryTransport {
-    /// A transport that will hand `incoming` to its reader, in order.
     #[must_use]
     pub fn new(incoming: Vec<Vec<u8>>) -> Self {
         Self {
@@ -37,25 +32,21 @@ impl MemoryTransport {
         }
     }
 
-    /// Every message sent so far, in order.
     #[must_use]
     pub fn sent(&self) -> &[Vec<u8>] {
         &self.sent
     }
 
-    /// How many queued messages have not been read.
     #[must_use]
     pub fn unread(&self) -> usize {
         self.incoming.len()
     }
 
-    /// Whether the connection was closed.
     #[must_use]
     pub const fn is_closed(&self) -> bool {
         self.closed
     }
 
-    /// Queues another message for the reader, mid-test.
     pub fn push_incoming(&mut self, message: Vec<u8>) {
         self.incoming.push_back(message);
     }
@@ -82,7 +73,6 @@ impl Transport for MemoryTransport {
     }
 }
 
-/// A [`Sink`] that assembles a file in memory.
 #[derive(Debug, Default)]
 pub struct MemorySink {
     contents: Mutex<Vec<u8>>,
@@ -90,13 +80,11 @@ pub struct MemorySink {
 }
 
 impl MemorySink {
-    /// An empty sink.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The assembled file; empty if a previous panic poisoned the lock.
     #[must_use]
     pub fn contents(&self) -> Vec<u8> {
         self.contents
@@ -105,7 +93,6 @@ impl MemorySink {
             .unwrap_or_default()
     }
 
-    /// Whether [`Sink::sync`] was called.
     #[must_use]
     pub fn was_synced(&self) -> bool {
         self.synced.lock().map(|g| *g).unwrap_or(false)
@@ -123,7 +110,6 @@ impl Sink for MemorySink {
             .checked_add(data.len())
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
 
-        // Growing fills the gap with zeroes, like a sparse file.
         if contents.len() < end {
             contents.resize(end, 0);
         }

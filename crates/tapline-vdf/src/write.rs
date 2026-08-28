@@ -1,5 +1,3 @@
-//! The KeyValues writer, reproducing Valve's exact layout byte for byte.
-
 use crate::{Object, Value};
 use std::fmt;
 
@@ -14,7 +12,6 @@ pub(crate) fn write_object(
 
         match value {
             Value::String(s) => {
-                // Two tabs, which is what Valve emits regardless of key length.
                 f.write_str("\t\t")?;
                 write_quoted(f, s)?;
                 f.write_str("\n")?;
@@ -39,7 +36,6 @@ fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
     Ok(())
 }
 
-/// Escapes only `\` and `"`; tabs and newlines stay literal, matching Valve.
 fn write_quoted(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")?;
     for ch in s.chars() {
@@ -56,7 +52,6 @@ fn write_quoted(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 mod tests {
     use crate::{Object, Value, parse};
 
-    /// A real `appmanifest_232250.acf` in Valve's layout; the M1 round-trip fixture.
     const ACF: &str = "\"AppState\"\n\
 {\n\
 \t\"appid\"\t\t\"232250\"\n\
@@ -83,7 +78,6 @@ mod tests {
 
     #[test]
     fn an_acf_file_round_trips_byte_for_byte() {
-        // The M1 gate: byte-for-byte sharing with the Steam client.
         let parsed = parse(ACF).expect("the fixture must parse");
         assert_eq!(parsed.to_string(), ACF);
     }

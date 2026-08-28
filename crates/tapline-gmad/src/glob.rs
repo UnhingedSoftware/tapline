@@ -1,6 +1,3 @@
-//! A small glob matcher, for selecting entries out of an archive.
-
-/// Whether `path` matches `pattern`.
 #[must_use]
 pub fn matches(pattern: &str, path: &str) -> bool {
     let pattern: Vec<char> = pattern.to_ascii_lowercase().chars().collect();
@@ -18,7 +15,6 @@ fn matches_from(pattern: &[char], mut p: usize, path: &[char], mut s: usize) -> 
                 if double && next >= pattern.len() {
                     return true;
                 }
-                // Try every split point; `*` may not cross a separator, `**` may.
                 let mut at = s;
                 loop {
                     if matches_from(pattern, next, path, at) {
@@ -54,14 +50,12 @@ fn matches_from(pattern: &[char], mut p: usize, path: &[char], mut s: usize) -> 
     s == path.len()
 }
 
-/// A set of patterns. Empty matches everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Patterns {
     patterns: Vec<String>,
 }
 
 impl Patterns {
-    /// A set that matches everything.
     #[must_use]
     pub const fn all() -> Self {
         Self {
@@ -69,26 +63,22 @@ impl Patterns {
         }
     }
 
-    /// Adds a pattern.
     #[must_use]
     pub fn with(mut self, pattern: impl Into<String>) -> Self {
         self.patterns.push(pattern.into());
         self
     }
 
-    /// Whether nothing was specified, and so everything matches.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
     }
 
-    /// The patterns, for encoding.
     #[must_use]
     pub fn as_slice(&self) -> &[String] {
         &self.patterns
     }
 
-    /// Whether `path` is selected; an empty set selects everything.
     #[must_use]
     pub fn selects(&self, path: &str) -> bool {
         self.patterns.is_empty() || self.patterns.iter().any(|pattern| matches(pattern, path))

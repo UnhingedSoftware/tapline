@@ -1,5 +1,3 @@
-//! Signing in to Steam with an account.
-
 mod local;
 mod password;
 mod store;
@@ -12,27 +10,18 @@ pub use store::{StoredToken, TokenStore, TokenStoreError};
 
 use std::fmt;
 
-/// How Steam wants a login confirmed, from `EAuthSessionGuardType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardType {
-    /// Nothing further needed.
     None,
-    /// A code emailed to the account.
     EmailCode,
-    /// A code from the mobile authenticator.
     DeviceCode,
-    /// Approve it in the Steam mobile app.
     DeviceConfirmation,
-    /// Confirm by email link.
     EmailConfirmation,
-    /// A machine token established by an earlier login.
     MachineToken,
-    /// A type this build does not know about, kept with its number.
     Unknown(i32),
 }
 
 impl GuardType {
-    /// The wire value; Steam refuses a code of a different kind than it asked.
     #[must_use]
     pub const fn as_i32(self) -> i32 {
         match self {
@@ -46,7 +35,6 @@ impl GuardType {
         }
     }
 
-    /// Decodes the wire value.
     #[must_use]
     pub const fn from_i32(value: i32) -> Self {
         match value {
@@ -60,13 +48,11 @@ impl GuardType {
         }
     }
 
-    /// Whether the user must supply a code, as opposed to approving elsewhere.
     #[must_use]
     pub const fn needs_a_code(self) -> bool {
         matches!(self, Self::EmailCode | Self::DeviceCode)
     }
 
-    /// A description for a prompt.
     #[must_use]
     pub const fn describe(self) -> &'static str {
         match self {
@@ -90,10 +76,8 @@ impl fmt::Display for GuardType {
     }
 }
 
-/// `EAuthTokenPlatformType::SteamClient`; only this platform's tokens can fetch depot keys.
 pub const PLATFORM_STEAM_CLIENT: i32 = 1;
 
-/// The name a login shows in the account's device list.
 pub const DEVICE_NAME: &str = "tapline";
 
 #[cfg(test)]

@@ -1,29 +1,20 @@
-//! The protobuf wire format, implemented directly; no `prost`, no build script.
-
 mod decode;
 mod encode;
 
 pub use decode::{Decoder, WireError};
 pub use encode::Encoder;
 
-/// Nesting bound for hostile input; Steam's own messages nest three or four deep.
 pub const MAX_DEPTH: u32 = 64;
 
-/// A protobuf wire type: the low three bits of a field key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WireType {
-    /// Base-128 varint: `int32`, `int64`, `uint32`, `uint64`, `sint*`, `bool`, enums.
     Varint,
-    /// Fixed 64 bits: `fixed64`, `sfixed64`, `double`.
     Fixed64,
-    /// Length-prefixed bytes: `string`, `bytes`, embedded messages, packed repeated.
     LengthDelimited,
-    /// Fixed 32 bits: `fixed32`, `sfixed32`, `float`.
     Fixed32,
 }
 
 impl WireType {
-    /// Decodes the low three bits; groups (3, 4) and unassigned (6, 7) are rejected.
     pub const fn from_bits(bits: u32) -> Result<Self, WireError> {
         match bits {
             0 => Ok(Self::Varint),
@@ -34,7 +25,6 @@ impl WireType {
         }
     }
 
-    /// The low three bits of a field key.
     #[must_use]
     pub const fn to_bits(self) -> u32 {
         match self {
@@ -46,24 +36,17 @@ impl WireType {
     }
 }
 
-/// One field header: its number and how its value is encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldKey {
-    /// The field number from the `.proto` definition.
     pub number: u32,
-    /// How the value that follows is encoded.
     pub wire_type: WireType,
 }
 
-/// A protobuf message that can be read from and written to the wire.
 pub trait Message: Sized + Default {
-    /// Merges the fields in `decoder` into `self`, protobuf's own semantics.
     fn merge(&mut self, decoder: &mut Decoder<'_>) -> Result<(), WireError>;
 
-    /// Appends this message's fields to `encoder`.
     fn encode_raw(&self, encoder: &mut Encoder);
 
-    /// Decodes a complete message from `bytes`.
     fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut message = Self::default();
         let mut decoder = Decoder::new(bytes);
@@ -71,7 +54,6 @@ pub trait Message: Sized + Default {
         Ok(message)
     }
 
-    /// Encodes this message into a new buffer.
     fn encode_to_vec(&self) -> Vec<u8> {
         let mut encoder = Encoder::new();
         self.encode_raw(&mut encoder);
@@ -79,37 +61,30 @@ pub trait Message: Sized + Default {
     }
 }
 
-/// A request message that names its own response type and RPC target.
 pub trait Rpc: Message {
-    /// The reply Steam sends.
     type Response: Message;
 
-    /// The target string, without the `#1` version suffix the transport adds.
     const TARGET: &'static str;
 }
 
-/// Zigzag-encodes a signed 32-bit value for a `sint32` field.
 #[inline]
 #[must_use]
 pub const fn zigzag_encode_32(value: i32) -> u32 {
     ((value << 1) ^ (value >> 31)) as u32
 }
 
-/// Reverses [`zigzag_encode_32`].
 #[inline]
 #[must_use]
 pub const fn zigzag_decode_32(value: u32) -> i32 {
     ((value >> 1) as i32) ^ -((value & 1) as i32)
 }
 
-/// Zigzag-encodes a signed 64-bit value for a `sint64` field.
 #[inline]
 #[must_use]
 pub const fn zigzag_encode_64(value: i64) -> u64 {
     ((value << 1) ^ (value >> 63)) as u64
 }
 
-/// Reverses [`zigzag_encode_64`].
 #[inline]
 #[must_use]
 pub const fn zigzag_decode_64(value: u64) -> i64 {
@@ -140,7 +115,6 @@ mod tests {
 
     #[test]
     fn zigzag_matches_the_specification_examples() {
-        // From the protobuf encoding documentation.
         assert_eq!(zigzag_encode_32(0), 0);
         assert_eq!(zigzag_encode_32(-1), 1);
         assert_eq!(zigzag_encode_32(1), 2);

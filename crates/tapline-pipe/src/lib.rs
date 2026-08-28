@@ -1,5 +1,3 @@
-//! A typed pipeline: source, decode, filter, sinks.
-
 #![forbid(unsafe_code)]
 
 mod spec;
@@ -9,14 +7,10 @@ pub use spec::{Pipeline, Sink, SpecError};
 use tapline::{InstallError, Session, Window};
 use tapline_ids::{AppId, PublishedFileId};
 
-/// Anything that can go wrong running a pipeline.
 #[derive(Debug)]
 pub enum PipeError {
-    /// The download failed.
     Download(InstallError),
-    /// The archive could not be read, or a sink refused.
     Archive(tapline_ext::ExtensionError),
-    /// The pipeline itself was not usable.
     Spec(SpecError),
 }
 
@@ -50,37 +44,24 @@ impl From<SpecError> for PipeError {
     }
 }
 
-/// What is inside an archive, learned without downloading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
-    /// Every entry the archive holds.
     pub entries: Vec<tapline_ext::ArchiveEntry>,
-    /// The subset the pipeline's filters select.
     pub selected: Vec<tapline_ext::ArchiveEntry>,
-    /// The archive's size.
     pub archive_bytes: u64,
-    /// How much of it had to be read to learn all this.
     pub read_bytes: u64,
-    /// What fetching the selection would transfer.
     pub selected_bytes: u64,
-    /// What fetching the whole archive would transfer.
     pub total_bytes: u64,
 }
 
-/// What a pipeline produced.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Outcome {
-    /// Entries written to each sink.
     pub entries: usize,
-    /// Bytes fetched from the CDN.
     pub bytes_downloaded: u64,
-    /// Bytes handed to the decoder.
     pub bytes_streamed: u64,
-    /// The most chunks held back at once while reordering.
     pub peak_buffered: usize,
 }
 
-/// A Workshop item, before it has been given a meaning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     app: AppId,
@@ -88,7 +69,6 @@ pub struct Source {
     window: Window,
 }
 
-/// Starts a pipeline from a Workshop item.
 #[must_use]
 pub fn workshop(app: u32, item: u64) -> Source {
     Source {
@@ -99,26 +79,22 @@ pub fn workshop(app: u32, item: u64) -> Source {
 }
 
 impl Source {
-    /// How many chunks may be in flight while reordering. See [`Window`].
     #[must_use]
     pub const fn window(mut self, chunks: usize) -> Self {
         self.window = Window::new(chunks);
         self
     }
 
-    /// Reads the download as a Garry's Mod addon.
     #[must_use]
     pub fn gma(self) -> Decoded {
         self.decode("gma")
     }
 
-    /// Reads the download as a ZIP.
     #[must_use]
     pub fn zip(self) -> Decoded {
         self.decode("zip")
     }
 
-    /// Reads the download as a named format.
     #[must_use]
     pub fn decode(self, format: impl Into<String>) -> Decoded {
         let mut pipeline = Pipeline::gma();
@@ -130,7 +106,6 @@ impl Source {
     }
 }
 
-/// A decoded stream, which can be filtered and written somewhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decoded {
     source: Source,
@@ -138,7 +113,6 @@ pub struct Decoded {
 }
 
 impl Decoded {
-    /// Lists what is inside, without downloading it.
     pub async fn list(self) -> Result<Listing, PipeError> {
         let mut guard = tapline::SessionPool::shared().acquire().await?;
         let outcome = self.list_with(&mut guard).await;
@@ -148,7 +122,6 @@ impl Decoded {
         outcome
     }
 
-    /// Lists what is inside, on a session you own.
     pub async fn list_with(self, session: &mut Session) -> Result<Listing, PipeError> {
         let details = resolve(session, self.source.item).await?;
         let file = session.open_workshop_item(&details).await?;
@@ -174,21 +147,18 @@ impl Decoded {
         })
     }
 
-    /// Keeps only entries matching a glob. Repeatable; any match selects.
     #[must_use]
     pub fn only(mut self, pattern: impl Into<String>) -> Self {
         self.pipeline.filters.push(pattern.into());
         self
     }
 
-    /// Takes one named file, exactly; a name not in the archive is an error.
     #[must_use]
     pub fn pick(mut self, path: impl Into<String>) -> Self {
         self.pipeline.picks.push(path.into());
         self
     }
 
-    /// Takes several named files.
     #[must_use]
     pub fn pick_all<I, P>(mut self, paths: I) -> Self
     where
@@ -201,7 +171,6 @@ impl Decoded {
         self
     }
 
-    /// Unpacks into a directory. Terminal.
     #[must_use]
     pub fn dir(mut self, path: impl Into<String>) -> Ready {
         self.pipeline.sink = Some(Sink::Directory(path.into()));
@@ -211,7 +180,6 @@ impl Decoded {
         }
     }
 
-    /// Writes a ZIP, deflating what gets smaller for it. Terminal.
     #[must_use]
     pub fn zip(mut self, path: impl Into<String>) -> Ready {
         self.pipeline.sink = Some(Sink::Zip {
@@ -224,7 +192,6 @@ impl Decoded {
         }
     }
 
-    /// Writes a ZIP without deflating: roughly four times faster. Terminal.
     #[must_use]
     pub fn zip_stored(mut self, path: impl Into<String>) -> Ready {
         self.pipeline.sink = Some(Sink::Zip {
@@ -238,7 +205,6 @@ impl Decoded {
     }
 }
 
-/// A pipeline with its destination chosen, ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ready {
     source: Source,
@@ -246,18 +212,15 @@ pub struct Ready {
 }
 
 impl Ready {
-    /// The value this chain describes.
     #[must_use]
     pub const fn pipeline(&self) -> &Pipeline {
         &self.pipeline
     }
 
-    /// Runs it on a pooled session.
     pub async fn run(self) -> Result<Outcome, PipeError> {
         self.run_observed(&mut |_| {}).await
     }
 
-    /// Runs it on a pooled session, reporting progress.
     pub async fn run_observed(
         self,
         observe: &mut (dyn FnMut(tapline::Event) + Send),
@@ -279,12 +242,10 @@ impl Ready {
         outcome
     }
 
-    /// Runs it on a session you own.
     pub async fn run_with(self, session: &mut Session) -> Result<Outcome, PipeError> {
         self.run_with_observed(session, &mut |_| {}).await
     }
 
-    /// Runs it on a session you own, reporting progress.
     pub async fn run_with_observed(
         self,
         session: &mut Session,
@@ -310,7 +271,6 @@ async fn run_selective(
 ) -> Result<Outcome, PipeError> {
     let file = session.open_workshop_item(details).await?;
     let entries = read_index(&file, &pipeline.format).await?;
-    // Positions in the whole index: the sink resolves names against the full list.
     let chosen = select_indices(&entries, pipeline)?;
     let selected: Vec<tapline_ext::ArchiveEntry> = chosen
         .iter()
@@ -334,7 +294,6 @@ async fn run_selective(
 
     let mut sink = pipeline.sink.as_ref().ok_or(SpecError::NoSinks)?.build()?;
 
-    // Sinks validating paths must see every entry, selected or not.
     sink.index(&entries)?;
 
     let ranges: Vec<(u64, u64)> = selected
@@ -431,7 +390,6 @@ fn decode_entry(
     }
 }
 
-/// Positions into the whole index: sinks resolve entry names by index against the full list.
 fn select_indices(
     entries: &[tapline_ext::ArchiveEntry],
     pipeline: &Pipeline,
@@ -453,7 +411,6 @@ fn select_indices(
         }
     }
 
-    // An empty pattern set matches everything, so picks alone must not consult it.
     let take_all_patterns = pipeline.filters.is_empty() && !pipeline.picks.is_empty();
     Ok(entries
         .iter()
@@ -497,7 +454,6 @@ async fn resolve(
         .map_err(|error| PipeError::Download(InstallError::Io(error.to_string())))
 }
 
-/// Runs a pipeline value, however it was built.
 pub async fn run_pipeline(
     session: &mut Session,
     app: AppId,

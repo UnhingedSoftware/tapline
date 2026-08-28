@@ -1,21 +1,16 @@
-//! The encoder; the one subtlety is nested-message length prefixes.
-
 use crate::{FieldKey, Message, WireType};
 
-/// A growable protobuf message buffer.
 #[derive(Debug, Default, Clone)]
 pub struct Encoder {
     buf: Vec<u8>,
 }
 
 impl Encoder {
-    /// A new empty encoder.
     #[must_use]
     pub const fn new() -> Self {
         Self { buf: Vec::new() }
     }
 
-    /// A new encoder with room for `capacity` bytes.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -23,31 +18,26 @@ impl Encoder {
         }
     }
 
-    /// The encoded bytes.
     #[must_use]
     pub fn into_vec(self) -> Vec<u8> {
         self.buf
     }
 
-    /// The encoded bytes, borrowed.
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         &self.buf
     }
 
-    /// How many bytes have been written.
     #[must_use]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
 
-    /// Whether nothing has been written.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
-    /// Writes a base-128 varint.
     pub fn write_varint(&mut self, mut value: u64) {
         while value >= 0x80 {
             self.buf.push((value as u8) | 0x80);
@@ -56,12 +46,10 @@ impl Encoder {
         self.buf.push(value as u8);
     }
 
-    /// Writes a field header.
     pub fn write_key(&mut self, key: FieldKey) {
         self.write_varint((u64::from(key.number) << 3) | u64::from(key.wire_type.to_bits()));
     }
 
-    /// Writes a varint field.
     pub fn write_varint_field(&mut self, number: u32, value: u64) {
         self.write_key(FieldKey {
             number,
@@ -70,37 +58,30 @@ impl Encoder {
         self.write_varint(value);
     }
 
-    /// Writes an `int32` field; negatives sign-extend to ten bytes per protobuf.
     pub fn write_int32_field(&mut self, number: u32, value: i32) {
         self.write_varint_field(number, value as i64 as u64);
     }
 
-    /// Writes a `bool` field.
     pub fn write_bool_field(&mut self, number: u32, value: bool) {
         self.write_varint_field(number, u64::from(value));
     }
 
-    /// Writes a `sint32` field, zigzag encoded.
     pub fn write_sint32_field(&mut self, number: u32, value: i32) {
         self.write_varint_field(number, u64::from(crate::zigzag_encode_32(value)));
     }
 
-    /// Writes a `sint64` field, zigzag encoded.
     pub fn write_sint64_field(&mut self, number: u32, value: i64) {
         self.write_varint_field(number, crate::zigzag_encode_64(value));
     }
 
-    /// Writes a `float` field.
     pub fn write_float_field(&mut self, number: u32, value: f32) {
         self.write_fixed32_field(number, value.to_bits());
     }
 
-    /// Writes a `double` field.
     pub fn write_double_field(&mut self, number: u32, value: f64) {
         self.write_fixed64_field(number, value.to_bits());
     }
 
-    /// Writes a packed repeated `fixed64` field, omitting it when empty.
     pub fn write_packed_fixed64(&mut self, number: u32, values: &[u64]) {
         if values.is_empty() {
             return;
@@ -115,7 +96,6 @@ impl Encoder {
         }
     }
 
-    /// Writes a `fixed32` field.
     pub fn write_fixed32_field(&mut self, number: u32, value: u32) {
         self.write_key(FieldKey {
             number,
@@ -124,7 +104,6 @@ impl Encoder {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
 
-    /// Writes a `fixed64` field.
     pub fn write_fixed64_field(&mut self, number: u32, value: u64) {
         self.write_key(FieldKey {
             number,
@@ -133,7 +112,6 @@ impl Encoder {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
 
-    /// Writes a length-delimited field from bytes already in hand.
     pub fn write_bytes_field(&mut self, number: u32, value: &[u8]) {
         self.write_key(FieldKey {
             number,
@@ -143,12 +121,10 @@ impl Encoder {
         self.buf.extend_from_slice(value);
     }
 
-    /// Writes a `string` field.
     pub fn write_string_field(&mut self, number: u32, value: &str) {
         self.write_bytes_field(number, value.as_bytes());
     }
 
-    /// Writes a nested message via a one-byte length placeholder, spliced when outgrown.
     pub fn write_message_field(&mut self, number: u32, message: &impl Message) {
         self.write_key(FieldKey {
             number,
@@ -163,7 +139,6 @@ impl Encoder {
 
         let len = self.buf.len() - start;
         if len < 0x80 {
-            // The common case: the placeholder byte was the right width.
             if let Some(slot) = self.buf.get_mut(placeholder) {
                 *slot = len as u8;
             }
@@ -176,7 +151,6 @@ impl Encoder {
         }
     }
 
-    /// Writes a packed repeated `fixed32` field, omitting it when empty.
     pub fn write_packed_fixed32(&mut self, number: u32, values: &[u32]) {
         if values.is_empty() {
             return;
@@ -191,7 +165,6 @@ impl Encoder {
         }
     }
 
-    /// Writes a packed repeated varint field, omitting it when empty.
     pub fn write_packed_varint(&mut self, number: u32, values: &[u64]) {
         if values.is_empty() {
             return;
@@ -311,7 +284,6 @@ mod tests {
 
     #[test]
     fn nested_message_longer_than_the_placeholder_splices_correctly() {
-        // 200 bytes forces a two-byte length varint; a bad splice corrupts `tail`.
         let msg = Outer {
             inner: Inner {
                 payload: vec![0xAB; 200],
@@ -327,7 +299,6 @@ mod tests {
 
     #[test]
     fn deeply_long_nested_messages_round_trip_at_every_length_boundary() {
-        // 127/128 and 16383/16384 are where the length varint changes width.
         for len in [
             0_usize, 1, 126, 127, 128, 129, 16_382, 16_383, 16_384, 16_385,
         ] {

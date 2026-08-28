@@ -1,17 +1,10 @@
-//! Who is signed in to the local Steam client, from `config/loginusers.vdf`.
-
 use std::path::{Path, PathBuf};
 
-/// An account the local Steam client has signed in as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalAccount {
-    /// The 64-bit SteamID the client filed it under.
     pub steam_id: u64,
-    /// The account name, which is what a login needs.
     pub account: String,
-    /// The persona name, for showing a human which account this is.
     pub persona: String,
-    /// Whether this is the account the client used last.
     pub most_recent: bool,
 }
 
@@ -23,7 +16,6 @@ fn roots(home: &Path) -> [PathBuf; 3] {
     ]
 }
 
-/// Accounts the local Steam client knows about, most recent first; empty without Steam.
 #[must_use]
 pub fn discover() -> Vec<LocalAccount> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -32,7 +24,6 @@ pub fn discover() -> Vec<LocalAccount> {
     discover_in(&roots(&home))
 }
 
-/// Accounts found under the given Steam roots.
 #[must_use]
 pub fn discover_in(roots: &[PathBuf]) -> Vec<LocalAccount> {
     let mut seen = Vec::new();
@@ -40,7 +31,6 @@ pub fn discover_in(roots: &[PathBuf]) -> Vec<LocalAccount> {
 
     for root in roots {
         let path = root.join("config/loginusers.vdf");
-        // The three roots are usually one directory reached via symlinks.
         let Ok(real) = std::fs::canonicalize(&path) else {
             continue;
         };
@@ -59,19 +49,16 @@ pub fn discover_in(roots: &[PathBuf]) -> Vec<LocalAccount> {
     found
 }
 
-/// The account the client used last, if any.
 #[must_use]
 pub fn most_recent() -> Option<LocalAccount> {
     discover().into_iter().next()
 }
 
-/// Reads `loginusers.vdf`.
 #[must_use]
 pub fn parse_login_users(text: &str) -> Vec<LocalAccount> {
     let Ok(root) = tapline_vdf::parse(text) else {
         return Vec::new();
     };
-    // Steam writes the outer key as "users"; tolerate a rename.
     let Some(users) = root
         .get_object("users")
         .or_else(|| root.iter().find_map(|(_, value)| value.as_object()))
@@ -91,7 +78,6 @@ pub fn parse_login_users(text: &str) -> Vec<LocalAccount> {
                 steam_id: id.parse().unwrap_or(0),
                 account: account.to_owned(),
                 persona: entry.get_str("PersonaName").unwrap_or_default().to_owned(),
-                // Steam writes "1"/"0" strings; older clients omit the key.
                 most_recent: entry.get_str("MostRecent").is_some_and(|flag| flag == "1"),
             })
         })
@@ -109,7 +95,6 @@ fn sort_most_recent_first(accounts: &mut [LocalAccount]) {
     });
 }
 
-/// The Steam library directories configured on this machine.
 #[must_use]
 pub fn libraries() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -129,7 +114,6 @@ pub fn libraries() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// Reads `libraryfolders.vdf`.
 #[must_use]
 pub fn parse_libraries(text: &str) -> Vec<PathBuf> {
     let Ok(root) = tapline_vdf::parse(text) else {
@@ -144,12 +128,9 @@ pub fn parse_libraries(text: &str) -> Vec<PathBuf> {
 
     folders
         .iter()
-        .filter_map(|(_, value)| {
-            // Modern Steam writes an object with "path"; ancient versions wrote the path directly.
-            match value.as_object() {
-                Some(entry) => entry.get_str("path").map(PathBuf::from),
-                None => value.as_str().map(PathBuf::from),
-            }
+        .filter_map(|(_, value)| match value.as_object() {
+            Some(entry) => entry.get_str("path").map(PathBuf::from),
+            None => value.as_str().map(PathBuf::from),
         })
         .filter(|path| path.as_os_str().len() > 1)
         .collect()

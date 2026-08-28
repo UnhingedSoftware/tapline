@@ -1,5 +1,3 @@
-//! TLS and the WebSocket upgrade; certificate verification cannot be disabled.
-
 use crate::ws::WebSocket;
 use rustls::pki_types::ServerName;
 use std::io;
@@ -8,16 +6,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-/// A TLS stream over TCP.
 pub type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 
-/// The path Steam's CMs serve the WebSocket on.
 const CM_PATH: &str = "/cmsocket/";
 
-/// The RFC 6455 GUID mixed into the key.
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/// Roots come from `webpki-roots`, not the host's possibly-stale trust store.
 fn client_config() -> Arc<rustls::ClientConfig> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
@@ -29,10 +23,8 @@ fn client_config() -> Arc<rustls::ClientConfig> {
     )
 }
 
-/// Opens a TLS connection to `host:port`.
 pub async fn connect_tls(host: &str, port: u16) -> io::Result<TlsStream> {
     let tcp = TcpStream::connect((host, port)).await?;
-    // Nagle would add up to 40 ms to one small write.
     tcp.set_nodelay(true)?;
 
     let server_name = ServerName::try_from(host.to_owned())
@@ -43,7 +35,6 @@ pub async fn connect_tls(host: &str, port: u16) -> io::Result<TlsStream> {
         .await
 }
 
-/// Connects to a CM and performs the WebSocket upgrade.
 pub async fn connect_cm(endpoint: &str) -> io::Result<WebSocket> {
     let (host, port) = split_endpoint(endpoint)?;
     let stream = connect_tls(host, port).await?;
@@ -65,7 +56,6 @@ fn split_endpoint(endpoint: &str) -> io::Result<(&str, u16)> {
     }
 }
 
-/// Performs the RFC 6455 opening handshake.
 async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSocket> {
     let key = base64_encode(&tapline_crypto::random_bytes::<16>());
 
@@ -109,7 +99,6 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
         }
     }
 
-    // The accept value proves the peer implemented the handshake, not echoed it.
     let expected = base64_encode(&tapline_crypto::sha1(
         format!("{key}{WEBSOCKET_GUID}").as_bytes(),
     ));
@@ -129,7 +118,6 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
         }
     }
 
-    // Buffered bytes past the headers would be a silently dropped frame.
     if !reader.buffer().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -140,7 +128,6 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
     Ok(WebSocket::new(reader.into_inner()))
 }
 
-/// Standard base64, needed by the handshake in both directions.
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -186,7 +173,6 @@ mod tests {
 
     #[test]
     fn the_handshake_accept_value_matches_the_rfc_example() {
-        // RFC 6455 section 1.3 works this exact case.
         let key = "dGhlIHNhbXBsZSBub25jZQ==";
         let accept = base64_encode(&tapline_crypto::sha1(
             format!("{key}{WEBSOCKET_GUID}").as_bytes(),

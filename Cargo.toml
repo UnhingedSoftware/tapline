@@ -39,9 +39,7 @@ keywords = ["steam", "steamcmd", "depot", "workshop", "steampipe"]
 categories = ["network-programming", "game-development", "command-line-utilities"]
 rust-version = "1.85"
 
-# cargo deny fails the build on any dependency not declared here first.
 [workspace.dependencies]
-# internal — leaves
 tapline-wire = { path = "crates/tapline-wire", version = "0.1.0" }
 tapline-ids = { path = "crates/tapline-ids", version = "0.1.0" }
 tapline-proto = { path = "crates/tapline-proto", version = "0.1.0" }
@@ -67,21 +65,17 @@ tapline-gmad = { path = "crates/tapline-gmad", version = "0.1.0" }
 tapline-pipe = { path = "crates/tapline-pipe", version = "0.1.0" }
 tapline-zip = { path = "crates/tapline-zip", version = "0.1.0" }
 
-# async + parallelism; tokio is a dependency of tapline-rt-tokio alone.
 tokio = { version = "1", default-features = false }
 rayon = "1"
 bytes = "1"
 
-# transport; every SteamPipe host reports https_support mandatory, so TLS is core.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
 
-# crypto — never hand-rolled; that is how you ship a timing side channel.
 rsa = "0.9"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
-# Pinned to the rand_core line `rsa` speaks: one source of randomness.
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha1 = "0.10"
 sha2 = "0.10"
@@ -89,16 +83,13 @@ hmac = "0.12"
 crc32fast = "1"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
-# container formats: VZ wraps LZMA, VSZ wraps zstd, and CMsgMulti batches are gzip.
 lzma-rs = "0.3"
 ruzstd = "0.9"
 miniz_oxide = "0.8"
 
-# filesystem + observability
 cap-std = "3"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
-# CLI-only, never in the library graph
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 qrcode = { version = "0.14", default-features = false }
@@ -106,17 +97,14 @@ serde_json = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
 
 [workspace.lints.clippy]
-# tapline links into other people's servers; a panic there is a panic in theirs.
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
 todo = "deny"
 
-# Many codegen units parallelise across the wide crate DAG.
 [profile.dev]
 codegen-units = 256
 debug = 1
@@ -125,7 +113,6 @@ split-debuginfo = "unpacked"
 [profile.dev.package."*"]
 opt-level = 2
 
-# Size budget: the CLI ships <= 4 MB static musl; checked in CI.
 [profile.release]
 opt-level = 3
 lto = "thin"

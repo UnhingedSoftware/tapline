@@ -1,5 +1,3 @@
-//! A logged-on CM session: job ids, the session id, batch expansion.
-
 use crate::{EMsg, Frame, NetError, expand};
 use tapline_io::Transport;
 use tapline_proto::steammessages_base::CMsgProtoBufHeader;
@@ -8,41 +6,30 @@ use tapline_proto::steammessages_clientserver_login::{
 };
 use tapline_wire::{Message, Rpc};
 
-/// Steam's own result code for success.
 const RESULT_OK: i32 = 1;
 
-/// The version current clients send; Steam refuses a logon claiming an unsupported one.
 const PROTOCOL_VERSION: u32 = 65_580;
 
-/// Universe 1 (public), type 10 (`AnonUser`), instance 0, account id 0.
 const ANONYMOUS_STEAMID: u64 = (1_u64 << 56) | (10_u64 << 52);
 
-/// What Steam said when we logged on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonOutcome {
-    /// The `SteamId` Steam assigned.
     pub steam_id: u64,
-    /// The session id, which every later message must carry.
     pub session_id: i32,
-    /// How often to heartbeat, in seconds; miss these and Steam drops the session.
     pub heartbeat_seconds: u32,
-    /// The cell id, which decides which CDN hosts are near us.
     pub cell_id: u32,
 }
 
-/// A CM session over some transport.
 #[derive(Debug)]
 pub struct Session<T> {
     transport: T,
     session_id: i32,
     steam_id: u64,
     next_job_id: u64,
-    /// Unsolicited frames from batches; discarding them would lose license lists.
     pending: Vec<Frame>,
 }
 
 impl<T: Transport> Session<T> {
-    /// Wraps a connected transport. No traffic has happened yet.
     pub fn new(transport: T) -> Self {
         Self {
             transport,
@@ -53,27 +40,22 @@ impl<T: Transport> Session<T> {
         }
     }
 
-    /// The session id Steam assigned, or zero before logon.
     #[must_use]
     pub const fn session_id(&self) -> i32 {
         self.session_id
     }
 
-    /// The `SteamId` Steam assigned, or zero before logon.
     #[must_use]
     pub const fn steam_id(&self) -> u64 {
         self.steam_id
     }
 
-    /// Frames that arrived unsolicited, oldest first.
     pub fn take_unsolicited(&mut self) -> Vec<Frame> {
         std::mem::take(&mut self.pending)
     }
 
-    /// A fresh job id.
     pub fn next_job_id(&mut self) -> u64 {
         let id = self.next_job_id;
-        // u64::MAX is the no-job sentinel and must never be handed out.
         self.next_job_id = self.next_job_id.wrapping_add(1);
         if self.next_job_id == u64::MAX {
             self.next_job_id = 1;
@@ -90,17 +72,14 @@ impl<T: Transport> Session<T> {
         }
     }
 
-    /// Sends a frame.
     pub async fn send(&mut self, frame: &Frame) -> Result<(), NetError> {
         self.transport.send(&frame.encode()).await?;
         Ok(())
     }
 
-    /// Receives the next frame, expanding batches; extras queue as unsolicited.
     pub async fn recv(&mut self) -> Result<Frame, NetError> {
         loop {
             if !self.pending.is_empty() {
-                // Non-empty checked above; the re-check keeps the no-panic rule.
                 if self.pending.is_empty() {
                     continue;
                 }
@@ -109,14 +88,12 @@ impl<T: Transport> Session<T> {
             let bytes = self.transport.recv().await?;
             let frames = expand(Frame::decode(&bytes)?)?;
             if frames.is_empty() {
-                // An empty batch is legal; wait for the next one.
                 continue;
             }
             self.pending = frames;
         }
     }
 
-    /// Waits for the reply to `job_id`; `ClientLoggedOff` short-circuits the wait.
     pub async fn wait_for_job(&mut self, job_id: u64) -> Result<Frame, NetError> {
         let mut unrelated = Vec::new();
         loop {
@@ -134,7 +111,6 @@ impl<T: Transport> Session<T> {
         }
     }
 
-    /// Sends `ClientHello`, which a WebSocket session must do before logging on.
     pub async fn hello(&mut self) -> Result<(), NetError> {
         let hello = CMsgClientHello {
             protocol_version: Some(PROTOCOL_VERSION),
@@ -143,7 +119,6 @@ impl<T: Transport> Session<T> {
         self.send(&frame).await
     }
 
-    /// Logs on anonymously.
     pub async fn logon_anonymous(&mut self, cell_id: u32) -> Result<LogonOutcome, NetError> {
         self.hello().await?;
 
@@ -182,7 +157,6 @@ impl<T: Transport> Session<T> {
         })
     }
 
-    /// Logs on with a refresh token; Steam takes it in the `access_token` field.
     pub async fn logon_with_token(
         &mut self,
         cell_id: u32,
@@ -202,13 +176,11 @@ impl<T: Transport> Session<T> {
             should_remember_password: Some(true),
             account_name: Some(account.to_owned()),
             access_token: Some(refresh_token.to_owned()),
-            // Without this a throttled logon comes back as a bare failure.
             supports_rate_limit_response: Some(true),
             ..CMsgClientLogon::default()
         };
 
         let mut header = self.header(Some(job_id));
-        // Must be the account's own SteamID; the anonymous id is refused.
         header.steamid = Some(steam_id);
         let frame = Frame::new(EMsg::CLIENT_LOGON, header, logon.encode_to_vec());
         self.send(&frame).await?;
@@ -232,7 +204,6 @@ impl<T: Transport> Session<T> {
         })
     }
 
-    /// Matched by type: Steam's logon response does not always carry `jobid_target`.
     async fn wait_for_logon_response(&mut self) -> Result<Frame, NetError> {
         let mut unrelated = Vec::new();
         loop {
@@ -252,7 +223,6 @@ impl<T: Transport> Session<T> {
         }
     }
 
-    /// Sends one heartbeat.
     pub async fn heartbeat(&mut self) -> Result<(), NetError> {
         let frame = Frame::new(
             EMsg::CLIENT_HEARTBEAT,
@@ -262,15 +232,12 @@ impl<T: Transport> Session<T> {
         self.send(&frame).await
     }
 
-    /// Makes a unified-message call and decodes its reply.
     pub async fn call<R: Rpc>(&mut self, request: &R) -> Result<R::Response, NetError> {
         let job_id = self.next_job_id();
 
         let mut header = self.header(Some(job_id));
-        // Unified methods are versioned; `#1` is what every current method uses.
         header.target_job_name = Some(format!("{}#1", R::TARGET));
 
-        // Steam rejects the authed variant before logon.
         let emsg = if self.session_id == 0 {
             EMsg::SERVICE_METHOD_CALL_NON_AUTHED
         } else {
@@ -282,8 +249,6 @@ impl<T: Transport> Session<T> {
 
         let reply = self.wait_for_job(job_id).await?;
 
-        // Failures arrive as a header eresult with an empty body, which would
-        // otherwise decode to all defaults and look like success.
         match reply.header.eresult {
             Some(result) if result != RESULT_OK => {
                 return Err(NetError::Steam { eresult: result });
@@ -294,14 +259,12 @@ impl<T: Transport> Session<T> {
         reply.decode_body()
     }
 
-    /// Closes the connection.
     pub async fn close(&mut self) -> Result<(), NetError> {
         self.transport.close().await?;
         Ok(())
     }
 }
 
-/// `EOSType` for Linux, which is what `client_os_type` wants.
 const OS_LINUX: u32 = 16;
 
 #[cfg(test)]

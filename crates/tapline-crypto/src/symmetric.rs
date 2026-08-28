@@ -1,5 +1,3 @@
-//! Steam's symmetric message encryption: `ECB(key, iv) || CBC(key, iv, plaintext)`.
-
 use crate::{constant_time_eq, hmac_sha1};
 use aes::Aes256;
 use aes::cipher::block_padding::Pkcs7;
@@ -19,14 +17,10 @@ const TAG_LEN: usize = 13;
 const NONCE_LEN: usize = BLOCK - TAG_LEN;
 const HMAC_KEY_LEN: usize = 16;
 
-/// What went wrong encrypting or decrypting a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CryptoError {
-    /// The ciphertext was shorter than an IV block, or not block-aligned.
     MalformedCiphertext,
-    /// Bad PKCS#7 padding; not distinguished further, to avoid a padding oracle.
     DecryptionFailed,
-    /// The message decrypted but its HMAC tag did not match.
     AuthenticationFailed,
 }
 
@@ -42,18 +36,15 @@ impl fmt::Display for CryptoError {
 
 impl std::error::Error for CryptoError {}
 
-/// The 32-byte AES session key; zeroed on drop, never printed.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SessionKey([u8; 32]);
 
 impl SessionKey {
-    /// Wraps 32 key bytes.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// Generates a fresh key from the operating system's RNG.
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0_u8; 32];
@@ -61,13 +52,11 @@ impl SessionKey {
         Self(bytes)
     }
 
-    /// The raw key bytes, for handing to a cipher.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// Steam keys the HMAC with the first half of the session key.
     fn hmac_key(&self) -> &[u8] {
         self.0.get(..HMAC_KEY_LEN).unwrap_or(&self.0)
     }
@@ -79,7 +68,6 @@ impl fmt::Debug for SessionKey {
     }
 }
 
-/// ECB is safe here: the input is exactly one block.
 fn ecb_encrypt_block(key: &SessionKey, block: [u8; BLOCK]) -> [u8; BLOCK] {
     let cipher = Aes256::new(GenericArray::from_slice(key.as_bytes()));
     let mut block = GenericArray::from(block);
@@ -94,7 +82,6 @@ fn ecb_decrypt_block(key: &SessionKey, block: [u8; BLOCK]) -> [u8; BLOCK] {
     block.into()
 }
 
-/// Steam's IV doubles as a tag: `HMAC-SHA1(key[..16], nonce || plaintext)[..13] || nonce`.
 fn derive_iv(key: &SessionKey, nonce: [u8; NONCE_LEN], plaintext: &[u8]) -> [u8; BLOCK] {
     let mut hmac_input = Vec::with_capacity(NONCE_LEN + plaintext.len());
     hmac_input.extend_from_slice(&nonce);
@@ -103,7 +90,6 @@ fn derive_iv(key: &SessionKey, nonce: [u8; NONCE_LEN], plaintext: &[u8]) -> [u8;
     let tag = hmac_sha1(key.hmac_key(), &hmac_input);
 
     let mut iv = [0_u8; BLOCK];
-    // Slices are in-bounds constants; the fallbacks keep the no-panic rule.
     if let (Some(tag_part), Some(tag_src)) = (iv.get_mut(..TAG_LEN), tag.get(..TAG_LEN)) {
         tag_part.copy_from_slice(tag_src);
     }
@@ -113,7 +99,6 @@ fn derive_iv(key: &SessionKey, nonce: [u8; NONCE_LEN], plaintext: &[u8]) -> [u8;
     iv
 }
 
-/// Encrypts a message for the CM channel; the derived IV authenticates it.
 pub fn encrypt_message(key: &SessionKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut nonce = [0_u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
@@ -140,7 +125,6 @@ pub fn encrypt_message(key: &SessionKey, plaintext: &[u8]) -> Result<Vec<u8>, Cr
     Ok(out)
 }
 
-/// Decrypts and authenticates a message from the CM channel.
 pub fn decrypt_message(key: &SessionKey, ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let encrypted_iv: [u8; BLOCK] = ciphertext
         .get(..BLOCK)
@@ -177,7 +161,6 @@ pub fn decrypt_message(key: &SessionKey, ciphertext: &[u8]) -> Result<Vec<u8>, C
     Ok(plaintext)
 }
 
-/// Decrypts depot content, whose IV is random rather than HMAC-derived.
 pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let wrapped = SessionKey::from_bytes(*key);
 
@@ -204,7 +187,6 @@ pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Cry
     Ok(buf)
 }
 
-/// Like [`decrypt_content`], but decrypts in place and allocates nothing.
 pub fn decrypt_content_owned(
     key: &[u8; 32],
     mut ciphertext: Vec<u8>,
@@ -236,7 +218,6 @@ pub fn decrypt_content_owned(
     Ok(ciphertext)
 }
 
-/// Encrypts content with a plain IV; only used to build test fixtures.
 pub fn encrypt_content(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let wrapped = SessionKey::from_bytes(*key);
     let iv = crate::random_bytes::<BLOCK>();
@@ -291,7 +272,6 @@ mod tests {
     #[test]
     fn the_wrong_depot_key_does_not_yield_a_filename() {
         let ciphertext = encrypt_content(&[0x37; 32], b"bin/srcds_linux").expect("encrypt");
-        // Bad padding usually errors; when it does not, the plaintext must still differ.
         match decrypt_content(&[0x38; 32], &ciphertext) {
             Err(_) => {}
             Ok(plaintext) => assert_ne!(plaintext, b"bin/srcds_linux"),
@@ -316,7 +296,6 @@ mod tests {
     fn ciphertext_carries_the_encrypted_iv_in_front() {
         let key = test_key();
         let ciphertext = encrypt_message(&key, b"hello").expect("must encrypt");
-        // One IV block plus one padded block.
         assert_eq!(ciphertext.len(), BLOCK * 2);
     }
 
@@ -333,7 +312,6 @@ mod tests {
         let key = test_key();
         let mut ciphertext = encrypt_message(&key, b"transfer 10 credits").expect("must encrypt");
 
-        // CBC still "decrypts" a flipped bit; the HMAC check is the gate.
         if let Some(byte) = ciphertext.get_mut(BLOCK + 3) {
             *byte ^= 0x01;
         }
@@ -379,7 +357,6 @@ mod tests {
             decrypt_message(&key, &[0; BLOCK]),
             Err(CryptoError::MalformedCiphertext)
         );
-        // A body that is not a whole number of blocks.
         assert_eq!(
             decrypt_message(&key, &[0; BLOCK + 5]),
             Err(CryptoError::MalformedCiphertext)
@@ -420,7 +397,6 @@ mod tests {
         let key = [1_u8; 32];
         assert!(decrypt_content_owned(&key, Vec::new()).is_err());
         assert!(decrypt_content_owned(&key, vec![0; BLOCK]).is_err());
-        // Not a whole number of blocks after the IV.
         assert!(decrypt_content_owned(&key, vec![0; BLOCK + 3]).is_err());
     }
 }

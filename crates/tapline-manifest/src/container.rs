@@ -1,52 +1,30 @@
-//! Unwrapping the manifest container.
-
 use std::fmt;
 use tapline_proto::content_manifest::{
     ContentManifestMetadata, ContentManifestPayload, ContentManifestSignature,
 };
 use tapline_wire::{Message, WireError};
 
-/// Block magics, in the order they appear.
 const MAGIC_PAYLOAD: u32 = 0x71F6_17D0;
 const MAGIC_METADATA: u32 = 0x1F48_12BE;
 const MAGIC_SIGNATURE: u32 = 0x1B81_B817;
 const MAGIC_END: u32 = 0x32C4_15AB;
 
-/// The ZIP local file header magic.
 const ZIP_LOCAL_HEADER: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 
-/// The largest manifest we will decompress.
 pub const MAX_MANIFEST: usize = 512 * 1024 * 1024;
 
-/// What went wrong reading a manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
-    /// The bytes are not a manifest container.
     NotAManifest,
-    /// The ZIP entry used a compression method other than store or deflate.
     UnsupportedCompression(u16),
-    /// Decompression failed.
     Decompress(String),
-    /// The ZIP entry's CRC-32 did not match its contents.
     ChecksumMismatch,
-    /// A length or offset ran past the end of the data.
     Truncated,
-    /// A block magic we do not know; reported rather than skipped.
     UnknownBlock(u32),
-    /// A required block was absent.
     MissingBlock(&'static str),
-    /// A protobuf block did not decode.
     Wire(WireError),
-    /// The manifest is for a different depot or build than requested.
-    WrongManifest {
-        /// What was asked for.
-        expected: u64,
-        /// What arrived.
-        actual: u64,
-    },
-    /// Filenames are encrypted and no key was supplied.
+    WrongManifest { expected: u64, actual: u64 },
     FilenamesEncrypted,
-    /// A filename failed to decrypt; almost always the wrong depot key.
     FilenameUndecryptable,
 }
 
@@ -82,25 +60,19 @@ impl From<WireError> for ManifestError {
     }
 }
 
-/// A manifest's three protobuf blocks, decoded but not yet interpreted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawManifest {
-    /// The files and their chunks.
     pub payload: ContentManifestPayload,
-    /// Depot id, build sizes, and whether filenames are encrypted.
     pub metadata: ContentManifestMetadata,
-    /// Valve's signature over the manifest, when present; not verified.
     pub signature: Option<ContentManifestSignature>,
 }
 
 impl RawManifest {
-    /// Parses a manifest as served by the CDN.
     pub fn parse(bytes: &[u8]) -> Result<Self, ManifestError> {
         let inner = unzip(bytes)?;
         Self::parse_blocks(&inner)
     }
 
-    /// Parses the block sequence, after the ZIP layer has been removed.
     pub fn parse_blocks(bytes: &[u8]) -> Result<Self, ManifestError> {
         let mut payload = None;
         let mut metadata = None;
@@ -137,10 +109,8 @@ impl RawManifest {
     }
 }
 
-/// Extracts the single entry from the manifest's ZIP wrapper; local header only.
 fn unzip(bytes: &[u8]) -> Result<Vec<u8>, ManifestError> {
     if bytes.get(..4) != Some(&ZIP_LOCAL_HEADER) {
-        // Some paths hand us an already-unwrapped block sequence.
         if read_u32(bytes, 0) == Some(MAGIC_PAYLOAD) {
             return Ok(bytes.to_vec());
         }
@@ -244,7 +214,6 @@ mod tests {
         let original = manifest.metadata.cb_disk_original.unwrap_or(0);
         let compressed = manifest.metadata.cb_disk_compressed.unwrap_or(0);
 
-        // PICS said this depot is 9,989 bytes installed.
         assert_eq!(original, 9_989);
         assert!(compressed > 0 && compressed <= original);
         assert!(manifest.metadata.unique_chunks.unwrap_or(0) > 0);
@@ -265,7 +234,6 @@ mod tests {
 
     #[test]
     fn truncation_before_the_data_ends_is_an_error_and_never_a_panic() {
-        // A prefix reaching the end of the deflate stream is a complete manifest.
         let name_len = read_u16(REAL, 26).expect("a header") as usize;
         let extra_len = read_u16(REAL, 28).expect("a header") as usize;
         let compressed = read_u32(REAL, 18).expect("a header") as usize;

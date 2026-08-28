@@ -1,60 +1,40 @@
-//! Checking an install against its manifest, and repairing what is wrong.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use tapline_manifest::Manifest;
 
-/// What a validation found wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Damage {
-    /// The file is not there at all.
     Missing,
-    /// The file is the wrong length.
-    WrongSize {
-        /// What the manifest says.
-        expected: u64,
-        /// What is on disk.
-        actual: u64,
-    },
-    /// Some of the file's chunks do not hash to what the manifest named.
+    WrongSize { expected: u64, actual: u64 },
     CorruptChunks(Vec<u64>),
-    /// The file could not be read.
     Unreadable(String),
 }
 
-/// The outcome of checking an install.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationReport {
-    /// How many files were checked.
     pub files_checked: u64,
-    /// How many bytes were read and hashed.
     pub bytes_checked: u64,
-    /// What was wrong, by path.
     pub damaged: BTreeMap<String, Damage>,
 }
 
 impl ValidationReport {
-    /// Whether the install is intact.
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.damaged.is_empty()
     }
 
-    /// How many chunks need refetching.
     #[must_use]
     pub fn chunks_to_repair(&self) -> usize {
         self.damaged
             .values()
             .map(|damage| match damage {
                 Damage::CorruptChunks(offsets) => offsets.len(),
-                // Whole-file damage counts as one; the manifest says how many chunks.
                 _ => 1,
             })
             .sum()
     }
 }
 
-/// Checks every file in a manifest against what is on disk.
 pub fn validate_manifest<F>(manifest: &Manifest, root: &Path, mut read_chunk: F) -> ValidationReport
 where
     F: FnMut(&Path, u64, usize) -> std::io::Result<Vec<u8>>,
@@ -65,7 +45,6 @@ where
         report.files_checked += 1;
 
         let Ok(safe) = tapline_fs::validate_path(&file.path) else {
-            // An unsafe manifest path is not damage to repair; report, never silent.
             report.damaged.insert(
                 file.path.clone(),
                 Damage::Unreadable("the manifest names an unsafe path".to_owned()),

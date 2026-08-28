@@ -1,15 +1,10 @@
-//! Unpacking `CMsgMulti`: length-prefixed messages, gzipped when `size_unzipped` is non-zero.
-
 use crate::{NetError, frame::Frame};
 use tapline_proto::steammessages_base::CMsgMulti;
 
-/// How deeply batches may nest; Steam nests one level in practice.
 pub const MAX_NESTING: u32 = 8;
 
-/// The largest decompressed batch we accept; `size_unzipped` is untrusted network input.
 pub const MAX_UNZIPPED: usize = 32 * 1024 * 1024;
 
-/// Expands a frame into the messages it contains; a non-batch passes through.
 pub fn expand(frame: Frame) -> Result<Vec<Frame>, NetError> {
     let mut out = Vec::new();
     expand_into(frame, 0, &mut out)?;
@@ -41,7 +36,6 @@ fn expand_into(frame: Frame, depth: u32, out: &mut Vec<Frame>) -> Result<(), Net
                     claimed: size as u64,
                 });
             }
-            // The claimed size is a cap for the inflater, not a promise.
             crate::gzip::decompress(&body, size).map_err(NetError::Decompress)?
         }
     };
@@ -149,7 +143,6 @@ mod tests {
 
     #[test]
     fn nested_batches_are_flattened() {
-        // Steam does nest these, so the flattening is not defensive coding.
         let innermost = [plain(EMsg::CLIENT_LOGON_RESPONSE, b"deep")];
         let inner_multi = multi_frame(pack(&innermost), None);
         let outer = multi_frame(pack(&[inner_multi]), None);
@@ -179,7 +172,6 @@ mod tests {
 
     #[test]
     fn a_truncated_batch_payload_is_an_error() {
-        // A length prefix promising more than the payload holds.
         let mut payload = Vec::new();
         payload.extend_from_slice(&1000_u32.to_le_bytes());
         payload.extend_from_slice(b"short");

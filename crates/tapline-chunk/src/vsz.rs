@@ -1,27 +1,18 @@
-//! The `VSZ` chunk container: zstd.
-
 use crate::ChunkError;
 use std::io::Read as _;
 
-/// The header magic.
 const MAGIC: [u8; 3] = *b"VSZ";
-/// The only version seen.
 const VERSION: u8 = b'a';
-/// The footer magic.
 const FOOTER_MAGIC: [u8; 3] = *b"zsv";
 
-/// Header bytes before the zstd frame.
 const HEADER_LEN: usize = 8;
-/// Footer bytes: crc, size, a reserved word, magic.
 const FOOTER_LEN: usize = 15;
 
-/// Whether these bytes look like a `VSZ` container.
 #[must_use]
 pub fn matches(input: &[u8]) -> bool {
     input.get(..3) == Some(&MAGIC)
 }
 
-/// Decodes a `VSZ` chunk.
 #[cfg(test)]
 pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     let mut out = Vec::new();
@@ -29,7 +20,6 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     Ok(out)
 }
 
-/// Decodes into a buffer the caller owns.
 pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     if input.len() < HEADER_LEN + FOOTER_LEN {
         return Err(ChunkError::Truncated);
@@ -72,7 +62,6 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
     let mut reader = ruzstd::decoding::StreamingDecoder::new(frame)
         .map_err(|e| ChunkError::Decompress(e.to_string()))?;
 
-    // Take one byte past the claim so an overlong frame is detected, not trusted.
     out.clear();
     out.reserve(claimed_size as usize);
     (&mut reader)
@@ -164,7 +153,6 @@ mod tests {
 
     #[test]
     fn truncation_is_an_error_not_a_panic() {
-        // Stepped rather than exhaustive: zstd-decoding every prefix is not free.
         for cut in (0..REAL.len()).step_by(997) {
             let prefix = REAL.get(..cut).expect("in range");
             assert!(

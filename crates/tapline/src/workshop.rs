@@ -1,72 +1,37 @@
-//! Workshop items.
 use crate::{InstallError, InstallOptions};
 use std::fmt;
 use tapline_ids::{AppId, DepotId, ManifestId, PublishedFileId};
 
-/// Steam's result code for success, on a per-item basis.
 const RESULT_OK: u32 = 1;
 
-/// Where an item's content lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkshopContent {
-    /// Content in the app's workshop depot, addressed by manifest.
     SteamPipe {
-        /// The depot the app keeps Workshop content in.
         depot: DepotId,
-        /// The item's manifest, from `hcontent_file`.
         manifest: ManifestId,
     },
-    /// A plain HTTPS blob.
     Legacy {
-        /// Where to fetch it.
         url: String,
-        /// The name to save it under, when the item gives one.
         filename: Option<String>,
     },
 }
 
-/// A Workshop item, as Steam describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkshopItem {
-    /// The published file id.
     pub id: PublishedFileId,
-    /// The app the item belongs to.
     pub app: AppId,
-    /// Its title, which may be empty.
     pub title: String,
-    /// Its size in bytes, as Steam reports it.
     pub size: u64,
-    /// When it was last updated, as a Unix timestamp.
     pub updated: u32,
-    /// How to get it.
     pub content: WorkshopContent,
 }
 
-/// Why an item could not be described or downloaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkshopError {
-    /// Steam returned a non-success result for the item.
-    Refused {
-        /// Which item.
-        id: PublishedFileId,
-        /// Steam's `EResult`.
-        eresult: u32,
-    },
-    /// Steam described the item but gave no way to fetch it.
-    NoContent {
-        /// Which item.
-        id: PublishedFileId,
-    },
-    /// The item's app publishes no workshop depot.
-    NoWorkshopDepot {
-        /// The app.
-        app: AppId,
-    },
-    /// Steam did not return the item at all.
-    NotReturned {
-        /// Which item.
-        id: PublishedFileId,
-    },
+    Refused { id: PublishedFileId, eresult: u32 },
+    NoContent { id: PublishedFileId },
+    NoWorkshopDepot { app: AppId },
+    NotReturned { id: PublishedFileId },
 }
 
 impl fmt::Display for WorkshopError {
@@ -89,7 +54,6 @@ impl fmt::Display for WorkshopError {
 
 impl std::error::Error for WorkshopError {}
 
-/// Turns one `PublishedFileDetails` into an item, given the app's workshop depot.
 pub fn classify(
     details: &tapline_proto::steammessages_publishedfile_steamclient::PublishedFileDetails,
     workshop_depot: Option<DepotId>,
@@ -106,7 +70,6 @@ pub fn classify(
 
     let app = AppId(details.consumer_appid.unwrap_or(0));
 
-    // A manifest wins over a URL: screenshots carry both, the URL is the thumbnail CDN.
     let manifest = details.hcontent_file.filter(|handle| *handle != 0);
     let url = details
         .file_url
@@ -143,7 +106,6 @@ pub fn classify(
     })
 }
 
-/// Where an item installs under a root; matches the Steam client's layout.
 #[must_use]
 pub fn item_dir(root: &std::path::Path, app: AppId, id: PublishedFileId) -> std::path::PathBuf {
     root.join("steamapps")
@@ -153,7 +115,6 @@ pub fn item_dir(root: &std::path::Path, app: AppId, id: PublishedFileId) -> std:
         .join(id.to_string())
 }
 
-/// Options for a Workshop download, derived from install options.
 #[must_use]
 pub fn options_for(base: &InstallOptions, app: AppId, id: PublishedFileId) -> InstallOptions {
     InstallOptions {
@@ -162,7 +123,6 @@ pub fn options_for(base: &InstallOptions, app: AppId, id: PublishedFileId) -> In
     }
 }
 
-/// Where this item's files will actually be written.
 #[must_use]
 pub fn target_dir(base: &InstallOptions, app: AppId, id: PublishedFileId) -> std::path::PathBuf {
     match base.workshop_layout {
@@ -260,7 +220,6 @@ mod tests {
 
     #[test]
     fn a_zero_manifest_handle_is_not_a_manifest() {
-        // Steam sends zero rather than omitting the field.
         let item = classify(
             &details(1, 1, Some(0), Some("https://example.invalid/blob")),
             Some(DepotId(4000)),
@@ -271,7 +230,6 @@ mod tests {
 
     #[test]
     fn a_refused_item_carries_steams_own_code() {
-        // 9 is FileNotFound, 15 is AccessDenied.
         for eresult in [9, 15] {
             assert_eq!(
                 classify(
@@ -355,7 +313,6 @@ mod tests {
 
     #[test]
     fn the_default_layout_is_steamcmds() {
-        // Changing this silently would move every existing consumer's files.
         assert_eq!(
             InstallOptions::default().workshop_layout,
             crate::WorkshopLayout::SteamCmd

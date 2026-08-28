@@ -1,26 +1,16 @@
-//! The 64-bit SteamID: `universe(8) | type(4) | instance(20) | account id(32)`.
-
 use std::fmt;
 
-/// Which Steam universe an id belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Universe {
-    /// Unset or invalid.
     Invalid,
-    /// The live, public Steam network.
     Public,
-    /// Valve-internal.
     Beta,
-    /// Valve-internal.
     Internal,
-    /// Valve-internal.
     Dev,
-    /// A universe this build does not know about.
     Unknown(u8),
 }
 
 impl Universe {
-    /// The wire encoding.
     #[must_use]
     pub const fn to_u8(self) -> u8 {
         match self {
@@ -33,7 +23,6 @@ impl Universe {
         }
     }
 
-    /// Decodes the wire encoding, preserving unrecognised values.
     #[must_use]
     pub const fn from_u8(v: u8) -> Self {
         match v {
@@ -47,37 +36,23 @@ impl Universe {
     }
 }
 
-/// What kind of account an id names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccountType {
-    /// Unset or invalid.
     Invalid,
-    /// A person.
     Individual,
-    /// A multiseat (cybercafe) account.
     Multiseat,
-    /// A persistent game server.
     GameServer,
-    /// An anonymous game server.
     AnonGameServer,
-    /// A pending account.
     Pending,
-    /// A content server.
     ContentServer,
-    /// A group.
     Clan,
-    /// A chat room.
     Chat,
-    /// A peer-to-peer superseeder.
     ConsoleUser,
-    /// An anonymous user — what an anonymous logon becomes.
     AnonUser,
-    /// A type this build does not know about.
     Unknown(u8),
 }
 
 impl AccountType {
-    /// The wire encoding.
     #[must_use]
     pub const fn to_u8(self) -> u8 {
         match self {
@@ -96,7 +71,6 @@ impl AccountType {
         }
     }
 
-    /// Decodes the wire encoding.
     #[must_use]
     pub const fn from_u8(v: u8) -> Self {
         match v {
@@ -115,7 +89,6 @@ impl AccountType {
         }
     }
 
-    /// The single letter Steam uses for this type in the `[U:1:1234]` rendering.
     #[must_use]
     pub const fn letter(self) -> char {
         match self {
@@ -133,23 +106,19 @@ impl AccountType {
     }
 }
 
-/// A 64-bit Steam identifier.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct SteamId(pub u64);
 
-/// The instance value a normal desktop client uses.
 const INSTANCE_DESKTOP: u32 = 1;
 
 impl SteamId {
-    /// Wraps a raw 64-bit id.
     #[inline]
     #[must_use]
     pub const fn new(raw: u64) -> Self {
         Self(raw)
     }
 
-    /// Builds an id from its parts; oversized values are masked to fit.
     #[must_use]
     pub const fn from_parts(
         universe: Universe,
@@ -164,55 +133,47 @@ impl SteamId {
         Self(raw)
     }
 
-    /// The raw 64-bit value, as it goes on the wire.
     #[inline]
     #[must_use]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
-    /// The low 32 bits: the account number.
     #[inline]
     #[must_use]
     pub const fn account_id(self) -> u32 {
         self.0 as u32
     }
 
-    /// The 20-bit instance field.
     #[inline]
     #[must_use]
     pub const fn instance(self) -> u32 {
         ((self.0 >> 32) & 0xF_FFFF) as u32
     }
 
-    /// The 4-bit account type field.
     #[inline]
     #[must_use]
     pub const fn account_type(self) -> AccountType {
         AccountType::from_u8(((self.0 >> 52) & 0xF) as u8)
     }
 
-    /// The 8-bit universe field.
     #[inline]
     #[must_use]
     pub const fn universe(self) -> Universe {
         Universe::from_u8((self.0 >> 56) as u8)
     }
 
-    /// Whether this id names something real.
     #[must_use]
     pub const fn is_valid(self) -> bool {
         !matches!(self.account_type(), AccountType::Invalid)
             && !matches!(self.universe(), Universe::Invalid)
     }
 
-    /// The id an anonymous logon starts from; Steam fills in the account number.
     #[must_use]
     pub const fn anonymous() -> Self {
         Self::from_parts(Universe::Public, AccountType::AnonUser, INSTANCE_DESKTOP, 0)
     }
 
-    /// Renders the modern `[U:1:1234]` form.
     #[must_use]
     pub fn to_steam3(self) -> String {
         format!(
@@ -256,7 +217,6 @@ mod tests {
 
     #[test]
     fn known_individual_id_decodes_field_by_field() {
-        // A real public individual id: account 22202, desktop instance.
         let id = SteamId::new(76_561_197_960_287_930);
         assert_eq!(id.universe(), Universe::Public);
         assert_eq!(id.account_type(), AccountType::Individual);

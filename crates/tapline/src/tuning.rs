@@ -1,20 +1,14 @@
-//! Keeping the allocator from hoarding.
-/// The allocator settings a download wants, as name/value pairs.
 pub const ENVIRONMENT: [(&str, &str); 3] = [
     ("MALLOC_ARENA_MAX", "2"),
     ("MALLOC_TRIM_THRESHOLD_", "131072"),
     ("MALLOC_MMAP_THRESHOLD_", "131072"),
 ];
 
-/// The marker that says the re-exec already happened.
 pub const MARKER: &str = "TAPLINE_TUNED";
 
-/// The opt-out.
 pub const DISABLE: &str = "TAPLINE_NO_MALLOC_TUNING";
 
-/// Re-runs the current program once with the allocator pinned; call it first in `main`.
 pub fn retune() {
-    // glibc only: musl has no dynamic mmap threshold and ignores these variables.
     #[cfg(all(unix, target_env = "gnu"))]
     {
         use std::os::unix::process::CommandExt;
@@ -35,12 +29,10 @@ pub fn retune() {
         for (name, value) in ENVIRONMENT {
             command.env(name, value);
         }
-        // `exec` only returns on failure; carry on untuned rather than refuse to run.
         let _ = command.exec();
     }
 }
 
-/// A wrong condition here is a fork bomb: the marker must stop the second pass.
 #[cfg_attr(not(all(unix, target_env = "gnu")), allow(dead_code))]
 const fn wanted(marker: bool, disable: bool) -> bool {
     !marker && !disable

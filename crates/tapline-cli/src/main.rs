@@ -1,5 +1,3 @@
-//! The `tapline` binary.
-
 mod args;
 mod run;
 
@@ -95,11 +93,9 @@ Options:
   --version   version
 ";
 
-/// Measured knee: chunk decode throughput stops improving past 16 threads.
 const BLOCKING_THREADS: usize = 16;
 
 fn main() -> ExitCode {
-    // Must be the first statement, before the runtime; see `tapline::tuning`.
     tapline::retune();
 
     let arguments: Vec<String> = std::env::args().skip(1).collect();

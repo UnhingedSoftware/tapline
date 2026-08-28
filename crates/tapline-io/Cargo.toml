@@ -14,11 +14,9 @@ rust-version.workspace = true
 [dependencies]
 
 [features]
-# In-memory doubles; off by default so they never reach a production build.
 testing = []
 
 [dev-dependencies]
-# The crate's own tests exercise its doubles.
 tapline-io = { path = ".", features = ["testing"] }
 
 [lints]

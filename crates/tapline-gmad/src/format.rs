@@ -1,47 +1,29 @@
-//! The GMAD container.
-
 use tapline_ext::ExtensionError;
 
-/// The magic every addon starts with.
 pub const MAGIC: &[u8; 4] = b"GMAD";
 
 const MAX_VERSION: u8 = 3;
 
-/// One file inside an addon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    /// Path inside the addon, as the archive spells it.
     pub path: String,
-    /// Size in bytes.
     pub size: u64,
-    /// The CRC-32 the archive claims. Often zero, which means "not computed".
     pub crc: u32,
-    /// Where the contents start in the archive.
     pub offset: usize,
 }
 
-/// An addon's metadata and index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Addon {
-    /// Format version.
     pub version: u8,
-    /// The publishing Steam ID, often zero.
     pub steam_id: u64,
-    /// Build timestamp.
     pub timestamp: u64,
-    /// The addon's name.
     pub name: String,
-    /// Its description. Newer addons put JSON here.
     pub description: String,
-    /// Its author. Usually "No author provided".
     pub author: String,
-    /// The addon's own version number.
     pub addon_version: i32,
-    /// Every file, in index order.
     pub entries: Vec<Entry>,
 }
 
-/// Reads bytes without ever indexing past the end.
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -96,7 +78,6 @@ impl<'a> Reader<'a> {
         Ok(self.i64(what)? as u64)
     }
 
-    /// A NUL-terminated string, decoded lossily on purpose.
     fn string(&mut self, what: &str) -> Result<String, ExtensionError> {
         let rest = self.bytes.get(self.at..).ok_or_else(|| Self::short(what))?;
         let end =
@@ -112,11 +93,9 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Parses an addon's header and index, and checks the contents are all there.
 pub fn parse(bytes: &[u8]) -> Result<Addon, ExtensionError> {
     let addon = parse_index(bytes)?;
 
-    // Stops a 40-byte archive claiming gigabytes: every entry must lie inside it.
     let total = bytes.len() as u64;
     for entry in &addon.entries {
         let end = (entry.offset as u64)
@@ -138,7 +117,6 @@ pub fn parse(bytes: &[u8]) -> Result<Addon, ExtensionError> {
     Ok(addon)
 }
 
-/// Parses the header and index alone, without requiring the contents.
 pub fn parse_index(bytes: &[u8]) -> Result<Addon, ExtensionError> {
     let mut reader = Reader::new(bytes);
 
@@ -166,7 +144,6 @@ pub fn parse_index(bytes: &[u8]) -> Result<Addon, ExtensionError> {
     let steam_id = reader.u64("steam id")?;
     let timestamp = reader.u64("timestamp")?;
 
-    // Version 1 has no required-content list; later versions end theirs with an empty string.
     if version > 1 {
         loop {
             let required = reader.string("required content list")?;
@@ -200,7 +177,6 @@ pub fn parse_index(bytes: &[u8]) -> Result<Addon, ExtensionError> {
         index.push((path, size as u64, crc));
     }
 
-    // Offsets are not stored: implied by index order and sizes.
     let mut offset = reader.at;
     let mut entries = Vec::with_capacity(index.len());
     for (path, size, crc) in index {
@@ -238,14 +214,12 @@ pub fn parse_index(bytes: &[u8]) -> Result<Addon, ExtensionError> {
 }
 
 impl Addon {
-    /// One entry's contents.
     #[must_use]
     pub fn contents<'a>(&self, entry: &Entry, bytes: &'a [u8]) -> Option<&'a [u8]> {
         let end = entry.offset.checked_add(entry.size as usize)?;
         bytes.get(entry.offset..end)
     }
 
-    /// Whether contents match the archive's claimed CRC; a zero CRC reports `None`.
     #[must_use]
     pub fn verify(&self, entry: &Entry, bytes: &[u8]) -> Option<bool> {
         if entry.crc == 0 {
@@ -255,7 +229,6 @@ impl Addon {
         Some(crc32fast::hash(contents) == entry.crc)
     }
 
-    /// The addon's total unpacked size.
     #[must_use]
     pub fn unpacked_size(&self) -> u64 {
         self.entries.iter().map(|entry| entry.size).sum()
@@ -272,7 +245,7 @@ mod tests {
         out.push(3);
         out.extend_from_slice(&0_u64.to_le_bytes());
         out.extend_from_slice(&1_u64.to_le_bytes());
-        out.push(0); // no required content
+        out.push(0);
         out.extend_from_slice(b"Test Addon\0");
         out.extend_from_slice(b"A description\0");
         out.extend_from_slice(b"An author\0");
@@ -368,7 +341,6 @@ mod tests {
     #[test]
     fn an_unterminated_string_is_an_error() {
         let mut raw = build(&[("a", b"b")]);
-        // Remove every NUL after the header so the name never terminates.
         for byte in raw.iter_mut().skip(21) {
             if *byte == 0 {
                 *byte = b'x';

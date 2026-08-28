@@ -1,23 +1,17 @@
-//! Delivering a file's bytes in order, while still fetching them in parallel.
-
 use crate::install::InstallError;
 
-/// How many chunks may be in flight for a streamed file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window {
-    /// Chunks fetched ahead of the one the consumer is waiting for.
     pub size: usize,
 }
 
 impl Default for Window {
     fn default() -> Self {
-        // 16 MiB worst-case buffer; streamed items still share the process budget.
         Self { size: 16 }
     }
 }
 
 impl Window {
-    /// A window of `size` chunks, never zero.
     #[must_use]
     pub const fn new(size: usize) -> Self {
         Self {
@@ -26,7 +20,6 @@ impl Window {
     }
 }
 
-/// Reorders chunks that arrive out of order into a single ordered stream.
 pub struct Reorderer {
     next: usize,
     pending: std::collections::BTreeMap<usize, Vec<u8>>,
@@ -39,7 +32,6 @@ impl Default for Reorderer {
 }
 
 impl Reorderer {
-    /// An empty reorderer, waiting for chunk 0.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -48,10 +40,8 @@ impl Reorderer {
         }
     }
 
-    /// Accepts a chunk and returns everything now deliverable, in order.
     pub fn accept(&mut self, index: usize, bytes: Vec<u8>) -> Vec<Vec<u8>> {
         if index < self.next {
-            // Already delivered; drop rather than deliver the same bytes twice.
             return Vec::new();
         }
         self.pending.insert(index, bytes);
@@ -64,39 +54,30 @@ impl Reorderer {
         ready
     }
 
-    /// How many chunks are waiting on an earlier one.
     #[must_use]
     pub fn buffered(&self) -> usize {
         self.pending.len()
     }
 
-    /// How many have been delivered.
     #[must_use]
     pub const fn delivered(&self) -> usize {
         self.next
     }
 
-    /// Whether anything is still held back.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 }
 
-/// What a streamed download did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StreamReport {
-    /// Bytes fetched from the CDN.
     pub bytes_downloaded: u64,
-    /// Bytes handed to the consumer.
     pub bytes_streamed: u64,
-    /// Chunks fetched.
     pub chunks: u64,
-    /// The largest number of chunks held back at once.
     pub peak_buffered: usize,
 }
 
-/// What a streamed download feeds its bytes to.
 pub type Consumer<'a> = &'a mut (dyn FnMut(&[u8]) -> Result<(), InstallError> + Send);
 
 #[cfg(test)]
@@ -167,7 +148,6 @@ mod tests {
 
     #[test]
     fn the_window_is_never_zero() {
-        // Zero would deadlock: nothing could ever be in flight.
         assert_eq!(Window::new(0).size, 1);
         assert_eq!(Window::new(4).size, 4);
         assert_eq!(Window::default().size, 16);

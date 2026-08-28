@@ -1,11 +1,8 @@
-//! Reading part of a file that has not been downloaded.
-
 use crate::install::InstallError;
 use std::sync::Arc;
 use tapline_ids::DepotId;
 use tapline_manifest::Chunk;
 
-/// A file in a depot, readable without downloading all of it.
 pub struct RemoteFile {
     chunks: Vec<Chunk>,
     size: u64,
@@ -35,7 +32,6 @@ impl RemoteFile {
         http: Arc<tapline_rt_tokio::HttpClient>,
         limit: Arc<tokio::sync::Semaphore>,
     ) -> Self {
-        // The manifest does not promise offset order; every lookup below assumes it.
         chunks.sort_by_key(|chunk| chunk.offset);
         let size = chunks
             .last()
@@ -51,25 +47,21 @@ impl RemoteFile {
         }
     }
 
-    /// The file's size.
     #[must_use]
     pub const fn len(&self) -> u64 {
         self.size
     }
 
-    /// Whether the file is empty.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.size == 0
     }
 
-    /// How many chunks the file is stored as.
     #[must_use]
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
 
-    /// Which chunks a byte range crosses.
     #[must_use]
     pub fn chunks_for(&self, offset: u64, len: u64) -> Vec<usize> {
         if len == 0 {
@@ -87,7 +79,6 @@ impl RemoteFile {
             .collect()
     }
 
-    /// How many bytes fetching these ranges would transfer.
     #[must_use]
     pub fn cost_of(&self, ranges: &[(u64, u64)]) -> u64 {
         let mut wanted = std::collections::BTreeSet::new();
@@ -101,13 +92,11 @@ impl RemoteFile {
             .sum()
     }
 
-    /// Reads one range.
     pub async fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>, InstallError> {
         let mut parts = self.read_many(&[(offset, len)]).await?;
         Ok(parts.pop().unwrap_or_default())
     }
 
-    /// Reads several ranges, fetching each chunk at most once.
     pub async fn read_many(&self, ranges: &[(u64, u64)]) -> Result<Vec<Vec<u8>>, InstallError> {
         let mut wanted: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         for (offset, len) in ranges {
@@ -131,7 +120,6 @@ impl RemoteFile {
 
             tasks.spawn(async move {
                 let outcome = async move {
-                    // Draws on the same process-wide budget as ordinary downloads.
                     let _permit = limit
                         .acquire_owned()
                         .await
@@ -181,7 +169,6 @@ mod tests {
                 crc: 0,
                 offset: (index as u64) * u64::from(size),
                 uncompressed_size: size,
-                // Half, so the cost figures are distinguishable from the sizes.
                 compressed_size: size / 2,
             })
             .collect();

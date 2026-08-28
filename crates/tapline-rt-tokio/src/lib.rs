@@ -1,5 +1,3 @@
-//! The tokio runtime: the one crate in the workspace that opens a socket.
-
 mod directory;
 mod http;
 mod sink;
@@ -15,13 +13,11 @@ pub use ws::MAX_MESSAGE;
 use std::io;
 use tapline_io::Transport;
 
-/// A connection to a Steam CM.
 pub struct CmTransport {
     socket: ws::WebSocket,
 }
 
 impl CmTransport {
-    /// Connects to a CM at `endpoint`, given as `host:port`.
     pub async fn connect(endpoint: &str) -> io::Result<Self> {
         Ok(Self {
             socket: tls::connect_cm(endpoint).await?,

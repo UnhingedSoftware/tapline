@@ -1,45 +1,26 @@
-//! The install record, `steamapps/appmanifest_<appid>.acf`, round-tripped byte for byte.
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use tapline_ids::{AppId, DepotId, ManifestId};
 use tapline_vdf::{Object, Value, VdfError};
 
-/// `StateFlags` values, as Valve sets them.
 pub mod state_flags {
-    /// The install is complete and usable.
     pub const FULLY_INSTALLED: u32 = 4;
-    /// An update is needed.
     pub const UPDATE_REQUIRED: u32 = 2;
-    /// Files are being downloaded.
     pub const UPDATE_RUNNING: u32 = 1024;
 }
 
-/// One installed depot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstalledDepot {
-    /// The build that is on disk.
     pub manifest: ManifestId,
-    /// Its installed size in bytes.
     pub size: u64,
 }
 
-/// What went wrong reading or writing an install record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateError {
-    /// The file did not parse.
     Malformed(VdfError),
-    /// The document had no `AppState` block.
     NotAnAppManifest,
-    /// The file names a different app; writing over it would be worse than failing.
-    WrongApp {
-        /// What was expected.
-        expected: AppId,
-        /// What the file says.
-        found: AppId,
-    },
-    /// The filesystem refused.
+    WrongApp { expected: AppId, found: AppId },
     Io(String),
 }
 
@@ -73,21 +54,18 @@ impl From<std::io::Error> for StateError {
     }
 }
 
-/// An app's install record; holds the whole document so unmodelled fields survive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppState {
     document: Object,
 }
 
 impl AppState {
-    /// The path of an app's record within an install root.
     #[must_use]
     pub fn path_for(root: &Path, app: AppId) -> PathBuf {
         root.join("steamapps")
             .join(format!("appmanifest_{app}.acf"))
     }
 
-    /// Parses an install record.
     pub fn parse(text: &str, expected: AppId) -> Result<Self, StateError> {
         let document = tapline_vdf::parse(text)?;
         let state = Self { document };
@@ -99,7 +77,6 @@ impl AppState {
         Ok(state)
     }
 
-    /// Reads an app's record; a missing file is `Ok(None)`, not an error.
     pub fn read(root: &Path, app: AppId) -> Result<Option<Self>, StateError> {
         let path = Self::path_for(root, app);
         match std::fs::read_to_string(&path) {
@@ -109,10 +86,8 @@ impl AppState {
         }
     }
 
-    /// Builds a fresh record for an app.
     pub fn new(app: AppId, name: &str, install_dir: &str) -> Self {
         let mut state = Object::new();
-        // Written in Valve's order, so a diff against a steamcmd file shows only values.
         state.set_str("appid", app.to_string());
         state.set_str("Universe", "1");
         state.set_str("name", name);
@@ -133,7 +108,6 @@ impl AppState {
         Self { document }
     }
 
-    /// Writes via temp file and rename, so a crash cannot truncate the record.
     pub fn write(&self, root: &Path, app: AppId) -> Result<(), StateError> {
         let path = Self::path_for(root, app);
         if let Some(parent) = path.parent() {
@@ -161,26 +135,22 @@ impl AppState {
         self.document.set("AppState", Value::Object(state));
     }
 
-    /// The app this describes.
     #[must_use]
     pub fn app_id(&self) -> Option<AppId> {
         let value = self.state()?.get_u64("appid")?;
         u32::try_from(value).ok().map(AppId)
     }
 
-    /// The app's name.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.state()?.get_str("name")
     }
 
-    /// The build on disk.
     #[must_use]
     pub fn build_id(&self) -> Option<u64> {
         self.state()?.get_u64("buildid")
     }
 
-    /// The `StateFlags` word.
     #[must_use]
     pub fn state_flags(&self) -> u32 {
         self.state()
@@ -189,13 +159,11 @@ impl AppState {
             .unwrap_or(0)
     }
 
-    /// Whether the install is complete.
     #[must_use]
     pub fn is_fully_installed(&self) -> bool {
         self.state_flags() & state_flags::FULLY_INSTALLED != 0
     }
 
-    /// The depots on disk and the builds they are at.
     #[must_use]
     pub fn installed_depots(&self) -> BTreeMap<DepotId, InstalledDepot> {
         let mut out = BTreeMap::new();
@@ -221,13 +189,11 @@ impl AppState {
         out
     }
 
-    /// The manifest a depot is installed at, if it is.
     #[must_use]
     pub fn installed_manifest(&self, depot: DepotId) -> Option<ManifestId> {
         self.installed_depots().get(&depot).map(|d| d.manifest)
     }
 
-    /// Records a depot as installed at a manifest.
     pub fn set_depot(&mut self, depot: DepotId, manifest: ManifestId, size: u64) {
         let mut state = self.state_mut();
         let mut depots = state
@@ -247,7 +213,6 @@ impl AppState {
         self.put_state(state);
     }
 
-    /// Removes a depot from the record.
     pub fn remove_depot(&mut self, depot: DepotId) {
         let mut state = self.state_mut();
         let Some(existing) = state.get_object("InstalledDepots") else {
@@ -265,14 +230,12 @@ impl AppState {
         self.put_state(state);
     }
 
-    /// Sets a scalar field, adding it if absent.
     pub fn set_field(&mut self, key: &str, value: &str) {
         let mut state = self.state_mut();
         state.set_str(key, value);
         self.put_state(state);
     }
 
-    /// Records the sizes and build an install finished at.
     pub fn mark_installed(&mut self, build_id: u64, size_on_disk: u64, updated_at: u64) {
         self.set_field("StateFlags", &state_flags::FULLY_INSTALLED.to_string());
         self.set_field("buildid", &build_id.to_string());
@@ -294,7 +257,6 @@ impl fmt::Display for AppState {
 mod tests {
     use super::*;
 
-    /// steamcmd's own output for Valheim Dedicated Server, 2026-08-26.
     const REAL: &str = include_str!("../tests/fixtures/appmanifest_896660.acf");
 
     fn valheim() -> AppState {
@@ -303,7 +265,6 @@ mod tests {
 
     #[test]
     fn steamcmds_own_record_round_trips_byte_for_byte() {
-        // The gate: a reformatted rewrite is a spurious diff for every tool.
         assert_eq!(valheim().to_string(), REAL);
     }
 
@@ -325,7 +286,6 @@ mod tests {
             state.installed_manifest(DepotId(1006)).map(|m| m.get()),
             Some(6_403_079_453_713_498_174)
         );
-        // A depot that is not installed must be absent, not zero.
         assert_eq!(state.installed_manifest(DepotId(999_999)), None);
     }
 
@@ -350,11 +310,9 @@ mod tests {
         );
 
         let written = state.to_string();
-        // The other depot is untouched.
         assert!(written.contains("\"6403079453713498174\""));
         assert!(written.contains("\"1111111111111111111\""));
         assert!(written.contains("\"2000000000\""));
-        // Nothing else moved: same line count, same field order.
         assert_eq!(written.lines().count(), REAL.lines().count());
     }
 
@@ -402,7 +360,6 @@ mod tests {
         assert_eq!(state.installed_depots().len(), 1);
         assert_eq!(state.installed_manifest(DepotId(1006)), None);
         assert!(!state.to_string().contains("6403079453713498174"));
-        // The other depot survived.
         assert!(state.to_string().contains("962159520942340660"));
     }
 

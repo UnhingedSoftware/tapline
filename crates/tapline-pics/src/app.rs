@@ -1,21 +1,14 @@
-//! Reading an app's PICS document.
-
 use tapline_ids::{AppId, DepotId, ManifestId};
 use tapline_vdf::{Object, Value};
 
-/// The platform an install is for, matched against a depot's `config/oslist`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Os {
-    /// Linux, which is what a game-server node runs.
     Linux,
-    /// Windows.
     Windows,
-    /// macOS. Valve spells it `macos`.
     MacOs,
 }
 
 impl Os {
-    /// The token Valve writes in an `oslist`.
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
@@ -25,7 +18,6 @@ impl Os {
         }
     }
 
-    /// The OS this build is running on, as a default for the CLI.
     #[must_use]
     pub const fn host() -> Self {
         if cfg!(target_os = "windows") {
@@ -38,14 +30,10 @@ impl Os {
     }
 }
 
-/// Which depots an install should take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DepotFilter {
-    /// The target platform.
     pub os: Os,
-    /// The branch, `public` unless a beta was asked for.
     pub branch: String,
-    /// Whether to include DLC depots; off by default.
     pub include_dlc: bool,
 }
 
@@ -59,40 +47,28 @@ impl Default for DepotFilter {
     }
 }
 
-/// One depot an install will download.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Depot {
-    /// The depot's id.
     pub id: DepotId,
-    /// The exact build to install.
     pub manifest: ManifestId,
-    /// Installed size in bytes, as PICS reports it.
     pub size: u64,
-    /// Download size in bytes; smaller than `size`, content is stored compressed.
     pub download_size: u64,
-    /// The app that owns the depot; a shared depot belongs to another app.
     pub owner: AppId,
 }
 
-/// A branch, as PICS lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
-    /// Its name — `public`, or whatever the developer called the beta.
     pub name: String,
-    /// The build id, when given.
     pub build_id: Option<u64>,
-    /// Whether a password is needed; such branches carry encrypted manifest ids.
     pub password_required: bool,
 }
 
-/// An app's PICS document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppInfo {
     app_id: AppId,
     root: Object,
 }
 
-/// Keys PICS puts under `depots` that do not name a depot.
 const NON_DEPOT_KEYS: &[&str] = &[
     "branches",
     "baselanguages",
@@ -103,43 +79,36 @@ const NON_DEPOT_KEYS: &[&str] = &[
 ];
 
 impl AppInfo {
-    /// Parses a PICS buffer: NUL-terminated text KeyValues.
     pub fn parse(app_id: AppId, buffer: &[u8]) -> Result<Self, tapline_vdf::VdfError> {
         let trimmed = buffer.strip_suffix(&[0]).unwrap_or(buffer);
         let text = String::from_utf8_lossy(trimmed);
         let document = tapline_vdf::parse(&text)?;
 
-        // Valve wraps everything in one "appinfo" block; tolerate either shape.
         let root = document.get_object("appinfo").cloned().unwrap_or(document);
 
         Ok(Self { app_id, root })
     }
 
-    /// The app this describes.
     #[must_use]
     pub const fn app_id(&self) -> AppId {
         self.app_id
     }
 
-    /// The app's display name.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.root.get_object("common")?.get_str("name")
     }
 
-    /// The app's type; dedicated servers are usually `Tool`, not `Game`.
     #[must_use]
     pub fn app_type(&self) -> Option<&str> {
         self.root.get_object("common")?.get_str("type")
     }
 
-    /// The raw document, for anything this type does not model.
     #[must_use]
     pub const fn raw(&self) -> &Object {
         &self.root
     }
 
-    /// Every branch the app publishes.
     #[must_use]
     pub fn branches(&self) -> Vec<Branch> {
         let Some(branches) = self
@@ -157,14 +126,12 @@ impl AppInfo {
                 Some(Branch {
                     name: name.to_owned(),
                     build_id: entry.get_u64("buildid"),
-                    // Valve writes "1"; anything else, including absence, means no password.
                     password_required: entry.get_str("pwdrequired") == Some("1"),
                 })
             })
             .collect()
     }
 
-    /// The build id for a branch.
     #[must_use]
     pub fn build_id(&self, branch: &str) -> Option<u64> {
         self.root
@@ -174,7 +141,6 @@ impl AppInfo {
             .get_u64("buildid")
     }
 
-    /// The depots an install should download, in id order.
     #[must_use]
     pub fn depots(&self, filter: &DepotFilter) -> Vec<Depot> {
         let Some(depots) = self.root.get_object("depots") else {
@@ -187,7 +153,6 @@ impl AppInfo {
                 continue;
             }
             let Ok(id) = key.parse::<u32>() else {
-                // An unknown non-numeric key is skipped but still visible in `raw()`.
                 continue;
             };
             let Some(entry) = value.as_object() else {
@@ -198,7 +163,6 @@ impl AppInfo {
                 continue;
             }
             let Some(manifests) = entry.get_object("manifests") else {
-                // No manifests block: a shared-install stub with nothing to download.
                 continue;
             };
             let Some(branch) = manifests.get_object(&filter.branch) else {
@@ -213,7 +177,6 @@ impl AppInfo {
                 manifest: ManifestId(gid),
                 size: branch.get_u64("size").unwrap_or(0),
                 download_size: branch.get_u64("download").unwrap_or(0),
-                // `depotfromapp`: the key must be requested against the owning app.
                 owner: entry
                     .get_u64("depotfromapp")
                     .and_then(|v| u32::try_from(v).ok())
@@ -230,7 +193,6 @@ impl AppInfo {
             return false;
         }
 
-        // No oslist means platform-neutral shared content.
         if let Some(config) = entry.get_object("config")
             && let Some(oslist) = config.get_str("oslist")
             && !oslist.trim().is_empty()
@@ -242,7 +204,6 @@ impl AppInfo {
         true
     }
 
-    /// The total installed size of a filtered depot set.
     #[must_use]
     pub fn install_size(&self, filter: &DepotFilter) -> u64 {
         self.depots(filter).iter().map(|d| d.size).sum()
@@ -250,7 +211,6 @@ impl AppInfo {
 }
 
 impl AppInfo {
-    /// The depot Workshop items live in, from `depots/workshopdepot`.
     #[must_use]
     pub fn workshop_depot(&self) -> Option<DepotId> {
         let value = self.root.get_object("depots")?.get_u64("workshopdepot")?;
@@ -259,7 +219,6 @@ impl AppInfo {
 }
 
 impl AppInfo {
-    /// Builds an `AppInfo` from an already-parsed document, for tests.
     #[must_use]
     pub const fn from_object(app_id: AppId, root: Object) -> Self {
         Self { app_id, root }
@@ -280,7 +239,6 @@ fn nested<'a>(object: &'a Object, path: &[&str]) -> Option<&'a Value> {
 mod tests {
     use super::*;
 
-    /// A real PICS response for app 232250, captured live 2026-08-26.
     const TF2_DS: &str = r#"
 "appinfo"
 {
@@ -475,7 +433,6 @@ mod tests {
             branch: "public".to_owned(),
             include_dlc: false,
         };
-        // 14752673735 + 156284679 + 9989
         assert_eq!(tf2().install_size(&filter), 14_908_968_403);
     }
 

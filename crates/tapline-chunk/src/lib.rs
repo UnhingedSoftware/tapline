@@ -1,55 +1,23 @@
-//! Steam's chunk containers.
-
 mod vsz;
 mod vz;
 mod zip;
 
 use std::fmt;
 
-/// The largest chunk we will decompress; Steam's are 1 MiB uncompressed.
 pub const MAX_CHUNK: usize = 16 * 1024 * 1024;
 
-/// What went wrong decoding a chunk container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkError {
-    /// Too short to be a container.
     Truncated,
-    /// A container magic this build does not know; carries the bytes found.
     UnknownContainer(Vec<u8>),
-    /// A container version this build does not know.
     UnsupportedVersion(u8),
-    /// The footer magic did not match the header's container.
     BadFooter(Vec<u8>),
-    /// Decompression failed.
     Decompress(String),
-    /// The decompressed length did not match the footer.
-    SizeMismatch {
-        /// What the footer claimed.
-        expected: u32,
-        /// What came out.
-        actual: usize,
-    },
-    /// The CRC-32 did not match.
-    ChecksumMismatch {
-        /// What the container claimed.
-        expected: u32,
-        /// What the bytes hash to.
-        actual: u32,
-    },
-    /// The header and footer disagreed about the CRC.
-    InconsistentChecksum {
-        /// The header's copy.
-        header: u32,
-        /// The footer's copy.
-        footer: u32,
-    },
-    /// A ZIP entry used a compression method Steam does not use.
+    SizeMismatch { expected: u32, actual: usize },
+    ChecksumMismatch { expected: u32, actual: u32 },
+    InconsistentChecksum { header: u32, footer: u32 },
     UnsupportedZipMethod(u16),
-    /// The claimed size exceeds the cap.
-    TooLarge {
-        /// What was claimed.
-        claimed: u32,
-    },
+    TooLarge { claimed: u32 },
 }
 
 impl fmt::Display for ChunkError {
@@ -93,21 +61,17 @@ impl fmt::Display for ChunkError {
 
 impl std::error::Error for ChunkError {}
 
-/// Decodes a decrypted chunk, whichever container it uses.
 pub fn decode(input: &[u8]) -> Result<Vec<u8>, ChunkError> {
     decode_with_limit(input, MAX_CHUNK)
 }
 
-/// Decodes a chunk with an explicit output cap.
 pub fn decode_with_limit(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     let mut out = Vec::new();
     decode_into(input, max_output, &mut out)?;
     Ok(out)
 }
 
-/// Decodes into a buffer the caller owns, for reuse across chunks.
 pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
-    // Ordered by magic specificity: VSZ's three bytes before VZ's two.
     if vsz::matches(input) {
         return vsz::decode_into(input, max_output, out);
     }
@@ -172,7 +136,6 @@ mod tests {
 
     #[test]
     fn a_low_limit_refuses_a_chunk_rather_than_allocating() {
-        // The limit must be below the fixture's 61 decoded bytes.
         assert!(matches!(
             decode_with_limit(VSZ_CHUNK, 8),
             Err(ChunkError::TooLarge { .. })

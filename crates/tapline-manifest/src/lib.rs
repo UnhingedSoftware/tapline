@@ -1,5 +1,3 @@
-//! Depot manifests: what a build is made of.
-
 mod container;
 mod file;
 

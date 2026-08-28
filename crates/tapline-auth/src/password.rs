@@ -1,14 +1,10 @@
-//! Encrypting a password for `BeginAuthSessionViaCredentials` under Steam's per-login RSA key.
-
 use rsa::{BigUint, Pkcs1v15Encrypt, RsaPublicKey};
 use std::fmt;
 use zeroize::Zeroize;
 
-/// The RSA key Steam issued for one login.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PublicKey {
     key: RsaPublicKey,
-    /// Steam's timestamp, which must be echoed in the login request.
     pub timestamp: u64,
 }
 
@@ -20,17 +16,10 @@ impl fmt::Debug for PublicKey {
     }
 }
 
-/// What went wrong encrypting a password.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasswordError {
-    /// The modulus or exponent was not valid hex.
     MalformedKey(String),
-    /// The key Steam sent was too small to be a real RSA key.
-    KeyTooSmall {
-        /// The modulus size in bits.
-        bits: usize,
-    },
-    /// RSA rejected the input, usually a password longer than the key holds.
+    KeyTooSmall { bits: usize },
     Encryption(String),
 }
 
@@ -51,11 +40,9 @@ impl fmt::Display for PasswordError {
 
 impl std::error::Error for PasswordError {}
 
-/// The smallest modulus we will encrypt under; Steam uses 2048.
 const MIN_KEY_BITS: usize = 1024;
 
 impl PublicKey {
-    /// Parses the hex modulus and exponent Steam returns.
     pub fn from_hex(modulus: &str, exponent: &str, timestamp: u64) -> Result<Self, PasswordError> {
         let modulus_bytes = decode_hex(modulus)
             .ok_or_else(|| PasswordError::MalformedKey("modulus is not hex".to_owned()))?;
@@ -76,14 +63,12 @@ impl PublicKey {
         Ok(Self { key, timestamp })
     }
 
-    /// The modulus size in bits.
     #[must_use]
     pub fn bits(&self) -> usize {
         rsa::traits::PublicKeyParts::n(&self.key).bits()
     }
 }
 
-/// Encrypts a password under Steam's key; consumes and zeroes the plaintext.
 pub fn encrypt_password(mut password: String, key: &PublicKey) -> Result<String, PasswordError> {
     let mut rng = rsa::rand_core::OsRng;
     let result = key
@@ -91,7 +76,6 @@ pub fn encrypt_password(mut password: String, key: &PublicKey) -> Result<String,
         .encrypt(&mut rng, Pkcs1v15Encrypt, password.as_bytes())
         .map_err(|error| PasswordError::Encryption(error.to_string()));
 
-    // Zeroed before the `?` so the failure path clears it too.
     password.zeroize();
 
     Ok(base64_encode(&result?))
@@ -99,7 +83,6 @@ pub fn encrypt_password(mut password: String, key: &PublicKey) -> Result<String,
 
 fn decode_hex(input: &str) -> Option<Vec<u8>> {
     let trimmed = input.trim();
-    // An odd-length hex string is malformed, not something to pad silently.
     if trimmed.is_empty() || trimmed.len() % 2 != 0 {
         return None;
     }
@@ -123,7 +106,6 @@ const fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-/// Standard base64, which is how Steam wants the ciphertext.
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -185,14 +167,12 @@ mod tests {
 
         assert!(!encrypted.is_empty());
         assert!(!encrypted.contains("hunter2"));
-        // 2048-bit RSA produces 256 bytes, which is 344 base64 characters.
         assert_eq!(encrypted.len(), 344);
         assert!(encrypted.ends_with('='), "expected base64 padding");
     }
 
     #[test]
     fn the_same_password_encrypts_differently_each_time() {
-        // PKCS#1 v1.5 padding is randomised.
         let key = test_key();
         let first = encrypt_password("hunter2".to_owned(), &key).expect("encrypt");
         let second = encrypt_password("hunter2".to_owned(), &key).expect("encrypt");
@@ -233,7 +213,6 @@ mod tests {
     fn a_malformed_key_is_refused_rather_than_guessed_at() {
         assert!(PublicKey::from_hex("not hex", "010001", 0).is_err());
         assert!(PublicKey::from_hex("", "010001", 0).is_err());
-        // Odd length is malformed, not something to pad.
         assert!(PublicKey::from_hex("abc", "010001", 0).is_err());
     }
 

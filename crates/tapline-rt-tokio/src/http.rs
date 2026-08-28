@@ -1,5 +1,3 @@
-//! A minimal HTTP/1.1 client: GET with ranges, keep-alive, chunked decoding, body cap.
-
 use crate::tls::connect_tls;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,17 +6,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 struct Connection {
-    /// A socket belongs to the runtime that created it; reuse across runtimes fails.
     runtime: tokio::runtime::Id,
     stream: crate::tls::TlsStream,
-    /// Bytes read past the last response; dropping them would desynchronise keep-alive.
     leftover: Vec<u8>,
 }
 
-/// An HTTP client with a per-host connection pool; `Fetch` takes `&self`.
 pub struct HttpClient {
     pools: Mutex<HashMap<String, Vec<Connection>>>,
-    /// Total idle cap; the per-host cap alone multiplies across a wide host list.
     idle_total: usize,
     idle_per_host: usize,
 }
@@ -30,7 +24,6 @@ impl Default for HttpClient {
 }
 
 impl HttpClient {
-    /// A client with an empty pool.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -46,7 +39,6 @@ impl HttpClient {
             .id();
 
         if let Some(pool) = self.pools.lock().await.get_mut(host) {
-            // Sockets from a dead runtime never come back to life.
             pool.retain(|connection| connection.runtime == here);
             if let Some(connection) = pool.pop() {
                 return Ok(connection);
@@ -65,7 +57,6 @@ impl HttpClient {
 
     async fn release(&self, host: &str, connection: Connection) {
         let mut pools = self.pools.lock().await;
-        // Either bound alone lets the other run away.
         let idle: usize = pools.values().map(Vec::len).sum();
         if idle >= self.idle_total {
             return;
@@ -76,7 +67,6 @@ impl HttpClient {
         }
     }
 
-    /// Closes every pooled connection.
     pub async fn shutdown(&self) {
         self.pools.lock().await.clear();
     }
@@ -89,7 +79,6 @@ fn split_url(url: &str) -> Result<(String, u16, String), FetchError> {
 
     let default_port = match scheme {
         "https" => 443,
-        // Plain HTTP is for lancache only; chunks are verified by content hash.
         "http" => 80,
         _ => return Err(FetchError::InvalidUrl(url.to_owned())),
     };
@@ -121,7 +110,6 @@ impl Fetch for HttpClient {
     async fn get(&self, request: Request, limit: u64) -> Result<Response, FetchError> {
         let (host, port, path) = split_url(&request.url)?;
 
-        // One retry: a pooled connection the server closed idle fails on first write.
         let mut last_error = None;
         for attempt in 0..2 {
             let connection = self.acquire(&host, port).await?;
@@ -145,7 +133,6 @@ impl Fetch for HttpClient {
     }
 }
 
-/// Sends one request; returns the connection when it may be reused.
 async fn perform(
     mut connection: Connection,
     host: &str,
@@ -249,7 +236,6 @@ async fn perform(
                 (body, keep_alive)
             }
             None => {
-                // No length and no chunking: body ends at EOF, connection not reusable.
                 let body = read_to_end(&mut connection, body_start, limit).await?;
                 (body, false)
             }
@@ -276,7 +262,6 @@ async fn read_sized(
 ) -> Result<Vec<u8>, FetchError> {
     let length = usize::try_from(length).map_err(|_| FetchError::BodyTooLarge { limit })?;
 
-    // Anything past the body belongs to the next response on this connection.
     if body.len() > length {
         connection.leftover = body.split_off(length);
         return Ok(body);
@@ -285,7 +270,6 @@ async fn read_sized(
     body.reserve(length - body.len());
     while body.len() < length {
         let mut chunk = [0_u8; 16 * 1024];
-        // Never read past the declared length; those bytes are the next response's.
         let want = (length - body.len()).min(chunk.len());
         let slice = chunk.get_mut(..want).unwrap_or_default();
         let read = connection
@@ -333,7 +317,6 @@ async fn read_chunked(
     let mut cursor = 0_usize;
 
     loop {
-        // Each chunk is a hex length, CRLF, the data, CRLF.
         let line_end = loop {
             if let Some(index) = find_crlf(&raw, cursor) {
                 break index;
@@ -342,14 +325,12 @@ async fn read_chunked(
         };
 
         let size_text = String::from_utf8_lossy(raw.get(cursor..line_end).unwrap_or_default());
-        // A chunk extension follows a semicolon and is not part of the size.
         let size_text = size_text.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| FetchError::MalformedResponse(format!("bad chunk size: {size_text}")))?;
 
         let data_start = line_end + 2;
         if size == 0 {
-            // Trailer and final CRLF follow; anything after is the next response's.
             let after = raw.get(data_start..).unwrap_or_default();
             connection.leftover = after
                 .strip_prefix(b"\r\n".as_slice())
@@ -395,7 +376,6 @@ async fn fill(connection: &mut Connection, buffer: &mut Vec<u8>) -> Result<(), F
     Ok(())
 }
 
-/// A shareable client.
 pub type SharedHttpClient = Arc<HttpClient>;
 
 #[cfg(test)]
@@ -413,7 +393,6 @@ mod tests {
                 "/depot/232257/chunk/abc".to_owned()
             )
         );
-        // A lancache is usually plain HTTP on a nonstandard port.
         assert_eq!(
             split_url("http://lancache.lan:8080/depot/1/chunk/a").expect("must split"),
             (
@@ -422,7 +401,6 @@ mod tests {
                 "/depot/1/chunk/a".to_owned()
             )
         );
-        // No path means the root.
         assert_eq!(
             split_url("https://example.invalid").expect("must split"),
             ("example.invalid".to_owned(), 443, "/".to_owned())
@@ -439,7 +417,6 @@ mod tests {
 
     #[test]
     fn the_header_terminator_is_found_where_it_is() {
-        // "HTTP/1.1 200 OK" is 15 bytes.
         assert_eq!(find_header_end(b"HTTP/1.1 200 OK\r\n\r\nbody"), Some(15));
         assert_eq!(find_header_end(b"HTTP/1.1 200 OK\r\n"), None);
         assert_eq!(find_header_end(b""), None);

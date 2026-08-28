@@ -1,37 +1,21 @@
-//! Working out what an update actually has to fetch.
-
 use std::collections::{HashMap, HashSet};
 use tapline_manifest::{Chunk, Manifest};
 
-/// Where a chunk's bytes will come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkSource {
-    /// Fetch it from the CDN.
     Download,
-    /// Copy it from somewhere already on disk.
-    Local {
-        /// The file holding the bytes.
-        path: String,
-        /// Where in that file they start.
-        offset: u64,
-    },
+    Local { path: String, offset: u64 },
 }
 
-/// What an update will do, chunk by chunk.
 #[derive(Debug, Clone, Default)]
 pub struct DeltaPlan {
-    /// Chunks that must be fetched, with their stored size.
     pub download: Vec<Chunk>,
-    /// Chunks available locally, and where from.
     pub local: Vec<(Chunk, ChunkSource)>,
-    /// Bytes that must come over the network.
     pub download_bytes: u64,
-    /// Bytes that will be reused from disk.
     pub reused_bytes: u64,
 }
 
 impl DeltaPlan {
-    /// The fraction of the new build already present, from 0.0 to 1.0.
     #[must_use]
     pub fn reuse_ratio(&self) -> f64 {
         let total = self.download_bytes + self.reused_bytes;
@@ -48,10 +32,8 @@ impl DeltaPlan {
     }
 }
 
-/// Diffs a new manifest against the build already installed.
 #[must_use]
 pub fn diff(old: &Manifest, new: &Manifest) -> DeltaPlan {
-    // First occurrence wins: a repeated chunk is the same bytes anywhere.
     let mut existing: HashMap<[u8; 20], (String, u64)> = HashMap::new();
     for file in old.regular_files() {
         for chunk in &file.chunks {
@@ -66,7 +48,6 @@ pub fn diff(old: &Manifest, new: &Manifest) -> DeltaPlan {
 
     for file in new.regular_files() {
         for chunk in &file.chunks {
-            // Distinct by id: a chunk needed by three files is fetched once.
             if !seen.insert(chunk.id) {
                 continue;
             }
@@ -89,7 +70,6 @@ pub fn diff(old: &Manifest, new: &Manifest) -> DeltaPlan {
     plan
 }
 
-/// What a full install would cost, with nothing to reuse.
 #[must_use]
 pub fn full(new: &Manifest) -> DeltaPlan {
     let mut plan = DeltaPlan::default();
@@ -99,7 +79,6 @@ pub fn full(new: &Manifest) -> DeltaPlan {
     plan
 }
 
-/// Files present in `old` but not in `new`.
 #[must_use]
 pub fn removed_files(old: &Manifest, new: &Manifest) -> Vec<String> {
     let kept: HashSet<&str> = new.files.iter().map(|file| file.path.as_str()).collect();

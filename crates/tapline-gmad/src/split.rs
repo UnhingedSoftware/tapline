@@ -1,13 +1,9 @@
-//! Turning a stream of archive bytes into a stream of entry events.
-
 use crate::format::{Addon, parse_index};
 use tapline_ext::ExtensionError;
 use tapline_ext::{ArchiveEntry, Decoder, EntrySink};
 
-/// The largest header this will buffer before refusing.
 const HEADER_LIMIT: usize = 1 << 26;
 
-/// Feeds archive bytes to an [`EntrySink`].
 pub struct Splitter<S: EntrySink> {
     sink: S,
     header: Vec<u8>,
@@ -19,7 +15,6 @@ pub struct Splitter<S: EntrySink> {
 }
 
 impl<S: EntrySink> Splitter<S> {
-    /// A splitter feeding `sink`.
     pub const fn new(sink: S) -> Self {
         Self {
             sink,
@@ -32,17 +27,14 @@ impl<S: EntrySink> Splitter<S> {
         }
     }
 
-    /// The index, once enough bytes have arrived to know it.
     pub const fn addon(&self) -> Option<&Addon> {
         self.addon.as_ref()
     }
 
-    /// How many entries have been completed.
     pub const fn completed(&self) -> usize {
         self.at
     }
 
-    /// Feeds the next bytes of the archive, in order.
     pub fn push(&mut self, bytes: &[u8]) -> Result<(), ExtensionError> {
         self.seen = self.seen.saturating_add(bytes.len() as u64);
 
@@ -82,7 +74,6 @@ impl<S: EntrySink> Splitter<S> {
                     self.open()?;
                     self.close_empty()?;
 
-                    // Whatever was buffered past the index is already content.
                     let leftover = std::mem::take(&mut self.header);
                     let content = leftover
                         .get(start.min(leftover.len())..)
@@ -141,7 +132,6 @@ impl<S: EntrySink> Splitter<S> {
                 self.close_empty()?;
             }
         }
-        // Bytes past the last entry are the archive's trailing checksum; no entry owns them.
         Ok(())
     }
 
@@ -178,7 +168,6 @@ impl<S: EntrySink> Splitter<S> {
         Ok(())
     }
 
-    /// Finishes, returning the sink; a stream that ended early is an error.
     pub fn finish(mut self) -> Result<S, ExtensionError> {
         self.finish_in_place()?;
         Ok(self.sink)

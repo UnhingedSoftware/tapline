@@ -1,9 +1,6 @@
-//! Resources that concurrent downloads should share rather than duplicate.
-
 use std::sync::Arc;
 use tapline_rt_tokio::HttpClient;
 
-/// What concurrent downloads share.
 pub struct Shared {
     pub(crate) http: Arc<HttpClient>,
     pub(crate) limit: Arc<tokio::sync::Semaphore>,
@@ -20,7 +17,6 @@ impl std::fmt::Debug for Shared {
 }
 
 impl Shared {
-    /// A budget of `concurrency` chunks in flight, shared by every session built on it.
     #[must_use]
     pub fn new(concurrency: usize) -> Arc<Self> {
         let permits = concurrency.max(1);
@@ -31,13 +27,11 @@ impl Shared {
         })
     }
 
-    /// The total number of chunks that may be in flight across all downloads.
     #[must_use]
     pub const fn concurrency(&self) -> usize {
         self.permits
     }
 
-    /// How much of the budget is free right now.
     #[must_use]
     pub fn available(&self) -> usize {
         self.limit.available_permits()
@@ -57,7 +51,6 @@ mod tests {
 
     #[test]
     fn a_budget_of_zero_still_lets_one_chunk_through() {
-        // Zero would deadlock every download rather than fail loudly.
         let shared = Shared::new(0);
         assert_eq!(shared.concurrency(), 1);
         assert_eq!(shared.available(), 1);

@@ -1,31 +1,15 @@
-//! The decoder; every byte here is hostile network or Workshop input.
-
 use crate::{FieldKey, MAX_DEPTH, WireType};
 use std::fmt;
 
-/// What went wrong while reading a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
-    /// The input ended in the middle of a value.
     Truncated,
-    /// A varint ran past ten bytes, or set bits above the target width.
     VarintOverflow,
-    /// A wire type that protobuf does not define, or a group marker.
     InvalidWireType(u32),
-    /// Field number zero, which is not a legal field number.
     InvalidFieldNumber,
-    /// A length prefix claimed more bytes than the message contains.
-    LengthOutOfBounds {
-        /// What the prefix claimed.
-        claimed: u64,
-        /// What was actually left.
-        available: usize,
-    },
-    /// Nesting went past [`MAX_DEPTH`].
+    LengthOutOfBounds { claimed: u64, available: usize },
     DepthLimitExceeded,
-    /// A `string` field held bytes that are not UTF-8.
     InvalidUtf8,
-    /// A packed repeated field's payload was not a whole number of elements.
     PackedLengthMismatch,
 }
 
@@ -53,7 +37,6 @@ impl fmt::Display for WireError {
 
 impl std::error::Error for WireError {}
 
-/// A cursor over a protobuf message that borrows its input.
 #[derive(Debug)]
 pub struct Decoder<'a> {
     input: &'a [u8],
@@ -62,7 +45,6 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    /// Wraps a buffer.
     #[must_use]
     pub const fn new(input: &'a [u8]) -> Self {
         Self {
@@ -72,15 +54,12 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// How many bytes are left.
     #[inline]
     #[must_use]
     pub const fn remaining(&self) -> usize {
-        // `pos` never passes `input.len()`, so this cannot wrap.
         self.input.len() - self.pos
     }
 
-    /// Whether the whole message has been consumed.
     #[inline]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -100,7 +79,6 @@ impl<'a> Decoder<'a> {
         Ok(slice)
     }
 
-    /// Reads a base-128 varint; over-wide encodings are a parser differential, so rejected.
     pub fn read_varint(&mut self) -> Result<u64, WireError> {
         let mut value: u64 = 0;
         for shift in 0..10_u32 {
@@ -119,49 +97,40 @@ impl<'a> Decoder<'a> {
         Err(WireError::VarintOverflow)
     }
 
-    /// Reads a varint narrowed to 32 bits; sign-extended high bits are discarded.
     pub fn read_varint32(&mut self) -> Result<u32, WireError> {
         Ok(self.read_varint()? as u32)
     }
 
-    /// Reads a `bool`.
     pub fn read_bool(&mut self) -> Result<bool, WireError> {
         Ok(self.read_varint()? != 0)
     }
 
-    /// Reads a fixed 32-bit little-endian value.
     pub fn read_fixed32(&mut self) -> Result<u32, WireError> {
         let bytes: [u8; 4] = self.take(4)?.try_into().map_err(|_| WireError::Truncated)?;
         Ok(u32::from_le_bytes(bytes))
     }
 
-    /// Reads a fixed 64-bit little-endian value.
     pub fn read_fixed64(&mut self) -> Result<u64, WireError> {
         let bytes: [u8; 8] = self.take(8)?.try_into().map_err(|_| WireError::Truncated)?;
         Ok(u64::from_le_bytes(bytes))
     }
 
-    /// Reads a `sint32` field, undoing the zigzag encoding.
     pub fn read_sint32(&mut self) -> Result<i32, WireError> {
         Ok(crate::zigzag_decode_32(self.read_varint()? as u32))
     }
 
-    /// Reads a `sint64` field, undoing the zigzag encoding.
     pub fn read_sint64(&mut self) -> Result<i64, WireError> {
         Ok(crate::zigzag_decode_64(self.read_varint()?))
     }
 
-    /// Reads a `float`.
     pub fn read_float(&mut self) -> Result<f32, WireError> {
         Ok(f32::from_bits(self.read_fixed32()?))
     }
 
-    /// Reads a `double`.
     pub fn read_double(&mut self) -> Result<f64, WireError> {
         Ok(f64::from_bits(self.read_fixed64()?))
     }
 
-    /// Reads a repeated numeric field; decoders must accept packed and unpacked.
     pub fn read_maybe_packed<T>(
         &mut self,
         wire_type: WireType,
@@ -180,7 +149,6 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Reads a length-delimited payload; the length is checked before any allocation.
     pub fn read_bytes(&mut self) -> Result<&'a [u8], WireError> {
         let claimed = self.read_varint()?;
         let available = self.remaining();
@@ -192,12 +160,10 @@ impl<'a> Decoder<'a> {
         self.take(len)
     }
 
-    /// Reads a `string` field.
     pub fn read_string(&mut self) -> Result<&'a str, WireError> {
         std::str::from_utf8(self.read_bytes()?).map_err(|_| WireError::InvalidUtf8)
     }
 
-    /// Reads the next field header; `None` at the end of the message.
     pub fn read_key(&mut self) -> Result<Option<FieldKey>, WireError> {
         if self.is_empty() {
             return Ok(None);
@@ -211,7 +177,6 @@ impl<'a> Decoder<'a> {
         Ok(Some(FieldKey { number, wire_type }))
     }
 
-    /// Runs `f` over a nested message; the depth counter travels with it.
     pub fn read_nested<T>(
         &mut self,
         f: impl FnOnce(&mut Decoder<'_>) -> Result<T, WireError>,
@@ -237,7 +202,6 @@ impl<'a> Decoder<'a> {
         if payload.len() % N != 0 {
             return Err(WireError::PackedLengthMismatch);
         }
-        // Reservation bounded by bytes already in hand.
         out.reserve(payload.len() / N);
         for chunk in payload.chunks_exact(N) {
             let bytes: [u8; N] = chunk.try_into().map_err(|_| WireError::Truncated)?;
@@ -246,17 +210,14 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Reads a packed repeated `fixed32`.
     pub fn read_packed_fixed32(&mut self, out: &mut Vec<u32>) -> Result<(), WireError> {
         self.read_packed_fixed::<u32, 4>(out, u32::from_le_bytes)
     }
 
-    /// Reads a packed repeated `fixed64`.
     pub fn read_packed_fixed64(&mut self, out: &mut Vec<u64>) -> Result<(), WireError> {
         self.read_packed_fixed::<u64, 8>(out, u64::from_le_bytes)
     }
 
-    /// Reads a packed repeated varint field, with no up-front reservation.
     pub fn read_packed_varint(&mut self, out: &mut Vec<u64>) -> Result<(), WireError> {
         let payload = self.read_bytes()?;
         let mut nested = Decoder::new(payload);
@@ -266,7 +227,6 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Skips an unrecognised field; unknown fields are normal, not an error.
     pub fn skip_field(&mut self, wire_type: WireType) -> Result<(), WireError> {
         match wire_type {
             WireType::Varint => {
@@ -333,7 +293,6 @@ mod tests {
 
     #[test]
     fn lying_length_prefix_is_refused_before_allocating() {
-        // Field 1, length-delimited, claiming 4 GB inside a 4-byte message.
         let bytes = [0x0A, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F];
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.read_key().unwrap().map(|k| k.number), Some(1));
@@ -345,7 +304,6 @@ mod tests {
 
     #[test]
     fn field_number_zero_is_rejected() {
-        // Key 0x00 is field 0, wire type 0.
         assert_eq!(
             Decoder::new(&[0x00]).read_key(),
             Err(WireError::InvalidFieldNumber)
@@ -354,9 +312,8 @@ mod tests {
 
     #[test]
     fn nesting_is_bounded() {
-        let mut buf = vec![0x08, 0x01]; // innermost: field 1 varint 1
+        let mut buf = vec![0x08, 0x01];
         for _ in 0..(MAX_DEPTH + 2) {
-            // Past 127 bytes the length needs a real varint, so use the encoder.
             let mut outer = crate::Encoder::new();
             outer.write_bytes_field(1, &buf);
             buf = outer.into_vec();
@@ -380,7 +337,6 @@ mod tests {
 
     #[test]
     fn packed_fixed_fields_must_be_a_whole_number_of_elements() {
-        // Field 1, length-delimited, 5 bytes of payload: not divisible by 4.
         let bytes = [0x0A, 0x05, 1, 2, 3, 4, 5];
         let mut d = Decoder::new(&bytes);
         let _ = d.read_key();
@@ -395,9 +351,7 @@ mod tests {
     #[test]
     fn unknown_fields_are_skipped_not_fatal() {
         let bytes = [
-            0x08, 0x2A, // field 1, varint 42
-            0x15, 0x01, 0x00, 0x00, 0x00, // field 2, fixed32
-            0x1A, 0x02, b'h', b'i', // field 3, bytes "hi"
+            0x08, 0x2A, 0x15, 0x01, 0x00, 0x00, 0x00, 0x1A, 0x02, b'h', b'i',
         ];
         let mut d = Decoder::new(&bytes);
         let mut seen = Vec::new();

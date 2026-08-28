@@ -1,6 +1,4 @@
-/** Loading the shared library, in whichever runtime we happen to be. */
 
-/** How the library is reached, regardless of runtime. */
 export interface Ffi {
   install(
     app: number,
@@ -56,29 +54,23 @@ export interface Ffi {
     spec: string,
     concurrency: number,
   ): bigint;
-  /** Waits for the next event. Resolves to null when the job is over. */
   next(job: bigint, timeoutMs: number): Promise<string | null>;
   cancel(job: bigint): void;
   free(job: bigint): void;
   version(): string;
-  /** The last error on this thread, or "" if there is none. */
   lastError(): string;
-  /** Sets the process-wide chunk budget. Must precede the first job. */
   setTotalConcurrency(chunks: number): number;
   totalConcurrency(): number;
   availableConcurrency(): number;
-  /** True when `next` genuinely suspends rather than polling. */
   readonly nativeAsync: boolean;
 }
 
-/** Return codes, matching the Rust constants. */
 export const OK = 0;
 export const TIMEOUT = 1;
 export const DONE = 2;
 export const BUFFER_TOO_SMALL = -1;
 export const BAD_ARGUMENT = -2;
 
-// Poll interval for the synchronous FFIs, which cannot block.
 const POLL_MS = 4;
 
 const INITIAL_BUFFER = 4096;
@@ -115,7 +107,6 @@ function libraryName(): string {
   return "libtapline_ffi.so";
 }
 
-/** Everywhere the shared library might be, best first. */
 export function libraryCandidates(): string[] {
   const name = libraryName();
   const candidates: string[] = [];
@@ -134,7 +125,6 @@ export function libraryCandidates(): string[] {
   return candidates;
 }
 
-/** The first candidate that exists, or the bare name as a last resort. */
 export async function resolveLibraryPath(): Promise<string> {
   const candidates = libraryCandidates();
   for (const candidate of candidates) {
@@ -160,7 +150,6 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/** Which runtime this is. */
 export function detectRuntime(): "deno" | "bun" | "node" {
   // deno-lint-ignore no-explicit-any
   const g = globalThis as any;
@@ -169,7 +158,6 @@ export function detectRuntime(): "deno" | "bun" | "node" {
   return "node";
 }
 
-/** Opens the library for the current runtime. */
 export async function load(path?: string): Promise<Ffi> {
   const resolved = path ?? (await resolveLibraryPath());
   try {
@@ -182,7 +170,6 @@ export async function load(path?: string): Promise<Ffi> {
         return await loadNode(resolved);
     }
   } catch (cause) {
-    // koffi's own message is more useful than anything wrapped around it.
     if (cause instanceof Error && cause.message.includes("koffi")) throw cause;
     throw new Error(
       `could not load the tapline shared library.\n` +
@@ -211,7 +198,6 @@ function readJobPointer(
   return job;
 }
 
-// --- Deno ------------------------------------------------------------------
 
 async function loadDeno(path: string): Promise<Ffi> {
   // deno-lint-ignore no-explicit-any
@@ -415,7 +401,6 @@ async function loadDeno(path: string): Promise<Ffi> {
   };
 }
 
-// --- Bun -------------------------------------------------------------------
 
 async function loadBun(path: string): Promise<Ffi> {
   const { dlopen, FFIType, ptr, CString } = await import("bun:ffi");
@@ -469,7 +454,6 @@ async function loadBun(path: string): Promise<Ffi> {
   });
 
 
-  // Bun wants number pointers; addresses stay below 2^47, so Number is exact.
   const asBunPointer = (job: bigint) => Number(job);
 
   const lastError = (): string => {
@@ -603,10 +587,8 @@ async function loadBun(path: string): Promise<Ffi> {
   };
 }
 
-// --- Node ------------------------------------------------------------------
 
 async function loadNode(path: string): Promise<Ffi> {
-  // Node's own FFI needs --experimental-ffi; koffi is the fallback.
   try {
     return await loadNodeBuiltin(path);
   } catch (cause) {
@@ -801,7 +783,6 @@ async function loadNode(path: string): Promise<Ffi> {
   };
 }
 
-/** Node's own FFI, from 26.1 behind `--experimental-ffi`; synchronous only. */
 async function loadNodeBuiltin(path: string): Promise<Ffi> {
   const ffi = await import("node:ffi");
   const { dlopen, toString: ptrToString, toBuffer } = ffi as unknown as {
@@ -919,7 +900,6 @@ async function loadNodeBuiltin(path: string): Promise<Ffi> {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         const len = new BigUint64Array(1);
-        // Zero timeout: blocking here would hold the event loop.
         const code = Number(functions.tapline_job_next(
           job, 0, buffer, BigInt(buffer.length), new Uint8Array(len.buffer),
         ));
@@ -953,7 +933,6 @@ async function loadNodeBuiltin(path: string): Promise<Ffi> {
     availableConcurrency() {
       return Number(functions.tapline_available_concurrency());
     },
-    // Only used by the koffi path, which needs it to keep a Buffer alive.
     _toBuffer: toBuffer,
   } as unknown as Ffi;
 }

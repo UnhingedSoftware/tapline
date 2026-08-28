@@ -18,7 +18,6 @@ tapline-vdf = { workspace = true }
 zeroize = { workspace = true }
 
 [features]
-# Off by default: a headless game-server node usually has no keyring daemon.
 keyring = ["dep:keyring"]
 
 [dependencies.keyring]

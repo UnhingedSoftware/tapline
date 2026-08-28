@@ -1,12 +1,9 @@
-//! Where a streamed archive can go.
-
 use crate::zip;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tapline_ext::ExtensionError;
 use tapline_ext::{ArchiveEntry, EntrySink};
 
-/// Validates every path up front, before a single byte is written.
 fn validate(entries: &[ArchiveEntry], root: &Path) -> Result<Vec<PathBuf>, ExtensionError> {
     entries
         .iter()
@@ -21,7 +18,6 @@ fn validate(entries: &[ArchiveEntry], root: &Path) -> Result<Vec<PathBuf>, Exten
         .collect()
 }
 
-/// Writes an archive's files into a directory as they arrive.
 pub struct ToDirectory {
     dest: PathBuf,
     targets: Vec<PathBuf>,
@@ -32,7 +28,6 @@ pub struct ToDirectory {
 }
 
 impl ToDirectory {
-    /// A sink writing into `dest`.
     #[must_use]
     pub fn new(dest: &Path) -> Self {
         Self {
@@ -45,13 +40,11 @@ impl ToDirectory {
         }
     }
 
-    /// The paths written, relative to the destination.
     #[must_use]
     pub fn produced(&self) -> &[String] {
         &self.produced
     }
 
-    /// Consumes the sink for its list of paths.
     #[must_use]
     pub fn into_produced(self) -> Vec<String> {
         self.produced
@@ -95,10 +88,8 @@ impl EntrySink for ToDirectory {
     }
 }
 
-/// Caps completed entries held in memory before compressing a batch.
 const BATCH_BYTES: usize = 8 << 20;
 
-/// Writes an archive's files into a ZIP as they arrive.
 pub struct ToZip {
     writer: Option<zip::Writer<std::io::BufWriter<std::fs::File>>>,
     names: Vec<String>,
@@ -112,7 +103,6 @@ pub struct ToZip {
 }
 
 impl ToZip {
-    /// A sink writing a ZIP at `dest`.
     pub fn new(dest: &Path, compress: bool) -> Result<Self, ExtensionError> {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -132,7 +122,6 @@ impl ToZip {
         })
     }
 
-    /// How many entries have been written.
     #[must_use]
     pub const fn entries(&self) -> usize {
         self.entries
@@ -152,7 +141,6 @@ impl ToZip {
         Ok(())
     }
 
-    /// Closes the archive, writing its central directory.
     pub fn close(mut self) -> Result<usize, ExtensionError> {
         self.close_in_place()?;
         Ok(self.entries)
@@ -170,7 +158,6 @@ impl ToZip {
 
 impl EntrySink for ToZip {
     fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
-        // Validated against a notional root: `..` inside a ZIP is the same attack.
         let root = Path::new("");
         self.names = validate(entries, root)?
             .iter()
@@ -205,7 +192,6 @@ impl EntrySink for ToZip {
     }
 
     fn finish(&mut self) -> Result<(), ExtensionError> {
-        // Writes the central directory; a dropped boxed sink otherwise leaves an unreadable archive.
         self.close_in_place()
     }
 }
@@ -361,7 +347,6 @@ mod tests {
     }
 }
 
-/// Passes only the entries whose paths match, to another sink.
 pub struct Filtered<S: EntrySink> {
     inner: S,
     patterns: crate::glob::Patterns,
@@ -370,7 +355,6 @@ pub struct Filtered<S: EntrySink> {
 }
 
 impl<S: EntrySink> Filtered<S> {
-    /// Wraps `inner`, passing only entries matching `patterns`.
     pub const fn new(inner: S, patterns: crate::glob::Patterns) -> Self {
         Self {
             inner,
@@ -380,12 +364,10 @@ impl<S: EntrySink> Filtered<S> {
         }
     }
 
-    /// How many entries the filter let through.
     pub const fn passed(&self) -> usize {
         self.passed
     }
 
-    /// The wrapped sink.
     pub fn into_inner(self) -> S {
         self.inner
     }
@@ -393,7 +375,6 @@ impl<S: EntrySink> Filtered<S> {
 
 impl<S: EntrySink> EntrySink for Filtered<S> {
     fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
-        // The whole index passes through: hostile paths must be seen even when filtered out.
         self.inner.index(entries)
     }
 
@@ -426,33 +407,28 @@ impl<S: EntrySink> EntrySink for Filtered<S> {
     }
 }
 
-/// Feeds every entry to several sinks.
 #[derive(Default)]
 pub struct Fanout {
     sinks: Vec<Box<dyn EntrySink + Send>>,
 }
 
 impl Fanout {
-    /// An empty fan-out, which discards everything.
     #[must_use]
     pub fn new() -> Self {
         Self { sinks: Vec::new() }
     }
 
-    /// Adds a destination.
     #[must_use]
     pub fn with(mut self, sink: Box<dyn EntrySink + Send>) -> Self {
         self.sinks.push(sink);
         self
     }
 
-    /// How many destinations there are.
     #[must_use]
     pub fn len(&self) -> usize {
         self.sinks.len()
     }
 
-    /// Whether there are none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sinks.is_empty()
@@ -489,7 +465,6 @@ impl EntrySink for Fanout {
     }
 
     fn finish(&mut self) -> Result<(), ExtensionError> {
-        // Close every sink even after an error; report the first failure.
         let mut first = Ok(());
         for sink in &mut self.sinks {
             let result = sink.finish();

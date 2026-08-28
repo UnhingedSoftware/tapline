@@ -1,6 +1,3 @@
-//! Just enough JSON to describe an event.
-
-/// Appends a JSON string literal, escaped.
 pub fn push_string(out: &mut String, value: &str) {
     out.push('"');
     for ch in value.chars() {
@@ -10,7 +7,6 @@ pub fn push_string(out: &mut String, value: &str) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            // Everything below 0x20 must be escaped or the document is invalid.
             control if control < '\u{20}' => {
                 out.push_str("\\u");
                 let bytes = format!("{:04x}", control as u32);
@@ -22,7 +18,6 @@ pub fn push_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
-/// Appends `"key":` ready for a value.
 pub fn push_key(out: &mut String, key: &str) {
     if !out.ends_with('{') {
         out.push(',');
@@ -31,13 +26,11 @@ pub fn push_key(out: &mut String, key: &str) {
     out.push(':');
 }
 
-/// Appends `"key": <number>`.
 pub fn push_u64(out: &mut String, key: &str, value: u64) {
     push_key(out, key);
     out.push_str(&value.to_string());
 }
 
-/// Appends `"key": "<string>"`.
 pub fn push_str_field(out: &mut String, key: &str, value: &str) {
     push_key(out, key);
     push_string(out, value);

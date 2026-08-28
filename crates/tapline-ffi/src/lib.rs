@@ -1,5 +1,3 @@
-//! The C ABI for tapline. No callbacks cross this boundary; jobs queue events.
-
 mod event;
 mod json;
 
@@ -10,35 +8,22 @@ use tapline::{
 };
 use tapline_ids::AppId;
 
-/// An event was written to the buffer.
 pub const TAPLINE_OK: i32 = 0;
-/// The timeout elapsed with no event. Not an error: call again.
 pub const TAPLINE_TIMEOUT: i32 = 1;
-/// The job is over and no further events will arrive.
 pub const TAPLINE_DONE: i32 = 2;
-/// Buffer too small; needed length in `out_len`, event kept for retry.
 pub const TAPLINE_BUFFER_TOO_SMALL: i32 = -1;
-/// An argument was unusable — a null pointer, or a string that is not UTF-8.
 pub const TAPLINE_BAD_ARGUMENT: i32 = -2;
 
-/// Install options, as loose scalars; zero means the default everywhere.
 #[derive(Debug, Clone, Copy)]
 pub struct TaplineOptions {
-    /// Chunks in flight. 0 uses tapline's default.
     pub concurrency: u32,
-    /// Branch name, or null for `public`.
     pub branch: *const c_char,
-    /// 0 host, 1 linux, 2 windows, 3 macos. Anything else is the host.
     pub os: u8,
-    /// Non-zero re-downloads even when the install record says it is current.
     pub validate: u8,
-    /// Non-zero includes DLC depots.
     pub include_dlc: u8,
-    /// 0 matches steamcmd's permissions, 1 uses the manifest's.
     pub file_modes: u8,
 }
 
-/// A running job. Opaque.
 pub struct TaplineJob {
     events: std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>,
     held: std::sync::Mutex<Option<String>>,
@@ -86,7 +71,6 @@ fn pool() -> Option<&'static std::sync::Arc<SessionPool>> {
     }))
 }
 
-/// Sets the process-wide chunk budget; must precede the first job.
 #[unsafe(no_mangle)]
 pub extern "C" fn tapline_set_total_concurrency(chunks: u32) -> i32 {
     TOTAL_CONCURRENCY.store(chunks, std::sync::atomic::Ordering::Relaxed);
@@ -99,13 +83,11 @@ pub extern "C" fn tapline_set_total_concurrency(chunks: u32) -> i32 {
 
 static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The total chunks in flight allowed across the process.
 #[unsafe(no_mangle)]
 pub extern "C" fn tapline_total_concurrency() -> u32 {
     shared().map_or(0, |shared| shared.concurrency() as u32)
 }
 
-/// How much of that budget is free right now.
 #[unsafe(no_mangle)]
 pub extern "C" fn tapline_available_concurrency() -> u32 {
     shared().map_or(0, |shared| shared.available() as u32)
@@ -140,8 +122,6 @@ fn build_extensions(
     Ok(out)
 }
 
-/// # Safety
-/// `pointer` must be null or a NUL-terminated string valid for reads.
 unsafe fn read_str<'a>(pointer: *const c_char) -> Option<&'a str> {
     if pointer.is_null() {
         return None;
@@ -150,8 +130,6 @@ unsafe fn read_str<'a>(pointer: *const c_char) -> Option<&'a str> {
 }
 
 impl TaplineOptions {
-    /// # Safety
-    /// `self.branch` must be null or a valid C string.
     unsafe fn into_install_options(self, dir: &str) -> InstallOptions {
         let defaults = InstallOptions::default();
         InstallOptions {
@@ -218,8 +196,6 @@ fn send_error(sender: &tokio::sync::mpsc::UnboundedSender<String>, message: &str
     let _ = sender.send(out);
 }
 
-/// Starts an install; events arrive through [`tapline_job_next`].
-///
 /// # Safety
 /// `dir` must be a valid C string and `out` a writable pointer.
 #[unsafe(no_mangle)]
@@ -290,8 +266,6 @@ pub unsafe extern "C" fn tapline_install(
     )
 }
 
-/// Computes what an install would cost, without fetching content.
-///
 /// # Safety
 /// Same as [`tapline_install`].
 #[unsafe(no_mangle)]
@@ -336,8 +310,6 @@ pub unsafe extern "C" fn tapline_plan(
     )
 }
 
-/// Downloads one Workshop item.
-///
 /// # Safety
 /// Same as [`tapline_install`].
 #[unsafe(no_mangle)]
@@ -432,8 +404,6 @@ pub unsafe extern "C" fn tapline_workshop_download(
     )
 }
 
-/// Searches an app's Workshop; `result` events, then one `searched` event.
-///
 /// # Safety
 /// Every pointer must be a valid C string or null; `out` writable.
 #[unsafe(no_mangle)]
@@ -580,7 +550,6 @@ pub unsafe extern "C" fn tapline_workshop_search(
                             let mut out = String::from("{");
                             json::push_str_field(&mut out, "kind", "result");
                             json::push_u64(&mut out, "app", u64::from(found.item.app.get()));
-                            // Item ids exceed 2^53, so they cross as strings.
                             json::push_str_field(
                                 &mut out,
                                 "item",
@@ -639,8 +608,6 @@ pub unsafe extern "C" fn tapline_workshop_search(
     )
 }
 
-/// Runs a pipeline given in its text form, one directive per line.
-///
 /// # Safety
 /// `spec` must be a valid C string or null; `out` writable.
 #[unsafe(no_mangle)]
@@ -791,8 +758,6 @@ const DEFAULTS: TaplineOptions = TaplineOptions {
     file_modes: 0,
 };
 
-/// Waits for the next event and writes it to `buf` as UTF-8 JSON.
-///
 /// # Safety
 /// `job` must be a live job pointer; `buf` writable for `cap` bytes.
 #[unsafe(no_mangle)]
@@ -812,7 +777,6 @@ pub unsafe extern "C" fn tapline_job_next(
         return TAPLINE_BAD_ARGUMENT;
     };
 
-    // A held event goes first, or a small buffer would reorder the stream.
     let held = job.held.lock().ok().and_then(|mut slot| slot.take());
     let message = match held {
         Some(message) => Some(message),
@@ -829,7 +793,6 @@ pub unsafe extern "C" fn tapline_job_next(
                 }
             } else {
                 let wait = std::time::Duration::from_millis(u64::from(timeout_ms));
-                // The timer must be built inside the runtime or it panics, aborting across FFI.
                 match runtime.block_on(async { tokio::time::timeout(wait, receiver.recv()).await })
                 {
                     Ok(Some(message)) => Some(message),
@@ -848,7 +811,6 @@ pub unsafe extern "C" fn tapline_job_next(
         unsafe { *out_len = message.len() };
     }
     if buf.is_null() || cap < message.len() {
-        // Keep the event so the retry with a bigger buffer returns it.
         if let Ok(mut slot) = job.held.lock() {
             *slot = Some(message);
         }
@@ -859,8 +821,6 @@ pub unsafe extern "C" fn tapline_job_next(
     TAPLINE_OK
 }
 
-/// Stops a job; whatever is already on disk stays there.
-///
 /// # Safety
 /// `job` must be a live job pointer.
 #[unsafe(no_mangle)]
@@ -870,8 +830,6 @@ pub unsafe extern "C" fn tapline_job_cancel(job: *mut TaplineJob) {
     }
 }
 
-/// Frees a job, cancelling it first if it is still running.
-///
 /// # Safety
 /// `job` must not be used afterwards; null is allowed.
 #[unsafe(no_mangle)]
@@ -884,8 +842,6 @@ pub unsafe extern "C" fn tapline_job_free(job: *mut TaplineJob) {
     drop(job);
 }
 
-/// Writes the last error on this thread into `buf`.
-///
 /// # Safety
 /// `buf` must be writable for `cap` bytes, or null to query the length.
 #[unsafe(no_mangle)]
@@ -903,8 +859,6 @@ pub unsafe extern "C" fn tapline_last_error(buf: *mut u8, cap: usize, out_len: *
     })
 }
 
-/// Signs in with a QR code, emitting the code to render and its refreshes.
-///
 /// # Safety
 /// `out` must be a valid pointer to write the job handle to.
 #[unsafe(no_mangle)]
@@ -917,7 +871,6 @@ pub unsafe extern "C" fn tapline_qr_login(timeout_secs: u32, out: *mut *mut Tapl
 
     spawn_job(
         move |sender| async move {
-            // Anonymous on purpose: a pooled token would hide the sign-in.
             let mut session = match Session::anonymous().await {
                 Ok(session) => session,
                 Err(error) => {
@@ -956,7 +909,6 @@ pub unsafe extern "C" fn tapline_qr_login(timeout_secs: u32, out: *mut *mut Tapl
     )
 }
 
-/// The library version, as a static NUL-terminated string.
 #[unsafe(no_mangle)]
 pub extern "C" fn tapline_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
@@ -1073,7 +1025,6 @@ mod tests {
 
     #[test]
     fn a_blocking_wait_does_not_panic_outside_a_runtime() {
-        // Regression: a timer built outside the runtime aborted across FFI.
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<String>();
         let Some(runtime) = runtime() else {
             return;

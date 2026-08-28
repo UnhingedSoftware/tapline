@@ -1,34 +1,22 @@
-//! Choosing which CDN host to ask.
-
 use std::collections::HashMap;
 use std::fmt;
 
-/// One CDN host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Host {
-    /// The hostname to connect to.
     pub host: String,
-    /// The `Host:` header value, when it differs from the hostname.
     pub vhost: String,
-    /// Steam's load figure, lower being better.
     pub load: u32,
-    /// Whether Steam says TLS is mandatory for this host.
     pub https_required: bool,
 }
 
-/// Whether a host Steam offered can be used, given that every fetch is TLS.
 #[must_use]
 pub fn usable_over_tls(https_support: Option<&str>) -> bool {
-    // Absent predates the field; absence is not a refusal.
     !matches!(https_support, Some("unavailable"))
 }
 
-/// Why the pool could not serve a host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PoolError {
-    /// The pool was constructed with no hosts.
     Empty,
-    /// Every host has failed too many times.
     AllDemoted,
 }
 
@@ -43,10 +31,8 @@ impl fmt::Display for PoolError {
 
 impl std::error::Error for PoolError {}
 
-/// How many failures retire a host for the rest of the download.
 const FAILURE_LIMIT: u32 = 3;
 
-/// A rotating set of CDN hosts.
 #[derive(Debug, Clone)]
 pub struct HostPool {
     hosts: Vec<Host>,
@@ -55,7 +41,6 @@ pub struct HostPool {
 }
 
 impl HostPool {
-    /// Builds a pool, ordered by Steam's load figure, best host first.
     #[must_use]
     pub fn new(mut hosts: Vec<Host>) -> Self {
         hosts.sort_by_key(|host| host.load);
@@ -66,7 +51,6 @@ impl HostPool {
         }
     }
 
-    /// How many hosts are still usable.
     #[must_use]
     pub fn healthy(&self) -> usize {
         self.hosts
@@ -75,7 +59,6 @@ impl HostPool {
             .count()
     }
 
-    /// The next host to use, round-robin; concentrating on one host invites rate limits.
     pub fn acquire(&mut self) -> Result<Host, PoolError> {
         if self.hosts.is_empty() {
             return Err(PoolError::Empty);
@@ -95,19 +78,16 @@ impl HostPool {
         Err(PoolError::AllDemoted)
     }
 
-    /// Records that a host failed; three strikes retire it.
     pub fn demote(&mut self, host: &str) {
         *self.failures.entry(host.to_owned()).or_insert(0) += 1;
     }
 
-    /// Records that a host succeeded, forgiving one earlier failure.
     pub fn succeed(&mut self, host: &str) {
         if let Some(count) = self.failures.get_mut(host) {
             *count = count.saturating_sub(1);
         }
     }
 
-    /// The hostnames still worth using, best first.
     #[must_use]
     pub fn snapshot(&self) -> Vec<String> {
         self.hosts
@@ -117,7 +97,6 @@ impl HostPool {
             .collect()
     }
 
-    /// Whether a host has been retired.
     #[must_use]
     pub fn is_demoted(&self, host: &str) -> bool {
         self.failures.get(host).copied().unwrap_or(0) >= FAILURE_LIMIT
