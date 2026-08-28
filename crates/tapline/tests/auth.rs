@@ -78,3 +78,52 @@ async fn an_owned_depot_says_it_needs_a_login() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam and needs a signed-in account"]
+async fn subscribing_round_trips() {
+    // Skips rather than fails when there is no saved token: most machines
+    // running these tests are anonymous, and an unrunnable test that reports
+    // failure teaches people to ignore red.
+    let mut session = Session::automatic(None).await.expect("session");
+    let Some(account) = session.account().map(str::to_owned) else {
+        println!("SKIPPED: anonymous session. Run `tapline login` to exercise this.");
+        return;
+    };
+    println!("signed in as {account}");
+
+    const APP: tapline::AppId = tapline::AppId(4000);
+    const ITEM: tapline::PublishedFileId = tapline::PublishedFileId(104_691_717);
+
+    // Subscribe, then unsubscribe, so the account is left as it was found.
+    session
+        .subscribe_workshop_item(APP, ITEM, false)
+        .await
+        .expect("subscribe");
+    println!("subscribed to {ITEM}");
+
+    session
+        .unsubscribe_workshop_item(APP, ITEM)
+        .await
+        .expect("unsubscribe");
+    println!("unsubscribed from {ITEM}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn subscribing_anonymously_is_refused() {
+    // The half that can be checked without an account: Steam does not silently
+    // accept a subscription for nobody.
+    let mut session = Session::anonymous().await.expect("session");
+    let outcome = session
+        .subscribe_workshop_item(
+            tapline::AppId(4000),
+            tapline::PublishedFileId(104_691_717),
+            false,
+        )
+        .await;
+    match outcome {
+        Err(error) => println!("refused, as it should be: {error}"),
+        Ok(()) => panic!("an anonymous session subscribed to something"),
+    }
+}

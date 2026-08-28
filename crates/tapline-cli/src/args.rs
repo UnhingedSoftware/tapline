@@ -100,6 +100,19 @@ pub enum Command {
         /// Emit JSON.
         json: bool,
     },
+    /// `tapline workshop subscribe <appid> <itemid>`
+    WorkshopSubscribe {
+        /// The app the item belongs to.
+        app: AppId,
+        /// The item.
+        item: PublishedFileId,
+        /// Also subscribe to whatever the item requires.
+        with_dependencies: bool,
+        /// Remove the subscription instead of adding it.
+        remove: bool,
+        /// Emit JSON.
+        json: bool,
+    },
     /// `tapline workshop info <itemid>...`
     WorkshopInfo {
         /// The items to describe.
@@ -597,6 +610,21 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
             },
             json,
         }),
+        (Some("workshop"), Some(verb @ ("subscribe" | "unsubscribe"))) => {
+            let item = positional
+                .get(3)
+                .ok_or_else(|| ArgError::new("an item id is required"))?;
+            Ok(Command::WorkshopSubscribe {
+                app: app_id(positional.get(2))?,
+                item: PublishedFileId(
+                    item.parse()
+                        .map_err(|_| ArgError::new(format!("{item:?} is not an item id")))?,
+                ),
+                with_dependencies: options.flag("with-dependencies"),
+                remove: verb == "unsubscribe",
+                json,
+            })
+        }
         (Some("workshop"), Some("info")) => {
             let items: Result<Vec<PublishedFileId>, ArgError> = positional
                 .iter()
@@ -984,6 +1012,36 @@ mod tests {
             }
             other => panic!("wrong command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn subscribing_and_unsubscribing_are_one_command() {
+        // Same two ids, same shape; only the direction differs.
+        for (line, remove) in [
+            ("workshop subscribe 4000 104691717", false),
+            ("workshop unsubscribe 4000 104691717", true),
+        ] {
+            let parsed = parse(&args(line)).expect("parse");
+            match parsed {
+                Command::WorkshopSubscribe {
+                    app,
+                    item,
+                    remove: r,
+                    ..
+                } => {
+                    assert_eq!(app.get(), 4000);
+                    assert_eq!(item.get(), 104_691_717);
+                    assert_eq!(r, remove, "{line}");
+                }
+                other => panic!("wrong command for {line}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn subscribing_without_an_item_is_refused() {
+        let error = parse(&args("workshop subscribe 4000")).expect_err("must refuse");
+        assert!(error.message.contains("item id"), "{}", error.message);
     }
 
     #[test]

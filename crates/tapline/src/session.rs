@@ -26,7 +26,8 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
     CContentServerDirectory_GetServersForSteamPipe_Request,
 };
 use tapline_proto::steammessages_publishedfile_steamclient::{
-    CPublishedFile_GetDetails_Request, CPublishedFile_Unsubscribe_Request,
+    CPublishedFile_GetDetails_Request, CPublishedFile_Subscribe_Request,
+    CPublishedFile_Unsubscribe_Request,
 };
 use tapline_rt_tokio::{CmTransport, FileSink, cm_list};
 use tapline_state::AppState;
@@ -1362,6 +1363,46 @@ impl Session {
         request.numperpage = Some(1);
         let response = self.cm.call(&request).await?;
         Ok(response.total.unwrap_or(0))
+    }
+
+    /// Subscribes this account to a Workshop item.
+    ///
+    /// What the "Subscribe" button does. Downloading an item and subscribing to
+    /// it are separate things: a download gets the files now, a subscription
+    /// tells Steam the account wants them, so the client keeps them updated and
+    /// they follow the account to another machine.
+    ///
+    /// Needs an account. An anonymous session has no subscriptions, and Steam
+    /// refuses rather than quietly doing nothing — see [`Session::automatic`]
+    /// for signing in.
+    ///
+    /// `include_dependencies` also subscribes to whatever the item requires,
+    /// which is what the website does when an addon lists prerequisites. Off by
+    /// default, because subscribing an account to things it did not ask for is
+    /// a surprise.
+    ///
+    /// # Errors
+    /// When the call fails, or the session is not signed in.
+    pub async fn subscribe_workshop_item(
+        &mut self,
+        app: AppId,
+        item: PublishedFileId,
+        include_dependencies: bool,
+    ) -> Result<(), InstallError> {
+        self.cm
+            .call(&CPublishedFile_Subscribe_Request {
+                publishedfileid: Some(item.get()),
+                // Steam wants the app the item belongs to; without it the
+                // subscription applies to nothing and still answers success.
+                appid: i32::try_from(app.get()).ok(),
+                // So a running Steam client notices rather than finding out on
+                // its next sync.
+                notify_client: Some(true),
+                include_dependencies: Some(include_dependencies),
+                ..CPublishedFile_Subscribe_Request::default()
+            })
+            .await?;
+        Ok(())
     }
 
     /// Tells Steam this account no longer wants an item.

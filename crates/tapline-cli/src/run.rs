@@ -49,6 +49,13 @@ pub async fn execute(command: Command) -> Result<(), String> {
         }
         Command::WorkshopSearch { filters, json } => search(filters, json).await,
         Command::WorkshopInfo { items, json } => workshop_info(items, json).await,
+        Command::WorkshopSubscribe {
+            app,
+            item,
+            with_dependencies,
+            remove,
+            json,
+        } => subscribe(app, item, with_dependencies, remove, json).await,
         Command::Login {
             qr,
             account,
@@ -479,6 +486,48 @@ fn human_bytes(bytes: u64) -> String {
         None | Some(&"B") => format!("{bytes} B"),
         Some(name) => format!("{value:.1} {name}"),
     }
+}
+
+/// `workshop subscribe` and `workshop unsubscribe`
+async fn subscribe(
+    app: AppId,
+    item: PublishedFileId,
+    with_dependencies: bool,
+    remove: bool,
+    json: bool,
+) -> Result<(), String> {
+    let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
+
+    // Said before the call rather than after it fails: a subscription belongs
+    // to an account, and an anonymous session has none. Steam's own refusal
+    // does not explain that.
+    if session.account().is_none() {
+        return Err(
+            "subscribing needs an account; this session is anonymous. Run `tapline login`"
+                .to_owned(),
+        );
+    }
+
+    let outcome = if remove {
+        session.unsubscribe_workshop_item(app, item).await
+    } else {
+        session
+            .subscribe_workshop_item(app, item, with_dependencies)
+            .await
+    };
+    outcome.map_err(|error| error.to_string())?;
+
+    let verb = if remove { "unsubscribed" } else { "subscribed" };
+    if json {
+        emit(&serde_json::json!({
+            "event": verb,
+            "app": app.get(),
+            "item": item.get().to_string(),
+        }));
+    } else {
+        println!("{verb} {item}");
+    }
+    Ok(())
 }
 
 /// `workshop info`

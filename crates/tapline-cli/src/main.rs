@@ -55,6 +55,11 @@ Native:
       a filter list showing a number beside each option wants.
       --cursor walks forward exactly; --page jumps anywhere, which is what
       numbered pages need. They cannot both be given.
+  tapline workshop subscribe APPID ITEMID [--with-dependencies] [--json]
+  tapline workshop unsubscribe APPID ITEMID [--json]
+      Add or remove a subscription. Needs an account: run `tapline login`
+      first. Subscribing is not downloading — it tells Steam the account wants
+      the item, so a Steam client keeps it updated.
   tapline workshop info ITEMID... [--json]
       Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]
