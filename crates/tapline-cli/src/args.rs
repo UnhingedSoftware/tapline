@@ -501,6 +501,257 @@ fn tag_groups(raw: &[String]) -> Result<Vec<Vec<String>>, ArgError> {
         .collect()
 }
 
+/// The install directory, defaulting to the current one.
+fn option_dir(options: &Options) -> PathBuf {
+    PathBuf::from(options.value("dir").unwrap_or("."))
+}
+
+/// The branch to install, `public` unless one is named.
+fn option_branch(options: &Options) -> String {
+    options.value("branch").unwrap_or("public").to_owned()
+}
+
+/// The app id at `positional[2]`, or a message saying one is required.
+fn app_id_at(positional: &[&str], index: usize) -> Result<AppId, ArgError> {
+    let raw = positional
+        .get(index)
+        .ok_or_else(|| ArgError::new("an app id is required"))?;
+    Ok(AppId(raw.parse().map_err(|_| {
+        ArgError::new(format!("{raw:?} is not an app id"))
+    })?))
+}
+
+/// The item id at `positional[3]`, or a message saying one is required.
+fn item_id_at(positional: &[&str], index: usize) -> Result<PublishedFileId, ArgError> {
+    let raw = positional
+        .get(index)
+        .ok_or_else(|| ArgError::new("an item id is required"))?;
+    Ok(PublishedFileId(raw.parse().map_err(|_| {
+        ArgError::new(format!("{raw:?} is not an item id"))
+    })?))
+}
+
+/// An optional positive `u32` option, refused rather than silently dropped when
+/// it is not a number.
+///
+/// The six count-ish flags of `workshop search` all want this, and inlining it
+/// six times was most of what made the parser dense.
+fn optional_count(options: &Options, key: &str, noun: &str) -> Result<Option<u32>, ArgError> {
+    match options.value(key) {
+        None => Ok(None),
+        Some(raw) => raw
+            .parse()
+            .map(Some)
+            .map_err(|_| ArgError::new(format!("{raw:?} is not {noun}; give a positive number"))),
+    }
+}
+
+/// The chunk concurrency, refused rather than silently defaulted on a typo:
+/// quietly using another value turns a mistake into a mystery about why the
+/// download is slow.
+fn option_concurrency(options: &Options) -> Result<Option<usize>, ArgError> {
+    match options.value("concurrency") {
+        // `--concurrency` on its own asked for something and would otherwise get
+        // the default silently.
+        None if options.flag("concurrency") => Err(ArgError::new(
+            "--concurrency needs a number, like --concurrency 32",
+        )),
+        None => Ok(None),
+        Some(raw) => match raw.parse::<usize>() {
+            Ok(0) | Err(_) => Err(ArgError::new(format!(
+                "{raw:?} is not a chunk concurrency; give a positive number"
+            ))),
+            Ok(value) => Ok(Some(value)),
+        },
+    }
+}
+
+/// Where a streaming download writes: `dir`, `zip`, `zip-stored`, or nowhere.
+///
+/// An unrecognised target is refused rather than quietly downloading normally,
+/// which would look like the flag did nothing.
+fn stream_target(options: &Options) -> Result<Option<String>, ArgError> {
+    if !options.flag("stream") {
+        return Ok(None);
+    }
+    match options.value("stream") {
+        None | Some("dir") | Some("directory") => Ok(Some("dir".to_owned())),
+        Some("zip") => Ok(Some("zip".to_owned())),
+        Some("zip-stored") => Ok(Some("zip-stored".to_owned())),
+        Some(other) => Err(ArgError::new(format!(
+            "unknown --stream target {other:?}; known: dir, zip, zip-stored"
+        ))),
+    }
+}
+
+/// Parses the `app` subcommands.
+fn parse_app(
+    subcommand: &str,
+    options: &Options,
+    positional: &[&str],
+    json: bool,
+) -> Result<Command, ArgError> {
+    let app = app_id_at(positional, 2)?;
+    match subcommand {
+        "plan" => Ok(Command::Plan {
+            app,
+            dir: option_dir(options),
+            branch: option_branch(options),
+            json,
+        }),
+        "download" | "update" | "install" => Ok(Command::Download {
+            app,
+            dir: option_dir(options),
+            branch: option_branch(options),
+            validate: options.flag("validate"),
+            concurrency: option_concurrency(options)?,
+            json,
+        }),
+        "info" => Ok(Command::Info { app, json }),
+        other => Err(ArgError::new(format!("unknown app command {other:?}"))),
+    }
+}
+
+/// Parses `workshop search` into its filter set.
+fn parse_workshop_search(
+    options: &Options,
+    positional: &[&str],
+) -> Result<SearchFilters, ArgError> {
+    Ok(SearchFilters {
+        app: app_id_at(positional, 2)?,
+        text: options.value("text").map(str::to_owned),
+        search_in: options.value("search-in").map(str::to_owned),
+        tags: options.all_values("tag"),
+        tag_groups: tag_groups(&options.all_values("tag-group"))?,
+        exclude_tags: options.all_values("exclude-tag"),
+        exclude_content: options.all_values("exclude-content"),
+        all_tags: options.flag("all-tags"),
+        sort: options.value("sort").map(str::to_owned),
+        created_since: moment(options.value("created-since"), "--created-since")?,
+        created_until: moment(options.value("created-until"), "--created-until")?,
+        updated_since: moment(options.value("updated-since"), "--updated-since")?,
+        updated_until: moment(options.value("updated-until"), "--updated-until")?,
+        days: optional_count(options, "days", "a number of days")?,
+        limit: optional_count(options, "limit", "a result count")?,
+        cursor: options.value("cursor").map(str::to_owned),
+        page: optional_count(options, "page", "a page number")?,
+        count: options.flag("count"),
+    })
+}
+
+/// Parses `workshop download`, with its extension-vs-filter check.
+fn parse_workshop_download(
+    options: &Options,
+    positional: &[&str],
+    json: bool,
+) -> Result<Command, ArgError> {
+    let only = options.all_values("only");
+    let pick = options.all_values("pick");
+    // Refused rather than ignored: an extension acts on the downloaded archive,
+    // and a filtered pipeline never writes one. Silently dropping the flag would
+    // look like the extension had run.
+    if (!only.is_empty() || !pick.is_empty()) && options.flag("extensions") {
+        return Err(ArgError::new(
+            "--extensions acts on a downloaded archive, and --only/--pick \
+             never write one; drop one of them",
+        ));
+    }
+    Ok(Command::WorkshopDownload {
+        flat: options.flag("flat"),
+        stream: stream_target(options)?,
+        only,
+        pick,
+        decode: options.value("decode").map(str::to_owned),
+        extensions: options
+            .value("extensions")
+            .map(|list| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        app: app_id_at(positional, 2)?,
+        item: item_id_at(positional, 3)?,
+        dir: option_dir(options),
+        json,
+    })
+}
+
+/// Parses the `workshop` subcommands.
+fn parse_workshop(
+    subcommand: &str,
+    options: &Options,
+    positional: &[&str],
+    json: bool,
+) -> Result<Command, ArgError> {
+    match subcommand {
+        "search" => Ok(Command::WorkshopSearch {
+            filters: parse_workshop_search(options, positional)?,
+            json,
+        }),
+        "subscribe" | "unsubscribe" => Ok(Command::WorkshopSubscribe {
+            app: app_id_at(positional, 2)?,
+            item: item_id_at(positional, 3)?,
+            with_dependencies: options.flag("with-dependencies"),
+            remove: subcommand == "unsubscribe",
+            json,
+        }),
+        "info" => {
+            let items = positional
+                .iter()
+                .skip(2)
+                .map(|raw| {
+                    raw.parse()
+                        .map(PublishedFileId)
+                        .map_err(|_| ArgError::new(format!("{raw:?} is not an item id")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if items.is_empty() {
+                return Err(ArgError::new("at least one item id is required"));
+            }
+            Ok(Command::WorkshopInfo { items, json })
+        }
+        "download" => parse_workshop_download(options, positional, json),
+        other => Err(ArgError::new(format!("unknown workshop command {other:?}"))),
+    }
+}
+
+/// Parses `login`, resolving its three ways to give a password.
+fn parse_login(options: &Options, positional: &[&str]) -> Result<Command, ArgError> {
+    let password_stdin = options.flag("password-stdin");
+    let password = options.value("password").map(str::to_owned);
+    // `--username` and `--account` name the same thing; steamcmd says one and
+    // this said the other, so take either.
+    let account = options
+        .value("username")
+        .or_else(|| options.value("account"))
+        .map(str::to_owned);
+
+    if (password_stdin || password.is_some()) && account.is_none() {
+        return Err(ArgError::new(
+            "a password needs --username: it is for a named account",
+        ));
+    }
+    if password_stdin && password.is_some() {
+        return Err(ArgError::new(
+            "--password and --password-stdin are two answers to the same \
+             question; give one",
+        ));
+    }
+    Ok(Command::Login {
+        // A password login is the point of either flag, so it wins over the QR
+        // default.
+        qr: !password_stdin
+            && password.is_none()
+            && (options.flag("qr") || positional.get(1).is_none()),
+        account,
+        password_stdin,
+        password,
+    })
+}
+
 fn parse_native(args: &[String]) -> Result<Command, ArgError> {
     let options = Options::parse(args);
     let json = options.flag("json");
@@ -510,217 +761,12 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
         .filter(|arg| !arg.starts_with("--"))
         .collect();
 
-    let dir = || PathBuf::from(options.value("dir").unwrap_or("."));
-    // `--stream` alone means a directory; `--stream zip` picks a target. An
-    // unrecognised one is refused rather than quietly downloading normally,
-    // which would look like the flag did nothing.
-    let stream_target = |options: &Options| -> Result<Option<String>, ArgError> {
-        if !options.flag("stream") {
-            return Ok(None);
-        }
-        match options.value("stream") {
-            None | Some("dir") | Some("directory") => Ok(Some("dir".to_owned())),
-            Some("zip") => Ok(Some("zip".to_owned())),
-            Some("zip-stored") => Ok(Some("zip-stored".to_owned())),
-            Some(other) => Err(ArgError::new(format!(
-                "unknown --stream target {other:?}; known: dir, zip, zip-stored"
-            ))),
-        }
-    };
-    // A bad number is refused rather than silently falling back to the default:
-    // someone passing --concurrency wants that value, and quietly using another
-    // one turns a typo into a mystery about why the download is slow.
-    let concurrency = || -> Result<Option<usize>, ArgError> {
-        match options.value("concurrency") {
-            // Present but valueless: `--concurrency` on its own asked for
-            // something and would otherwise get the default silently.
-            None if options.flag("concurrency") => Err(ArgError::new(
-                "--concurrency needs a number, like --concurrency 32",
-            )),
-            None => Ok(None),
-            Some(raw) => match raw.parse::<usize>() {
-                Ok(0) | Err(_) => Err(ArgError::new(format!(
-                    "{raw:?} is not a chunk concurrency; give a positive number"
-                ))),
-                Ok(value) => Ok(Some(value)),
-            },
-        }
-    };
-    let branch = || options.value("branch").unwrap_or("public").to_owned();
-
-    let app_id = |value: Option<&&str>| -> Result<AppId, ArgError> {
-        let raw = value.ok_or_else(|| ArgError::new("an app id is required"))?;
-        Ok(AppId(raw.parse().map_err(|_| {
-            ArgError::new(format!("{raw:?} is not an app id"))
-        })?))
-    };
-
+    // Dispatch to a per-command parser. Each one owns its own validation, so
+    // this stays a routing table rather than a place validation accumulates.
     match (positional.first().copied(), positional.get(1).copied()) {
-        (Some("app"), Some("plan")) => Ok(Command::Plan {
-            app: app_id(positional.get(2))?,
-            dir: dir(),
-            branch: branch(),
-            json,
-        }),
-        (Some("app"), Some("download" | "update" | "install")) => Ok(Command::Download {
-            app: app_id(positional.get(2))?,
-            dir: dir(),
-            branch: branch(),
-            validate: options.flag("validate"),
-            concurrency: concurrency()?,
-            json,
-        }),
-        (Some("app"), Some("info")) => Ok(Command::Info {
-            app: app_id(positional.get(2))?,
-            json,
-        }),
-        (Some("workshop"), Some("search")) => Ok(Command::WorkshopSearch {
-            filters: SearchFilters {
-                app: app_id(positional.get(2))?,
-                text: options.value("text").map(str::to_owned),
-                search_in: options.value("search-in").map(str::to_owned),
-                tags: options.all_values("tag"),
-                tag_groups: tag_groups(&options.all_values("tag-group"))?,
-                exclude_tags: options.all_values("exclude-tag"),
-                exclude_content: options.all_values("exclude-content"),
-                all_tags: options.flag("all-tags"),
-                sort: options.value("sort").map(str::to_owned),
-                created_since: moment(options.value("created-since"), "--created-since")?,
-                created_until: moment(options.value("created-until"), "--created-until")?,
-                updated_since: moment(options.value("updated-since"), "--updated-since")?,
-                updated_until: moment(options.value("updated-until"), "--updated-until")?,
-                days: match options.value("days") {
-                    None => None,
-                    Some(raw) => Some(raw.parse().map_err(|_| {
-                        ArgError::new(format!(
-                            "{raw:?} is not a number of days; give a positive number"
-                        ))
-                    })?),
-                },
-                limit: match options.value("limit") {
-                    None => None,
-                    Some(raw) => Some(raw.parse().map_err(|_| {
-                        ArgError::new(format!(
-                            "{raw:?} is not a result count; give a positive number"
-                        ))
-                    })?),
-                },
-                cursor: options.value("cursor").map(str::to_owned),
-                page: match options.value("page") {
-                    None => None,
-                    Some(raw) => Some(raw.parse().map_err(|_| {
-                        ArgError::new(format!(
-                            "{raw:?} is not a page number; give a positive number"
-                        ))
-                    })?),
-                },
-                count: options.flag("count"),
-            },
-            json,
-        }),
-        (Some("workshop"), Some(verb @ ("subscribe" | "unsubscribe"))) => {
-            let item = positional
-                .get(3)
-                .ok_or_else(|| ArgError::new("an item id is required"))?;
-            Ok(Command::WorkshopSubscribe {
-                app: app_id(positional.get(2))?,
-                item: PublishedFileId(
-                    item.parse()
-                        .map_err(|_| ArgError::new(format!("{item:?} is not an item id")))?,
-                ),
-                with_dependencies: options.flag("with-dependencies"),
-                remove: verb == "unsubscribe",
-                json,
-            })
-        }
-        (Some("workshop"), Some("info")) => {
-            let items: Result<Vec<PublishedFileId>, ArgError> = positional
-                .iter()
-                .skip(2)
-                .map(|raw| {
-                    raw.parse()
-                        .map(PublishedFileId)
-                        .map_err(|_| ArgError::new(format!("{raw:?} is not an item id")))
-                })
-                .collect();
-            let items = items?;
-            if items.is_empty() {
-                return Err(ArgError::new("at least one item id is required"));
-            }
-            Ok(Command::WorkshopInfo { items, json })
-        }
-        (Some("workshop"), Some("download")) => {
-            let item = positional
-                .get(3)
-                .ok_or_else(|| ArgError::new("an item id is required"))?;
-            let only = options.all_values("only");
-            let pick = options.all_values("pick");
-            // Refused rather than ignored: an extension acts on the downloaded
-            // archive, and a filtered pipeline never writes one. Silently
-            // dropping the flag would look like the extension had run.
-            if (!only.is_empty() || !pick.is_empty()) && options.flag("extensions") {
-                return Err(ArgError::new(
-                    "--extensions acts on a downloaded archive, and --only/--pick \
-                     never write one; drop one of them",
-                ));
-            }
-            Ok(Command::WorkshopDownload {
-                flat: options.flag("flat"),
-                stream: stream_target(&options)?,
-                only,
-                pick,
-                decode: options.value("decode").map(str::to_owned),
-                extensions: options
-                    .value("extensions")
-                    .map(|list| {
-                        list.split(',')
-                            .map(str::trim)
-                            .filter(|name| !name.is_empty())
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                app: app_id(positional.get(2))?,
-                item: PublishedFileId(
-                    item.parse()
-                        .map_err(|_| ArgError::new(format!("{item:?} is not an item id")))?,
-                ),
-                dir: dir(),
-                json,
-            })
-        }
-        (Some("login"), _) => {
-            let password_stdin = options.flag("password-stdin");
-            let password = options.value("password").map(str::to_owned);
-            // `--username` and `--account` name the same thing; steamcmd says
-            // one and this said the other, so take either.
-            let account = options
-                .value("username")
-                .or_else(|| options.value("account"))
-                .map(str::to_owned);
-
-            if (password_stdin || password.is_some()) && account.is_none() {
-                return Err(ArgError::new(
-                    "a password needs --username: it is for a named account",
-                ));
-            }
-            if password_stdin && password.is_some() {
-                return Err(ArgError::new(
-                    "--password and --password-stdin are two answers to the same \
-                     question; give one",
-                ));
-            }
-            Ok(Command::Login {
-                // A password login is the point of either flag, so it wins over
-                // the QR default.
-                qr: !password_stdin
-                    && password.is_none()
-                    && (options.flag("qr") || positional.get(1).is_none()),
-                account,
-                password_stdin,
-                password,
-            })
-        }
+        (Some("app"), Some(sub)) => parse_app(sub, &options, &positional, json),
+        (Some("workshop"), Some(sub)) => parse_workshop(sub, &options, &positional, json),
+        (Some("login"), _) => parse_login(&options, &positional),
         (Some("logout"), _) => Ok(Command::Logout {
             account: options
                 .value("account")
