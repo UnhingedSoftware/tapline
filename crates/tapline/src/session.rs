@@ -1713,17 +1713,7 @@ impl Session {
         bytes_total: u64,
         app: AppId,
     ) -> Result<(), InstallError> {
-        // Directories first, so a file never races the directory it lives in.
-        for file in &entry.manifest.files {
-            if !file.flags.directory {
-                continue;
-            }
-            let safe = validate_path(&file.path).map_err(|reason| InstallError::UnsafePath {
-                path: file.path.clone(),
-                reason,
-            })?;
-            std::fs::create_dir_all(safe.resolve(&options.install_dir))?;
-        }
+        create_directories(&entry.manifest, &options.install_dir)?;
 
         // A snapshot of the pool, so the fetch tasks need no lock on it. Health
         // is tracked per task and folded back afterwards.
@@ -1745,7 +1735,14 @@ impl Session {
         // same number and it costs nothing.
         let shared_limit = Arc::clone(&self.shared.limit);
         let local_limit = Arc::new(tokio::sync::Semaphore::new(options.concurrency.max(1)));
-        let next_host = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Everything a chunk task shares, built once and cloned per task.
+        let fetch = ChunkContext {
+            http: Arc::clone(&self.shared.http),
+            hosts: Arc::new(hosts),
+            next_host: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            key: entry.key,
+            depot: entry.depot.id,
+        };
         let mut tasks: tokio::task::JoinSet<(usize, Result<ChunkOutcome, InstallError>)> =
             tokio::task::JoinSet::new();
 
@@ -1816,86 +1813,14 @@ impl Session {
                     .map_err(|e| InstallError::Io(e.to_string()))?;
 
                 let sink = Arc::clone(&sink);
-                let http = Arc::clone(&self.shared.http);
-                let hosts = hosts.clone();
-                let next_host = Arc::clone(&next_host);
+                let fetch = fetch.clone();
                 let chunk = chunk.clone();
-                let key = entry.key;
-                let depot = entry.depot.id;
 
                 tasks.spawn(async move {
                     // Held for the life of the task, which is what bounds the
                     // concurrency — released on the error paths too.
                     let _permits = (local_permit, shared_permit);
-                    let outcome = async move {
-                        if resuming
-                            && let Ok(bytes) =
-                                sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
-                            && tapline_crypto::sha1(&bytes) == chunk.id
-                        {
-                            // Already correct: a read instead of a transfer.
-                            return Ok(ChunkOutcome::reused());
-                        }
-
-                        let mut last_error = None;
-                        for attempt in 0..4_usize {
-                            // Round-robin rather than always the best host.
-                            // Concentrating a depot's requests on one host is what
-                            // triggers rate limiting.
-                            let index = next_host
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                .wrapping_add(attempt);
-                            let host = hosts.get(index % hosts.len()).cloned().unwrap_or_default();
-
-                            // The fetch is IO; the decode is not. Decrypting,
-                            // decompressing and hashing a megabyte is real CPU
-                            // work, and leaving it on an async worker means one
-                            // chunk's LZMA stalls every other task sharing that
-                            // thread. 2,404 chunks of it is the difference between
-                            // saturating a link and saturating one core.
-                            match fetch_chunk_bytes(http.as_ref(), &host, depot, &chunk).await {
-                                Ok(stored) => {
-                                    let for_decode = chunk.clone();
-                                    let host_for_decode = host.clone();
-                                    let decoded = tokio::task::spawn_blocking(move || {
-                                        tapline_cdn::decode_chunk_owned(
-                                            stored,
-                                            &for_decode,
-                                            &key,
-                                            &host_for_decode,
-                                        )
-                                    })
-                                    .await
-                                    .map_err(|e| InstallError::Io(e.to_string()))?;
-
-                                    match decoded {
-                                        Ok(plaintext) => {
-                                            sink.write_at(chunk.offset, &plaintext).await?;
-                                            return Ok(ChunkOutcome::fetched(
-                                                &host,
-                                                u64::from(chunk.compressed_size),
-                                                plaintext.len() as u64,
-                                            ));
-                                        }
-                                        Err(error) => last_error = Some((host, error)),
-                                    }
-                                }
-                                Err(error) => {
-                                    // A host that served a chunk failing its hash
-                                    // check is not one to ask again — that is the
-                                    // shape of a poisoned cache, and retrying it
-                                    // returns the same wrong bytes.
-                                    last_error = Some((host, error));
-                                }
-                            }
-                        }
-
-                        match last_error {
-                            Some((_, error)) => Err(error.into()),
-                            None => Err(InstallError::Pool(tapline_cdn::PoolError::AllDemoted)),
-                        }
-                    }
-                    .await;
+                    let outcome = fetch_decode_write_chunk(&fetch, &chunk, &sink, resuming).await;
                     (index, outcome)
                 });
             }
@@ -2004,42 +1929,158 @@ impl Session {
         }
         report.files += files_written;
 
-        // Symlinks last: their targets must exist, and their validation is
-        // separate because a link is the indirect form of a traversal.
-        for file in &entry.manifest.files {
-            if !file.flags.symlink {
-                continue;
-            }
-            let Some(link_target) = &file.link_target else {
-                report
-                    .skipped
-                    .push((file.path.clone(), "a symlink with no target".to_owned()));
-                continue;
-            };
-
-            let safe = validate_path(&file.path).map_err(|reason| InstallError::UnsafePath {
-                path: file.path.clone(),
-                reason,
-            })?;
-            let resolved_target =
-                tapline_fs::validate_symlink(&safe, link_target).map_err(|reason| {
-                    InstallError::UnsafePath {
-                        path: file.path.clone(),
-                        reason,
-                    }
-                })?;
-
-            let link_path = safe.resolve(&options.install_dir);
-            if let Some(parent) = link_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let _ = std::fs::remove_file(&link_path);
-            std::os::unix::fs::symlink(&resolved_target, &link_path)?;
-            report.files += 1;
-        }
+        create_symlinks(&entry.manifest, &options.install_dir, report)?;
 
         Ok(())
     }
+}
+
+/// What every chunk task in a depot shares: the client, the host list, the
+/// round-robin cursor over it, the depot's key and id.
+///
+/// Built once per depot and cloned into each task — cheaply, since the client,
+/// the host list and the cursor are all behind `Arc`.
+#[derive(Clone)]
+struct ChunkContext {
+    http: Arc<tapline_rt_tokio::HttpClient>,
+    hosts: Arc<Vec<String>>,
+    next_host: Arc<std::sync::atomic::AtomicUsize>,
+    key: [u8; 32],
+    depot: DepotId,
+}
+
+/// Fetches, decodes and writes one chunk, retrying across hosts.
+///
+/// The body of every chunk task. Fetching is IO and decoding is CPU, so the
+/// decode goes to a blocking worker — leaving a megabyte of LZMA on an async
+/// thread stalls every other task sharing it. A host that serves a chunk which
+/// then fails its hash is not asked again: that is the shape of a poisoned
+/// cache, and retrying returns the same wrong bytes.
+async fn fetch_decode_write_chunk(
+    ctx: &ChunkContext,
+    chunk: &tapline_manifest::Chunk,
+    sink: &FileSink,
+    resuming: bool,
+) -> Result<ChunkOutcome, InstallError> {
+    if resuming
+        && let Ok(bytes) = sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
+        && tapline_crypto::sha1(&bytes) == chunk.id
+    {
+        // Already correct: a read instead of a transfer.
+        return Ok(ChunkOutcome::reused());
+    }
+
+    let mut last_error = None;
+    for attempt in 0..4_usize {
+        // Round-robin rather than always the best host: concentrating a depot's
+        // requests on one host is what triggers rate limiting.
+        let index = ctx
+            .next_host
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(attempt);
+        let host = ctx
+            .hosts
+            .get(index % ctx.hosts.len().max(1))
+            .cloned()
+            .unwrap_or_default();
+
+        let stored = match fetch_chunk_bytes(ctx.http.as_ref(), &host, ctx.depot, chunk).await {
+            Ok(stored) => stored,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+
+        let for_decode = chunk.clone();
+        let host_for_decode = host.clone();
+        let key = ctx.key;
+        let decoded = tokio::task::spawn_blocking(move || {
+            tapline_cdn::decode_chunk_owned(stored, &for_decode, &key, &host_for_decode)
+        })
+        .await
+        .map_err(|e| InstallError::Io(e.to_string()))?;
+
+        match decoded {
+            Ok(plaintext) => {
+                sink.write_at(chunk.offset, &plaintext).await?;
+                return Ok(ChunkOutcome::fetched(
+                    &host,
+                    u64::from(chunk.compressed_size),
+                    plaintext.len() as u64,
+                ));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    match last_error {
+        Some(error) => Err(error.into()),
+        None => Err(InstallError::Pool(tapline_cdn::PoolError::AllDemoted)),
+    }
+}
+
+/// Creates every directory a depot's manifest names, before any file is written.
+///
+/// Directories first, so a file never races the directory it lives in.
+fn create_directories(
+    manifest: &Manifest,
+    install_dir: &std::path::Path,
+) -> Result<(), InstallError> {
+    for file in &manifest.files {
+        if !file.flags.directory {
+            continue;
+        }
+        let safe = validate_path(&file.path).map_err(|reason| InstallError::UnsafePath {
+            path: file.path.clone(),
+            reason,
+        })?;
+        std::fs::create_dir_all(safe.resolve(install_dir))?;
+    }
+    Ok(())
+}
+
+/// Creates a depot's symlinks after its files exist.
+///
+/// Last, because a link's target must exist, and its validation is separate:
+/// a link is the indirect form of a path traversal.
+fn create_symlinks(
+    manifest: &Manifest,
+    install_dir: &std::path::Path,
+    report: &mut InstallReport,
+) -> Result<(), InstallError> {
+    for file in &manifest.files {
+        if !file.flags.symlink {
+            continue;
+        }
+        let Some(link_target) = &file.link_target else {
+            report
+                .skipped
+                .push((file.path.clone(), "a symlink with no target".to_owned()));
+            continue;
+        };
+
+        let safe = validate_path(&file.path).map_err(|reason| InstallError::UnsafePath {
+            path: file.path.clone(),
+            reason,
+        })?;
+        let resolved_target =
+            tapline_fs::validate_symlink(&safe, link_target).map_err(|reason| {
+                InstallError::UnsafePath {
+                    path: file.path.clone(),
+                    reason,
+                }
+            })?;
+
+        let link_path = safe.resolve(install_dir);
+        if let Some(parent) = link_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(&link_path);
+        std::os::unix::fs::symlink(&resolved_target, &link_path)?;
+        report.files += 1;
+    }
+    Ok(())
 }
 
 /// What one chunk task did.
