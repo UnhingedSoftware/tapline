@@ -34,6 +34,7 @@
 
 use crate::{InstallError, WorkshopItem};
 use tapline_ids::AppId;
+use tapline_proto::enums_productinfo::EContentDescriptorID;
 use tapline_proto::steammessages_publishedfile_steamclient::{
     CPublishedFile_QueryFiles_Request, c_published_file_query_files_request::TagGroup,
 };
@@ -96,6 +97,57 @@ impl BrowseSort {
         ["vote", "recent", "updated", "trend", "subscribed", "text"];
 }
 
+/// Content Steam labels, so a search can leave it out.
+///
+/// Steam's own content preferences, and a better filter than excluding a tag
+/// by name: the label is Valve's, applied per item, where a tag is whatever
+/// the author happened to tick. Excluding
+/// [`ContentDescriptor::NudityOrSexual`] drops 309,952 of Wallpaper Engine's
+/// 3,182,822 items; the `Mature` tag is not the same set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentDescriptor {
+    /// Nudity or sexual content.
+    NudityOrSexual,
+    /// Frequent violence or gore.
+    ViolenceOrGore,
+    /// Adult-only sexual content.
+    AdultOnlySexual,
+    /// Gratuitous sexual content.
+    GratuitousSexual,
+    /// Anything Steam considers mature.
+    AnyMature,
+}
+
+impl ContentDescriptor {
+    /// Valve's `EContentDescriptorID`.
+    const fn id(self) -> i32 {
+        match self {
+            Self::NudityOrSexual => 1,
+            Self::ViolenceOrGore => 2,
+            Self::AdultOnlySexual => 3,
+            Self::GratuitousSexual => 4,
+            Self::AnyMature => 5,
+        }
+    }
+
+    /// Parses the name the CLI and the bindings use.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "nudity" | "sexual" => Some(Self::NudityOrSexual),
+            "violence" | "gore" => Some(Self::ViolenceOrGore),
+            "adult-only" => Some(Self::AdultOnlySexual),
+            "gratuitous" => Some(Self::GratuitousSexual),
+            "mature" => Some(Self::AnyMature),
+            _ => None,
+        }
+    }
+
+    /// Every name [`ContentDescriptor::parse`] accepts, canonical form first.
+    pub const NAMES: [&'static str; 5] =
+        ["nudity", "violence", "adult-only", "gratuitous", "mature"];
+}
+
 /// The cursor that starts a search.
 ///
 /// Steam's paging is a cursor, not an offset, and the first page is the literal
@@ -132,6 +184,8 @@ pub struct BrowseQuery {
     pub tag_groups: Vec<Vec<String>>,
     /// Tags that exclude an item.
     pub excluded_tags: Vec<String>,
+    /// Content labels that exclude an item.
+    pub excluded_descriptors: Vec<ContentDescriptor>,
     /// Whether an item must carry *every* required tag rather than any of them.
     ///
     /// Applies to [`BrowseQuery::required_tags`] only. Groups are always
@@ -160,6 +214,7 @@ impl Default for BrowseQuery {
             required_tags: Vec::new(),
             tag_groups: Vec::new(),
             excluded_tags: Vec::new(),
+            excluded_descriptors: Vec::new(),
             match_all_tags: false,
             sort: BrowseSort::default(),
             trend_days: None,
@@ -210,6 +265,11 @@ impl BrowseQuery {
                 .map(|tags| TagGroup { tags: tags.clone() })
                 .collect(),
             excludedtags: self.excluded_tags.clone(),
+            excluded_content_descriptors: self
+                .excluded_descriptors
+                .iter()
+                .map(|descriptor| EContentDescriptorID(descriptor.id()))
+                .collect(),
             match_all_tags: Some(self.match_all_tags),
             numperpage: Some(self.per_page.clamp(1, MAX_PER_PAGE)),
             cursor: Some(self.cursor.clone().unwrap_or_else(|| FIRST_PAGE.to_owned())),
@@ -455,6 +515,38 @@ mod tests {
         .to_request();
         assert_eq!(request.requiredtags, vec!["Wallpaper".to_owned()]);
         assert_eq!(request.taggroups.len(), 1);
+    }
+
+    #[test]
+    fn excluded_descriptors_travel_as_valves_ids() {
+        // The ids are Valve's and sparse-looking; sending the wrong one
+        // excludes the wrong content, which no count would reveal.
+        let request = BrowseQuery {
+            app: AppId(431_960),
+            excluded_descriptors: vec![
+                ContentDescriptor::NudityOrSexual,
+                ContentDescriptor::AnyMature,
+            ],
+            ..BrowseQuery::default()
+        }
+        .to_request();
+        let sent: Vec<i32> = request
+            .excluded_content_descriptors
+            .iter()
+            .map(|descriptor| descriptor.value())
+            .collect();
+        assert_eq!(sent, vec![1, 5]);
+    }
+
+    #[test]
+    fn descriptor_names_round_trip_through_the_parser() {
+        for name in ContentDescriptor::NAMES {
+            assert!(
+                ContentDescriptor::parse(name).is_some(),
+                "{name} is listed but does not parse"
+            );
+        }
+        assert_eq!(ContentDescriptor::parse("nonsense"), None);
     }
 
     #[test]

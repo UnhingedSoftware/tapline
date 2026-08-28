@@ -168,6 +168,8 @@ pub struct SearchFilters {
     pub tag_groups: Vec<Vec<String>>,
     /// Tags that exclude an item.
     pub exclude_tags: Vec<String>,
+    /// Content labels that exclude an item, by name.
+    pub exclude_content: Vec<String>,
     /// Require every tag rather than any.
     pub all_tags: bool,
     /// How to order results.
@@ -486,6 +488,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 tags: options.all_values("tag"),
                 tag_groups: tag_groups(&options.all_values("tag-group"))?,
                 exclude_tags: options.all_values("exclude-tag"),
+                exclude_content: options.all_values("exclude-content"),
                 all_tags: options.flag("all-tags"),
                 sort: options.value("sort").map(str::to_owned),
                 days: match options.value("days") {

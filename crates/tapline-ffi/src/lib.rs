@@ -567,6 +567,11 @@ pub unsafe extern "C" fn tapline_workshop_download(
 /// A flat tag list cannot express that, which is the whole reason it is a
 /// second parameter rather than more of the first.
 ///
+/// `excluded_content` is a comma-separated list of Steam's own content labels
+/// — `nudity`, `violence`, `adult-only`, `gratuitous`, `mature` — which are a
+/// truer filter than excluding a tag by name, because the label is Valve's
+/// rather than whatever the author ticked.
+///
 /// `trend_days` is the period a `trend` sort ranks over. Zero means unset,
 /// which is also what Steam does with a zero it is sent, and it applies to no
 /// other sort — passing one elsewhere is refused rather than ignored.
@@ -583,6 +588,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
     tags: *const c_char,
     tag_groups: *const c_char,
     excluded_tags: *const c_char,
+    excluded_content: *const c_char,
     all_tags: u8,
     sort: *const c_char,
     trend_days: u32,
@@ -615,6 +621,21 @@ pub unsafe extern "C" fn tapline_workshop_search(
     }
 
     let defaults = tapline::BrowseQuery::default();
+    // Resolved before the job starts, so a bad name is a synchronous error
+    // rather than one delivered through the event queue.
+    let mut excluded_descriptors = Vec::new();
+    for name in split(unsafe { read_str(excluded_content) }) {
+        match tapline::ContentDescriptor::parse(&name) {
+            Some(descriptor) => excluded_descriptors.push(descriptor),
+            None => {
+                set_error(format!(
+                    "unknown content label {name:?}; known: {}",
+                    tapline::ContentDescriptor::NAMES.join(", ")
+                ));
+                return TAPLINE_BAD_ARGUMENT;
+            }
+        }
+    }
     // Resolved before the job starts, so a bad sort name is a synchronous
     // error rather than one delivered through the event queue.
     let sort = match unsafe { read_str(sort) } {
@@ -637,6 +658,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
         required_tags: split(unsafe { read_str(tags) }),
         tag_groups: groups(unsafe { read_str(tag_groups) }),
         excluded_tags: split(unsafe { read_str(excluded_tags) }),
+        excluded_descriptors,
         match_all_tags: all_tags != 0,
         sort,
         trend_days: if trend_days == 0 {

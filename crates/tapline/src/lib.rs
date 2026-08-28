@@ -42,7 +42,8 @@ mod validate;
 mod workshop;
 
 pub use browse::{
-    BrowseError, BrowsePage, BrowseQuery, BrowseResult, BrowseSort, FIRST_PAGE, MAX_PER_PAGE,
+    BrowseError, BrowsePage, BrowseQuery, BrowseResult, BrowseSort, ContentDescriptor, FIRST_PAGE,
+    MAX_PER_PAGE,
 };
 pub use delta::{ChunkSource, DeltaPlan, diff, full, removed_files};
 pub use install::{FileModes, InstallError, InstallOptions, InstallReport, WorkshopLayout};

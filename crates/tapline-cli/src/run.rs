@@ -311,12 +311,26 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
             )
         })?,
     };
+    // Resolved before connecting, like the sort: a misspelt label should cost
+    // a message rather than a round trip that quietly filters nothing.
+    let mut excluded_descriptors = Vec::new();
+    for name in &filters.exclude_content {
+        let descriptor = tapline::ContentDescriptor::parse(name).ok_or_else(|| {
+            format!(
+                "unknown --exclude-content {name:?}; known: {}",
+                tapline::ContentDescriptor::NAMES.join(", ")
+            )
+        })?;
+        excluded_descriptors.push(descriptor);
+    }
+
     let query = tapline::BrowseQuery {
         app: filters.app,
         text: filters.text,
         required_tags: filters.tags,
         tag_groups: filters.tag_groups,
         excluded_tags: filters.exclude_tags,
+        excluded_descriptors,
         match_all_tags: filters.all_tags,
         sort,
         trend_days: filters.days,

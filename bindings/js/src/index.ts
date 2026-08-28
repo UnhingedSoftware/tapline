@@ -686,6 +686,15 @@ export interface SearchOptions {
   tagGroups?: string[][];
   /** Tags that exclude an item. */
   excludeTags?: string[];
+  /**
+   * Steam's own content labels to leave out: `nudity`, `violence`,
+   * `adult-only`, `gratuitous`, `mature`.
+   *
+   * A truer filter than excluding a tag by name — the label is Valve's,
+   * applied per item, where a tag is whatever the author ticked. Excluding
+   * `nudity` drops 309,952 of Wallpaper Engine's 3,182,822 items.
+   */
+  excludeContent?: ("nudity" | "violence" | "adult-only" | "gratuitous" | "mature")[];
   /** Require every tag rather than any of them. Applies to `tags` only. */
   allTags?: boolean;
   /**
@@ -752,6 +761,7 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
           ? options.tagGroups.map((group) => group.join(",")).join(";")
           : null,
         options.excludeTags?.length ? options.excludeTags.join(",") : null,
+        options.excludeContent?.length ? options.excludeContent.join(",") : null,
         options.allTags ? 1 : 0,
         options.sort ?? null,
         options.days ?? 0,

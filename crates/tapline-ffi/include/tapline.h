@@ -112,6 +112,10 @@ int32_t tapline_workshop_download(uint32_t app_id,
  * group by ',', so "Scene,Video;Anime" means (Scene or Video) and Anime. The
  * flat tag list cannot say that — all_tags is one switch over the whole set.
  *
+ * excluded_content is a comma-separated list of Steam's own content labels:
+ * nudity, violence, adult-only, gratuitous, mature. A truer filter than
+ * excluding a tag by name — the label is Valve's, applied per item.
+ *
  * trend_days is the period a trend ranking covers, and 0 means unset. It
  * applies to no other sort: Steam accepts the number and ignores it, so
  * sending one with another sort is refused here instead.
@@ -130,6 +134,7 @@ int32_t tapline_workshop_search(uint32_t app_id,
                                 const char *tags,
                                 const char *tag_groups,
                                 const char *excluded_tags,
+                                const char *excluded_content,
                                 uint8_t all_tags,
                                 const char *sort,
                                 uint32_t trend_days,
