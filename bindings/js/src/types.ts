@@ -75,8 +75,16 @@ export interface ResultEvent {
   size: number;
   /** Last update, as a Unix timestamp. */
   updated: number;
+  /** First published, as a Unix timestamp. */
+  created: number;
+  /** Who published it, as a SteamID64 string. Empty when Steam gives none. */
+  creator: string;
   subscriptions: number;
   favorites: number;
+  /** How many times the item's page has been viewed. */
+  views: number;
+  votesUp: number;
+  votesDown: number;
   /** Empty when the item has no preview image. */
   previewUrl: string;
   tags: string[];

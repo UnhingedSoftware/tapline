@@ -399,11 +399,29 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
                 "title": found.item.title,
                 "size": found.item.size,
                 "updated": found.item.updated,
+                "created": found.created,
+                "creator": found.creator.map(|id| id.to_string()),
                 "subscriptions": found.subscriptions,
                 "favorites": found.favorites,
+                "views": found.views,
+                "score": found.score,
+                "votes_up": found.votes_up,
+                "votes_down": found.votes_down,
                 "tags": found.tags,
                 "description": found.description,
                 "preview_url": found.preview_url,
+                "previews": found
+                    .previews
+                    .iter()
+                    .map(|preview| {
+                        serde_json::json!({
+                            "url": preview.url,
+                            "youtube_id": preview.youtube_id,
+                            "kind": preview.kind,
+                            "order": preview.order,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
             }));
         }
         emit(&serde_json::json!({

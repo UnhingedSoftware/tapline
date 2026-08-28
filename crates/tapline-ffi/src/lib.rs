@@ -754,8 +754,17 @@ pub unsafe extern "C" fn tapline_workshop_search(
                             json::push_str_field(&mut out, "description", &found.description);
                             json::push_u64(&mut out, "size", found.item.size);
                             json::push_u64(&mut out, "updated", u64::from(found.item.updated));
+                            json::push_u64(&mut out, "created", u64::from(found.created));
+                            json::push_str_field(
+                                &mut out,
+                                "creator",
+                                &found.creator.map(|id| id.to_string()).unwrap_or_default(),
+                            );
                             json::push_u64(&mut out, "subscriptions", found.subscriptions);
                             json::push_u64(&mut out, "favorites", found.favorites);
+                            json::push_u64(&mut out, "views", found.views);
+                            json::push_u64(&mut out, "votesUp", found.votes_up);
+                            json::push_u64(&mut out, "votesDown", found.votes_down);
                             json::push_str_field(
                                 &mut out,
                                 "previewUrl",

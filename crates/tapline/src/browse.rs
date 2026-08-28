@@ -392,8 +392,30 @@ impl BrowseQuery {
     }
 }
 
-/// One search result.
+/// One image, video or linked preview attached to an item.
+///
+/// An item usually has several: Steam's own page shows a strip of them, and
+/// the first is the thumbnail everything else settles for.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    /// Where the image lives, when it is an image.
+    pub url: Option<String>,
+    /// The YouTube id, when it is a video.
+    pub youtube_id: Option<String>,
+    /// Valve's `preview_type`, kept raw.
+    ///
+    /// The values are not in the published schema and guessing at them would
+    /// be worse than passing them on: 0 is the ordinary image on every item
+    /// measured, and anything else is worth looking at before trusting.
+    pub kind: u32,
+    /// Where it sits in the strip.
+    pub order: u32,
+}
+
+/// One search result.
+// No `Eq`: the score is a float, and a rating is not something to compare for
+// exact equality anyway.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BrowseResult {
     /// The item, in the same shape a download takes.
     pub item: WorkshopItem,
@@ -403,14 +425,37 @@ pub struct BrowseResult {
     pub tags: Vec<String>,
     /// Where its preview image lives, when it has one.
     pub preview_url: Option<String>,
+    /// Every preview, in Steam's own order.
+    ///
+    /// [`BrowseResult::preview_url`] is the first image and what a tile wants;
+    /// this is the rest, including videos, for a detail pane.
+    pub previews: Vec<Preview>,
+    /// Who published it, as a SteamID64.
+    ///
+    /// The number rather than a name: Steam does not return one here, and it
+    /// is enough to link to the profile.
+    pub creator: Option<u64>,
+    /// When it was first published, as a Unix timestamp.
+    ///
+    /// [`WorkshopItem::updated`] carries the other half. An item published in
+    /// 2016 and revised last week reads very differently from a new one.
+    pub created: u32,
     /// Current subscribers.
     pub subscriptions: u64,
     /// Current favourites.
     pub favorites: u64,
+    /// How many times its page has been viewed.
+    pub views: u64,
+    /// Steam's own score, 0.0 to 1.0, when it has been rated.
+    pub score: Option<f32>,
+    /// Votes up.
+    pub votes_up: u64,
+    /// Votes down.
+    pub votes_down: u64,
 }
 
 /// A page of results.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BrowsePage {
     /// The items on this page.
     pub items: Vec<BrowseResult>,
@@ -526,8 +571,33 @@ pub(crate) fn describe(
             .filter(|tag| !tag.is_empty())
             .collect(),
         preview_url: details.preview_url.clone().filter(|url| !url.is_empty()),
+        previews: details
+            .previews
+            .iter()
+            .map(|preview| Preview {
+                url: preview.url.clone().filter(|url| !url.is_empty()),
+                youtube_id: preview.youtubevideoid.clone().filter(|id| !id.is_empty()),
+                kind: preview.preview_type.unwrap_or(0),
+                order: preview.sortorder.unwrap_or(0),
+            })
+            .collect(),
+        // Zero is Valve's own "nobody", and an id of zero links nowhere.
+        creator: details.creator.filter(|creator| *creator != 0),
+        created: details.time_created.unwrap_or(0),
         subscriptions: u64::from(details.subscriptions.unwrap_or(0)),
         favorites: u64::from(details.favorited.unwrap_or(0)),
+        views: u64::from(details.views.unwrap_or(0)),
+        score: details.vote_data.as_ref().and_then(|vote| vote.score),
+        votes_up: details
+            .vote_data
+            .as_ref()
+            .and_then(|vote| vote.votes_up)
+            .map_or(0, u64::from),
+        votes_down: details
+            .vote_data
+            .as_ref()
+            .and_then(|vote| vote.votes_down)
+            .map_or(0, u64::from),
     })
 }
 
@@ -535,7 +605,8 @@ pub(crate) fn describe(
 mod tests {
     use super::*;
     use tapline_proto::steammessages_publishedfile_steamclient::{
-        PublishedFileDetails, published_file_details::Tag,
+        PublishedFileDetails,
+        published_file_details::{Preview as Preview_, Tag, VoteData},
     };
 
     fn details(id: u64, result: u32) -> PublishedFileDetails {
@@ -876,6 +947,60 @@ mod tests {
         let (id, why) = describe(&details(7, 9), None).expect_err("must be skipped");
         assert_eq!(id, 7);
         assert!(!why.is_empty(), "a skipped item must say why");
+    }
+
+    #[test]
+    fn a_result_carries_what_a_tile_and_a_detail_pane_show() {
+        let mut raw = details(1, 1);
+        raw.creator = Some(76_561_197_960_287_930);
+        raw.time_created = Some(1_600_000_000);
+        raw.views = Some(4_242);
+        raw.vote_data = Some(VoteData {
+            score: Some(0.94),
+            votes_up: Some(470),
+            votes_down: Some(30),
+            ..VoteData::default()
+        });
+        raw.previews = vec![
+            Preview_ {
+                url: Some("https://example.invalid/one.jpg".to_owned()),
+                sortorder: Some(0),
+                preview_type: Some(0),
+                ..Preview_::default()
+            },
+            Preview_ {
+                youtubevideoid: Some("abc123".to_owned()),
+                sortorder: Some(1),
+                preview_type: Some(1),
+                ..Preview_::default()
+            },
+        ];
+
+        let found = describe(&raw, Some(tapline_ids::DepotId(4001))).expect("describe");
+        assert_eq!(found.creator, Some(76_561_197_960_287_930));
+        assert_eq!(found.created, 1_600_000_000);
+        assert_eq!(found.views, 4_242);
+        assert_eq!(found.score, Some(0.94));
+        assert_eq!((found.votes_up, found.votes_down), (470, 30));
+        assert_eq!(found.previews.len(), 2);
+        assert_eq!(
+            found.previews[0].url.as_deref(),
+            Some("https://example.invalid/one.jpg")
+        );
+        assert_eq!(found.previews[1].youtube_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn a_creator_of_zero_is_nobody() {
+        // Valve's own placeholder, and an id of zero links nowhere.
+        let mut raw = details(1, 1);
+        raw.creator = Some(0);
+        assert_eq!(
+            describe(&raw, Some(tapline_ids::DepotId(4001)))
+                .expect("describe")
+                .creator,
+            None
+        );
     }
 
     #[test]
