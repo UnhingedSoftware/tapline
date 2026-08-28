@@ -19,12 +19,17 @@ starts.
 ```sh
 deno add npm:tapline     # nothing else needed
 bun  add tapline         # nothing else needed
-npm  install tapline koffi
+npm  install tapline          # Node 26.1+, run with --experimental-ffi
+npm  install tapline koffi    # older Node, or without the flag
 ```
 
-Node has no built-in FFI, so it needs [koffi](https://koffi.dev), and **22.18 or
-newer** — the package ships TypeScript with no build step. Deno and Bun need
-neither.
+Deno and Bun have an FFI built in. Node has two options:
+
+- **Node 26.1+** with `--experimental-ffi` uses `node:ffi` and needs no package;
+- otherwise `npm install koffi`.
+
+tapline tries the built-in one first and falls back. Either way Node needs
+**22.18 or newer** — the package ships TypeScript with no build step.
 
 There are no prebuilt binaries on npm yet, so build the shared library once:
 

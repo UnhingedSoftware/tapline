@@ -98,6 +98,14 @@ export const BUFFER_TOO_SMALL = -1;
 export const BAD_ARGUMENT = -2;
 
 /** Most events are well under this; the buffer grows if one is not. */
+/// How long to wait between polls on a synchronous FFI.
+///
+/// Bun's FFI and Node's built-in one are both synchronous, so a blocking call
+/// would hold the only thread that can resolve the promise. Zero timeout plus a
+/// yield is the honest translation: it never blocks, and costs one wake-up per
+/// tick. Deno's is nonblocking and does not need this.
+const POLL_MS = 4;
+
 const INITIAL_BUFFER = 4096;
 
 /** NUL-terminated UTF-8, which is what a `const char *` means. */
@@ -500,10 +508,6 @@ async function loadBun(path: string): Promise<Ffi> {
     tapline_available_concurrency: { args: [], returns: FFIType.u32 },
   });
 
-  // Bun's FFI has no async form, so a blocking call would block the only
-  // thread that can resolve the promise. Zero timeout plus a yield is the
-  // honest translation: it never blocks, and it costs one wake-up per tick.
-  const POLL_MS = 4;
 
   // Bun wants pointers as numbers and rejects a BigInt outright — the out
   // parameter hands one back as a BigUint64Array element, so it is converted
@@ -640,13 +644,22 @@ async function loadBun(path: string): Promise<Ffi> {
 // --- Node ------------------------------------------------------------------
 
 async function loadNode(path: string): Promise<Ffi> {
+  // Node 26.1 has an FFI of its own. It needs --experimental-ffi, so it is not
+  // always there even on a new enough Node, and koffi remains the fallback.
+  try {
+    return await loadNodeBuiltin(path);
+  } catch (cause) {
+    if (cause instanceof Error && cause.message.includes("tapline")) throw cause;
+    // Anything else — no node:ffi, no flag — means try koffi.
+  }
+
   let koffi: typeof import("koffi");
   try {
     koffi = await import("koffi");
   } catch {
     throw new Error(
-      "Node has no built-in FFI, so tapline needs koffi here: `npm install koffi`. " +
-        "Deno and Bun need nothing.",
+      "Node needs an FFI: either run with `--experimental-ffi` on Node 26.1 or " +
+        "newer, or `npm install koffi`. Deno and Bun need neither.",
     );
   }
 
@@ -658,7 +671,7 @@ async function loadNode(path: string): Promise<Ffi> {
     "int tapline_plan(uint32_t, const char*, const char*, uint8_t, uint8_t, _Out_ void**)",
   );
   const workshop = lib.func(
-    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, uint32_t, uint8_t, _Out_ void**)",
+    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, uint8_t, _Out_ void**)",
   );
   const pipelineFn = lib.func(
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
@@ -819,4 +832,164 @@ async function loadNode(path: string): Promise<Ffi> {
     totalConcurrency: () => Number(total()),
     availableConcurrency: () => Number(available()),
   };
+}
+
+/**
+ * Node's own FFI, from 26.1 behind `--experimental-ffi`.
+ *
+ * Synchronous only — there is no equivalent of koffi's `.async()` — so events
+ * are polled with a zero timeout and a sleep between, exactly as Bun is. A
+ * blocking call here would hold the event loop for the whole timeout.
+ */
+async function loadNodeBuiltin(path: string): Promise<Ffi> {
+  const ffi = await import("node:ffi");
+  const { dlopen, toString: ptrToString, toBuffer } = ffi as unknown as {
+    dlopen: (
+      path: string,
+      // deno-lint-ignore no-explicit-any
+      symbols: Record<string, any>,
+    ) => { functions: Record<string, (...args: unknown[]) => number | bigint> };
+    toString: (pointer: unknown) => string;
+    toBuffer: (pointer: unknown, length: number, copy: boolean) => Uint8Array;
+  };
+
+  const u32 = "uint32", u8 = "uint8", u64 = "uint64";
+  const ptr = "pointer", str = "string", buf = "buffer";
+  const { functions } = dlopen(path, {
+    tapline_install: {
+      arguments: [u32, str, str, u32, u8, u8, u8, u8, str, buf],
+      return: "int32",
+    },
+    tapline_plan: { arguments: [u32, str, str, u8, u8, buf], return: "int32" },
+    tapline_workshop_download: {
+      arguments: [u32, u64, str, u32, u8, str, u8, buf],
+      return: "int32",
+    },
+    tapline_workshop_search: {
+      arguments: [
+        u32, str, str, str, str, str, str, u8, str,
+        u32, u32, u32, u32, u32, u32, str, u32, u8, buf,
+      ],
+      return: "int32",
+    },
+    tapline_pipeline: { arguments: [u32, u64, str, u32, buf], return: "int32" },
+    tapline_job_next: {
+      arguments: [ptr, u32, buf, "uint64", buf],
+      return: "int32",
+    },
+    tapline_job_cancel: { arguments: [ptr], return: "void" },
+    tapline_job_free: { arguments: [ptr], return: "void" },
+    tapline_version: { arguments: [], return: ptr },
+    tapline_last_error: { arguments: [buf, "uint64", buf], return: "int32" },
+    tapline_set_total_concurrency: { arguments: [u32], return: "int32" },
+    tapline_total_concurrency: { arguments: [], return: u32 },
+    tapline_available_concurrency: { arguments: [], return: u32 },
+  });
+
+  const lastError = (): string => {
+    const len = new BigUint64Array(1);
+    functions.tapline_last_error(null, 0n, new Uint8Array(len.buffer));
+    const needed = Number(len[0] ?? 0n);
+    if (needed === 0) return "";
+    const out = new Uint8Array(needed);
+    functions.tapline_last_error(out, BigInt(needed), new Uint8Array(len.buffer));
+    return new TextDecoder().decode(out);
+  };
+
+  // The job handle comes back through an out pointer; read it as a u64 and
+  // hand it back as one, the same shape the other two backends use.
+  const jobOut = (): { slot: Uint8Array; read: () => bigint } => {
+    const raw = new BigUint64Array(1);
+    const slot = new Uint8Array(raw.buffer);
+    return { slot, read: () => raw[0] ?? 0n };
+  };
+  const started = (code: number, what: string, read: () => bigint): bigint => {
+    if (code !== OK) throw new Error(`${what}: ${lastError() || `code ${code}`}`);
+    return read();
+  };
+
+  return {
+    nativeAsync: false,
+    lastError,
+    install(app, dir, branch, concurrency, os, validate, includeDlc, fileModes, extensions) {
+      const out = jobOut();
+      const code = Number(functions.tapline_install(
+        app, dir, branch, concurrency, os, validate, includeDlc, fileModes,
+        extensions, out.slot,
+      ));
+      return started(code, "install", out.read);
+    },
+    plan(app, dir, branch, os, includeDlc) {
+      const out = jobOut();
+      const code = Number(functions.tapline_plan(app, dir, branch, os, includeDlc, out.slot));
+      return started(code, "plan", out.read);
+    },
+    workshop(app, item, dir, concurrency, flat, extensions, stream) {
+      const out = jobOut();
+      const code = Number(functions.tapline_workshop_download(
+        app, item, dir, concurrency, flat, extensions, stream, out.slot,
+      ));
+      return started(code, "workshop download", out.read);
+    },
+    search(
+      app, text, searchIn, tags, tagGroups, excludedTags, excludedContent,
+      allTags, sort, trendDays, createdSince, createdUntil, updatedSince,
+      updatedUntil, limit, cursor, page, countOnly,
+    ) {
+      const out = jobOut();
+      const code = Number(functions.tapline_workshop_search(
+        app, text, searchIn, tags, tagGroups, excludedTags, excludedContent,
+        allTags, sort, trendDays, createdSince, createdUntil, updatedSince,
+        updatedUntil, limit, cursor, page, countOnly, out.slot,
+      ));
+      return started(code, "workshop search", out.read);
+    },
+    pipeline(app, item, spec, concurrency) {
+      const out = jobOut();
+      const code = Number(functions.tapline_pipeline(app, item, spec, concurrency, out.slot));
+      return started(code, "pipeline", out.read);
+    },
+    async next(job, timeoutMs) {
+      let buffer = new Uint8Array(INITIAL_BUFFER);
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const len = new BigUint64Array(1);
+        // Zero timeout: this call is synchronous, and blocking in it would
+        // hold the event loop for the whole wait.
+        const code = Number(functions.tapline_job_next(
+          job, 0, buffer, BigInt(buffer.length), new Uint8Array(len.buffer),
+        ));
+        const needed = Number(len[0] ?? 0n);
+        if (code === BUFFER_TOO_SMALL) {
+          buffer = new Uint8Array(needed);
+          continue;
+        }
+        if (code === DONE) return null;
+        if (code === OK) return new TextDecoder().decode(buffer.subarray(0, needed));
+        if (code !== TIMEOUT) throw new Error(`tapline_job_next failed (${code})`);
+        if (Date.now() >= deadline) return "";
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      }
+    },
+    cancel(job) {
+      functions.tapline_job_cancel(job);
+    },
+    free(job) {
+      functions.tapline_job_free(job);
+    },
+    version() {
+      return ptrToString(functions.tapline_version());
+    },
+    setTotalConcurrency(chunks) {
+      return Number(functions.tapline_set_total_concurrency(chunks));
+    },
+    totalConcurrency() {
+      return Number(functions.tapline_total_concurrency());
+    },
+    availableConcurrency() {
+      return Number(functions.tapline_available_concurrency());
+    },
+    // Only used by the koffi path, which needs it to keep a Buffer alive.
+    _toBuffer: toBuffer,
+  } as unknown as Ffi;
 }
