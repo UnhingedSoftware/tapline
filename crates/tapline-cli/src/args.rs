@@ -190,6 +190,8 @@ pub struct SearchFilters {
     pub limit: Option<u32>,
     /// Where to resume from.
     pub cursor: Option<String>,
+    /// Which page to jump to, 1-based.
+    pub page: Option<u32>,
     /// Report how many match, without fetching any.
     pub count: bool,
 }
@@ -575,6 +577,14 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                     })?),
                 },
                 cursor: options.value("cursor").map(str::to_owned),
+                page: match options.value("page") {
+                    None => None,
+                    Some(raw) => Some(raw.parse().map_err(|_| {
+                        ArgError::new(format!(
+                            "{raw:?} is not a page number; give a positive number"
+                        ))
+                    })?),
+                },
                 count: options.flag("count"),
             },
             json,

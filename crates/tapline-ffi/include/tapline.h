@@ -112,6 +112,9 @@ int32_t tapline_workshop_download(uint32_t app_id,
  * group by ',', so "Scene,Video;Anime" means (Scene or Video) and Anime. The
  * flat tag list cannot say that — all_tags is one switch over the whole set.
  *
+ * page jumps straight to a numbered page, 1-based, 0 meaning unset. A cursor
+ * walks forward exactly; a page number goes anywhere. Both at once is refused.
+ *
  * count_only asks how many items match and fetches none of them, emitting a
  * single "counted" event rather than any "result" or "searched" event. It is
  * what a filter list showing a number beside each option wants.
@@ -157,6 +160,7 @@ int32_t tapline_workshop_search(uint32_t app_id,
                                 uint32_t updated_until,
                                 uint32_t limit,
                                 const char *cursor,
+                                uint32_t page,
                                 uint8_t count_only,
                                 TaplineJob **out);
 

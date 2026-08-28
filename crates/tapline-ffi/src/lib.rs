@@ -567,6 +567,10 @@ pub unsafe extern "C" fn tapline_workshop_download(
 /// A flat tag list cannot express that, which is the whole reason it is a
 /// second parameter rather than more of the first.
 ///
+/// `page` jumps straight to a numbered page, 1-based, and zero means unset.
+/// It is the other way of paging: a cursor walks forward exactly, a page
+/// number goes anywhere. Giving both is refused.
+///
 /// `count_only` asks how many match and fetches none of them, which is what a
 /// filter list showing a number beside each option wants. It emits a single
 /// `counted` event instead of any `result` or `searched` event.
@@ -611,6 +615,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
     updated_until: u32,
     limit: u32,
     cursor: *const c_char,
+    page: u32,
     count_only: u8,
     out: *mut *mut TaplineJob,
 ) -> i32 {
@@ -710,6 +715,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
         },
         per_page: if limit == 0 { defaults.per_page } else { limit },
         cursor: unsafe { read_str(cursor) }.map(str::to_owned),
+        page: (page != 0).then_some(page),
     };
     if let Err(error) = query.validate() {
         set_error(error.to_string());

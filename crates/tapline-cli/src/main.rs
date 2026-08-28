@@ -39,7 +39,7 @@ Native:
                          [--all-tags] [--sort NAME] [--days N]
                          [--created-since WHEN] [--created-until WHEN]
                          [--updated-since WHEN] [--updated-until WHEN]
-                         [--limit N] [--cursor C] [--count] [--json]
+                         [--limit N] [--cursor C | --page N] [--count] [--json]
       Search an app's Workshop. --sort: vote, recent, updated, trend,
       subscribed, text (text needs --text). Paging is a cursor: pass the
       next_cursor from one page as --cursor to get the following one.
@@ -53,6 +53,8 @@ Native:
       --search-in narrows --text to all, title or description.
       --count reports how many match and fetches none of them, which is what
       a filter list showing a number beside each option wants.
+      --cursor walks forward exactly; --page jumps anywhere, which is what
+      numbered pages need. They cannot both be given.
   tapline workshop info ITEMID... [--json]
       Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]

@@ -734,6 +734,14 @@ export interface SearchOptions {
   limit?: number;
   /** {@link SearchPage.nextCursor} from a previous page. */
   cursor?: string;
+  /**
+   * Jump straight to a numbered page, 1-based.
+   *
+   * The other way of paging: a cursor walks forward exactly and cannot go
+   * back, a page number goes anywhere, which is what numbered pagination
+   * needs. Giving both is refused.
+   */
+  page?: number;
   onEvent?: (event: TaplineEvent) => void;
 }
 
@@ -790,6 +798,7 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
         options.updated?.until ?? 0,
         options.limit ?? 0,
         options.cursor ?? null,
+        options.page ?? 0,
         0,
       ),
     (events) => {
@@ -842,6 +851,7 @@ export function countWorkshop(options: SearchOptions): Job<number> {
         options.updated?.until ?? 0,
         0,
         null,
+        0,
         1,
       ),
     (events) => (lastOfKind(events, "counted") as CountedEvent).total,

@@ -365,6 +365,7 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         trend_days: filters.days,
         per_page: filters.limit.unwrap_or(defaults.per_page),
         cursor: filters.cursor,
+        page: filters.page,
     };
     query.validate().map_err(|error| error.to_string())?;
 

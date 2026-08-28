@@ -152,7 +152,11 @@ impl SessionPool {
             });
         }
 
-        let session = Session::anonymous_shared(Arc::clone(&self.shared)).await?;
+        // Signed in when this machine has a saved token, anonymous otherwise.
+        // A pooled session that stayed anonymous would mean the bindings could
+        // not reach owned content while the command line could, from the same
+        // token file.
+        let session = Session::automatic_shared(None, Arc::clone(&self.shared)).await?;
         Ok(SessionGuard {
             session: Some(session),
             pool: Arc::clone(self),

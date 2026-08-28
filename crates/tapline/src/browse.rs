@@ -294,6 +294,17 @@ pub struct BrowseQuery {
     pub per_page: u32,
     /// Where to resume from. `None` starts at the beginning.
     pub cursor: Option<String>,
+    /// Which page to jump straight to, 1-based.
+    ///
+    /// Steam offers both ways of paging and they are not the same tool. A
+    /// cursor walks forward exactly and cannot go back or skip; a page number
+    /// jumps anywhere, which is what numbered pagination needs. Measured on
+    /// Wallpaper Engine's 3.1M items: pages 1/2, 10/11, 20/21 and 30/31 share
+    /// no items, and page 1000 — fifty thousand items deep — still answers.
+    ///
+    /// Set with [`BrowseQuery::cursor`] it is refused, since the two disagree
+    /// about where the page starts and only one of them can win.
+    pub page: Option<u32>,
 }
 
 impl Default for BrowseQuery {
@@ -313,6 +324,7 @@ impl Default for BrowseQuery {
             trend_days: None,
             per_page: 20,
             cursor: None,
+            page: None,
         }
     }
 }
@@ -336,6 +348,9 @@ impl BrowseQuery {
         }
         if self.tag_groups.iter().any(Vec::is_empty) {
             return Err(BrowseError::EmptyTagGroup);
+        }
+        if self.page.is_some() && self.cursor.is_some() {
+            return Err(BrowseError::CursorAndPage);
         }
         if self.trend_days.is_some() && self.sort != BrowseSort::Trend {
             return Err(BrowseError::TrendDaysWithoutTrendSort);
@@ -376,7 +391,14 @@ impl BrowseQuery {
                 .collect(),
             match_all_tags: Some(self.match_all_tags),
             numperpage: Some(self.per_page.clamp(1, MAX_PER_PAGE)),
-            cursor: Some(self.cursor.clone().unwrap_or_else(|| FIRST_PAGE.to_owned())),
+            page: self.page,
+            // A cursor and a page number in the same request contradict each
+            // other; validate refuses that, so here one excludes the other.
+            cursor: if self.page.is_some() {
+                None
+            } else {
+                Some(self.cursor.clone().unwrap_or_else(|| FIRST_PAGE.to_owned()))
+            },
             // Without these the reply carries ids and little else, and every
             // caller would need a second round trip to show a search result.
             return_tags: Some(true),
@@ -495,6 +517,8 @@ pub enum BrowseError {
     BackwardsTimeRange,
     /// Narrowing where text is matched, with no text to match.
     TextTargetWithoutText,
+    /// A cursor and a page number at once.
+    CursorAndPage,
 }
 
 impl std::fmt::Display for BrowseError {
@@ -514,6 +538,11 @@ impl std::fmt::Display for BrowseError {
                 f,
                 "a tag group needs at least one tag; an empty group is a \
                  filter that matches nothing and reads as a broken search"
+            ),
+            Self::CursorAndPage => write!(
+                f,
+                "a cursor and a page number are two ways of saying where a \
+                 page starts, and they disagree; give one"
             ),
             Self::TextTargetWithoutText => write!(
                 f,
@@ -633,6 +662,31 @@ mod tests {
         }
         .to_request();
         assert_eq!(request.cursor.as_deref(), Some("*"));
+    }
+
+    #[test]
+    fn a_page_number_replaces_the_cursor_rather_than_joining_it() {
+        // Steam takes both fields and would answer something for a request
+        // carrying each; which one it honours is not worth finding out.
+        let request = BrowseQuery {
+            app: AppId(431_960),
+            page: Some(7),
+            ..BrowseQuery::default()
+        }
+        .to_request();
+        assert_eq!(request.page, Some(7));
+        assert!(request.cursor.is_none());
+    }
+
+    #[test]
+    fn asking_for_both_a_cursor_and_a_page_is_refused() {
+        let query = BrowseQuery {
+            app: AppId(431_960),
+            cursor: Some("AoIIQ0NjvXTE+Olo".to_owned()),
+            page: Some(3),
+            ..BrowseQuery::default()
+        };
+        assert_eq!(query.validate(), Err(BrowseError::CursorAndPage));
     }
 
     #[test]

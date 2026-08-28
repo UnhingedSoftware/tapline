@@ -228,6 +228,24 @@ impl Session {
     /// not a reason to stop a download that never needed one. [`Session::account`]
     /// says which of the three happened.
     pub async fn automatic(account: Option<&str>) -> Result<Self, InstallError> {
+        Self::automatic_shared(
+            account,
+            crate::Shared::new(InstallOptions::default().concurrency),
+        )
+        .await
+    }
+
+    /// A session that signs in if it can, sharing resources with others.
+    ///
+    /// What [`SessionPool`] hands out, so a pooled session is signed in on a
+    /// machine that has logged in — the alternative is a library that works
+    /// from the command line and silently does not from a binding.
+    ///
+    /// [`SessionPool`]: crate::SessionPool
+    pub async fn automatic_shared(
+        account: Option<&str>,
+        shared: Arc<crate::Shared>,
+    ) -> Result<Self, InstallError> {
         let store = tapline_auth::TokenStore::default_file();
         let wanted = match account {
             Some(name) => Some(name.to_owned()),
@@ -237,7 +255,7 @@ impl Session {
         if let Some(name) = wanted
             && let Ok(Some(token)) = store.load(&name)
         {
-            match Self::with_token(&token).await {
+            match Self::with_token_shared(&token, Arc::clone(&shared)).await {
                 Ok(session) => return Ok(session),
                 Err(_) => {
                     // Falls through to anonymous. The caller sees which
@@ -248,7 +266,7 @@ impl Session {
             }
         }
 
-        Self::anonymous().await
+        Self::anonymous_shared(shared).await
     }
 
     /// The account this session signed in as, or `None` when anonymous.

@@ -63,6 +63,7 @@ export interface Ffi {
     updatedUntil: number,
     limit: number,
     cursor: string | null,
+    page: number,
     countOnly: number,
   ): bigint;
   /** Runs a pipeline given in its text form. */
@@ -274,7 +275,7 @@ async function loadDeno(path: string): Promise<Ffi> {
     tapline_workshop_search: {
       parameters: [
         "u32", "buffer", "buffer", "buffer", "buffer", "buffer", "buffer",
-        "u8", "buffer", "u32", "u32", "u32", "u32", "u32", "u32", "buffer", "u8", "buffer",
+        "u8", "buffer", "u32", "u32", "u32", "u32", "u32", "u32", "buffer", "u32", "u8", "buffer",
       ],
       result: "i32",
     },
@@ -382,6 +383,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       updatedUntil,
       limit,
       cursor,
+      page,
       countOnly,
     ) {
       const out = new BigUint64Array(1);
@@ -402,6 +404,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         updatedUntil,
         limit,
         cursor === null ? null : cstring(cursor),
+        page,
         countOnly,
         new Uint8Array(out.buffer),
       );
@@ -477,7 +480,7 @@ async function loadBun(path: string): Promise<Ffi> {
         FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr,
         FFIType.u8, FFIType.ptr, FFIType.u32,
         FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32,
-        FFIType.u32, FFIType.ptr, FFIType.u8, FFIType.ptr,
+        FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u8, FFIType.ptr,
       ],
       returns: FFIType.i32,
     },
@@ -570,6 +573,7 @@ async function loadBun(path: string): Promise<Ffi> {
       updatedUntil,
       limit,
       cursor,
+      page,
       countOnly,
     ) {
       const out = new BigUint64Array(1);
@@ -590,6 +594,7 @@ async function loadBun(path: string): Promise<Ffi> {
         updatedUntil,
         limit,
         cursor === null ? null : ptr(cstring(cursor)),
+        page,
         countOnly,
         ptr(out),
       );
@@ -653,13 +658,13 @@ async function loadNode(path: string): Promise<Ffi> {
     "int tapline_plan(uint32_t, const char*, const char*, uint8_t, uint8_t, _Out_ void**)",
   );
   const workshop = lib.func(
-    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, uint8_t, _Out_ void**)",
+    "int tapline_workshop_download(uint32_t, uint64_t, const char*, uint32_t, uint8_t, const char*, uint32_t, uint8_t, _Out_ void**)",
   );
   const pipelineFn = lib.func(
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
   );
   const searchFn = lib.func(
-    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, uint8_t, _Out_ void**)",
+    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, uint32_t, uint8_t, _Out_ void**)",
   );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
@@ -735,6 +740,7 @@ async function loadNode(path: string): Promise<Ffi> {
       updatedUntil,
       limit,
       cursor,
+      page,
       countOnly,
     ) {
       const out: unknown[] = [null];
@@ -755,6 +761,7 @@ async function loadNode(path: string): Promise<Ffi> {
         updatedUntil,
         limit,
         cursor,
+        page,
         countOnly,
         out,
       );
