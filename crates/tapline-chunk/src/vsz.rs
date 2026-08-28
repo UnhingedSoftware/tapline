@@ -129,7 +129,9 @@ mod tests {
     /// The smallest in that depot: a fixture has to be real, not big. 80 bytes
     /// on the wire, 61 decoded. The version before it was a full 1 MiB chunk,
     /// 131 KB committed to prove the same thing about the container.
-    const REAL: &[u8] = include_bytes!("../tests/fixtures/smallest_vsz_7395dfeef25971f3be265de414de08c61ec65563.bin");
+    const REAL: &[u8] = include_bytes!(
+        "../tests/fixtures/smallest_vsz_7395dfeef25971f3be265de414de08c61ec65563.bin"
+    );
 
     #[test]
     fn a_real_vsz_chunk_decodes() {

@@ -204,7 +204,9 @@ mod tests {
 
     const VZ_CHUNK: &[u8] =
         include_bytes!("../tests/fixtures/chunk_610f4c4e6d26a61f0a35ed66117a7e693cceb4b8.bin");
-    const VSZ_CHUNK: &[u8] = include_bytes!("../tests/fixtures/smallest_vsz_7395dfeef25971f3be265de414de08c61ec65563.bin");
+    const VSZ_CHUNK: &[u8] = include_bytes!(
+        "../tests/fixtures/smallest_vsz_7395dfeef25971f3be265de414de08c61ec65563.bin"
+    );
 
     #[test]
     fn both_containers_decode_through_the_same_entry_point() {
