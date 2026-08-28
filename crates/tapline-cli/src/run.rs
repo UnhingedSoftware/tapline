@@ -62,6 +62,7 @@ pub async fn execute(command: Command) -> Result<(), String> {
             password_stdin,
             password,
         } => login(qr, account, password_stdin, password).await,
+        Command::Logout { account, all } => logout(account, all),
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
     }
@@ -1166,11 +1167,66 @@ fn read_hidden(prompt: &str) -> Result<String, String> {
     Ok(line.trim().to_owned())
 }
 
+/// `logout` — forget a saved login.
+fn logout(account: Option<String>, all: bool) -> Result<(), String> {
+    let store = tapline_auth::TokenStore::default_file();
+
+    if all {
+        let saved = store.accounts().map_err(|e| e.to_string())?;
+        store.forget_all().map_err(|e| e.to_string())?;
+        match saved.len() {
+            0 => println!("no saved logins"),
+            n => println!("forgot {n} saved login{}", if n == 1 { "" } else { "s" }),
+        }
+        return Ok(());
+    }
+
+    // A named account, or the single one if there is exactly one — so a machine
+    // with one login can `tapline logout` with no argument.
+    let name = match account {
+        Some(name) => name,
+        None => {
+            let mut saved = store.accounts().map_err(|e| e.to_string())?;
+            match saved.len() {
+                0 => {
+                    println!("no saved logins");
+                    return Ok(());
+                }
+                1 => saved.remove(0),
+                _ => {
+                    return Err(format!(
+                        "more than one saved login ({}); name one with --account, \
+                         or --all to forget them all",
+                        saved.join(", ")
+                    ));
+                }
+            }
+        }
+    };
+
+    store.forget(&name).map_err(|e| e.to_string())?;
+    println!("forgot the saved login for {name}");
+    Ok(())
+}
+
 async fn whoami() -> Result<(), String> {
     let session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     match session.account() {
         Some(account) => println!("signed in as {account}, cell {}", session.cell_id()),
         None => println!("anonymous session, cell {}", session.cell_id()),
+    }
+
+    // The logins saved on disk, which is what `automatic` will reuse — shown
+    // offline, distinct from the live session above and the local Steam client
+    // below.
+    match tapline_auth::TokenStore::default_file().accounts() {
+        Ok(saved) if !saved.is_empty() => {
+            for name in saved {
+                println!("saved login: {name}");
+            }
+        }
+        Ok(_) => println!("no saved logins (run `tapline login`)"),
+        Err(error) => eprintln!("could not read saved logins: {error}"),
     }
 
     // The local Steam client's accounts are a different thing from tapline's

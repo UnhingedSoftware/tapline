@@ -231,6 +231,46 @@ impl TokenStore {
     /// What a logout does locally. It does not revoke the token with Steam —
     /// that is a separate request, and pretending otherwise would leave someone
     /// believing a stolen token was dead.
+    /// The accounts with a saved token, so a caller can show or clear them
+    /// without connecting to Steam.
+    ///
+    /// The file backend enumerates them. The OS keyring cannot be listed by
+    /// service on every platform, so it returns empty there rather than a
+    /// partial answer that looks complete — check a specific account with
+    /// [`TokenStore::load`] instead.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn accounts(&self) -> Result<Vec<String>, TokenStoreError> {
+        match self {
+            Self::None => Ok(Vec::new()),
+            Self::File { path } => Ok(read_all(path)?.into_iter().map(|(name, _)| name).collect()),
+            #[cfg(feature = "keyring")]
+            Self::Keyring => Ok(Vec::new()),
+        }
+    }
+
+    /// Forgets every saved token.
+    ///
+    /// Only the file backend, where the set is known; the keyring is cleared
+    /// one named account at a time with [`TokenStore::forget`].
+    ///
+    /// # Errors
+    /// If the store cannot be written.
+    pub fn forget_all(&self) -> Result<(), TokenStoreError> {
+        match self {
+            Self::None => Ok(()),
+            Self::File { path } => write_all(path, &[]),
+            #[cfg(feature = "keyring")]
+            Self::Keyring => Ok(()),
+        }
+    }
+
+    /// Forgets one account's token.
+    ///
+    /// What a logout does locally. It does not revoke the token with Steam —
+    /// that is a separate request, and pretending otherwise would leave someone
+    /// believing a stolen token was dead.
     pub fn forget(&self, account: &str) -> Result<(), TokenStoreError> {
         match self {
             Self::None => Ok(()),
@@ -451,6 +491,26 @@ mod tests {
         assert_eq!(store.load("someone").expect("load"), None);
         store.save(&token("someone")).expect("save");
         assert_eq!(store.load("someone").expect("load"), Some(token("someone")));
+    }
+
+    #[test]
+    fn accounts_lists_every_saved_login() {
+        let scratch = Scratch::new("tokens-accounts");
+        let store = scratch.store();
+        store.save(&token("one")).expect("save one");
+        store.save(&token("two")).expect("save two");
+        let mut names = store.accounts().expect("accounts");
+        names.sort();
+        assert_eq!(names, vec!["one".to_owned(), "two".to_owned()]);
+    }
+
+    #[test]
+    fn forget_all_clears_the_store() {
+        let scratch = Scratch::new("tokens-forget-all");
+        let store = scratch.store();
+        store.save(&token("gone")).expect("save");
+        store.forget_all().expect("forget all");
+        assert!(store.accounts().expect("accounts").is_empty());
     }
 
     #[test]

@@ -163,6 +163,14 @@ pub enum Command {
         /// process runs. `--password-stdin` avoids both.
         password: Option<String>,
     },
+    /// `tapline logout [--account NAME | --all]`
+    Logout {
+        /// Which account to forget. `None` with `all` false forgets the one
+        /// most recently used, if that can be told; otherwise it is an error.
+        account: Option<String>,
+        /// Forget every saved login.
+        all: bool,
+    },
     /// `tapline whoami`
     WhoAmI,
     /// `tapline --help`
@@ -713,6 +721,13 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 password,
             })
         }
+        (Some("logout"), _) => Ok(Command::Logout {
+            account: options
+                .value("account")
+                .or_else(|| options.value("username"))
+                .map(str::to_owned),
+            all: options.flag("all"),
+        }),
         (Some("whoami"), _) => Ok(Command::WhoAmI),
         (Some(other), _) => Err(ArgError::new(format!("unknown command {other:?}"))),
         (None, _) => Ok(Command::Help),
@@ -911,6 +926,21 @@ mod tests {
                 "{line}: {}",
                 error.message
             );
+        }
+    }
+
+    #[test]
+    fn logout_forgets_a_named_account_or_all() {
+        match parse(&args("logout --account alice")).expect("parse") {
+            Command::Logout { account, all } => {
+                assert_eq!(account.as_deref(), Some("alice"));
+                assert!(!all);
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+        match parse(&args("logout --all")).expect("parse") {
+            Command::Logout { all, .. } => assert!(all),
+            other => panic!("wrong command: {other:?}"),
         }
     }
 

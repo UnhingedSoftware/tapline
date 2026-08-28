@@ -91,6 +91,9 @@ Native:
       Only needed for content an account owns; every dedicated server and the
       Workshop search work anonymously. Names the account this machine's Steam
       client last used, if there is one.
+  tapline logout [--account NAME | --all]
+      Forget a saved login. With one saved and no flag, forgets it; with
+      several, name one or use --all. Does not revoke the token with Steam.
   tapline whoami
       Show the current session, any Steam accounts found on this machine, and
       the Steam library paths it is configured with.
