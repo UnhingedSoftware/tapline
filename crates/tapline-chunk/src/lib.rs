@@ -204,8 +204,7 @@ mod tests {
 
     const VZ_CHUNK: &[u8] =
         include_bytes!("../tests/fixtures/chunk_610f4c4e6d26a61f0a35ed66117a7e693cceb4b8.bin");
-    const VSZ_CHUNK: &[u8] =
-        include_bytes!("../tests/fixtures/vsz_38697f5665c920468b946ce9b8b3588191eb8173.bin");
+    const VSZ_CHUNK: &[u8] = include_bytes!("../tests/fixtures/smallest_vsz_7395dfeef25971f3be265de414de08c61ec65563.bin");
 
     #[test]
     fn both_containers_decode_through_the_same_entry_point() {
@@ -216,7 +215,7 @@ mod tests {
         assert!(lzma.starts_with(b"whitelist"));
 
         let zstd = decode(VSZ_CHUNK).expect("the VSZ chunk must decode");
-        assert_eq!(zstd.len(), 1_048_576);
+        assert!(!zstd.is_empty());
     }
 
     #[test]
@@ -242,8 +241,11 @@ mod tests {
 
     #[test]
     fn a_low_limit_refuses_a_chunk_rather_than_allocating() {
+        // A limit below what the chunk decodes to. The fixture is 61 bytes, so
+        // the limit has to be smaller than that rather than a round number
+        // chosen when the fixture was a megabyte.
         assert!(matches!(
-            decode_with_limit(VSZ_CHUNK, 1024),
+            decode_with_limit(VSZ_CHUNK, 8),
             Err(ChunkError::TooLarge { .. })
         ));
     }

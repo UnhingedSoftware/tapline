@@ -127,22 +127,23 @@ mod tests {
     use crate::MAX_CHUNK;
 
     /// A real ZIP-wrapped chunk from GMod Dedicated Server's depot 4021,
-    /// captured 2026-08-26. Its SHA-1 is its filename, which is what makes the
+    /// captured 2026-08-27. Its SHA-1 is its filename, which is what makes the
     /// decode verifiable here without any network.
-    const REAL: &[u8] =
-        include_bytes!("../tests/fixtures/zip_36b7e46fbf001df8a67217d7313c8cea2648cdec.bin");
+    ///
+    /// The smallest ZIP chunk in that depot, deliberately: a fixture has to be
+    /// real, not big. This one is 102 bytes on the wire and two bytes decoded,
+    /// which is enough to exercise the container and leaves no meaningful
+    /// amount of somebody else's content in this repository. The version before
+    /// it was a full 1 MiB chunk — 462 KB committed to prove the same thing.
+    const REAL: &[u8] = include_bytes!(
+        "../tests/fixtures/smallest_zip_ba8ab5a0280b953aa97435ff8946cbcbb2755a27.bin"
+    );
 
     /// The chunk id: the SHA-1 of the plaintext.
     const REAL_ID: [u8; 20] = [
-        0x36, 0xb7, 0xe4, 0x6f, 0xbf, 0x00, 0x1d, 0xf8, 0xa6, 0x72, 0x17, 0xd7, 0x31, 0x3c, 0x8c,
-        0xea, 0x26, 0x48, 0xcd, 0xec,
+        0xba, 0x8a, 0xb5, 0xa0, 0x28, 0x0b, 0x95, 0x3a, 0xa9, 0x74, 0x35, 0xff, 0x89, 0x46, 0xcb,
+        0xcb, 0xb2, 0x75, 0x5a, 0x27,
     ];
-
-    #[test]
-    fn a_real_zip_chunk_decodes_to_steams_chunk_size() {
-        let out = decode(REAL, MAX_CHUNK).expect("a real chunk must decode");
-        assert_eq!(out.len(), 1_048_576);
-    }
 
     #[test]
     fn the_decoded_bytes_hash_to_the_chunk_id() {
@@ -166,11 +167,19 @@ mod tests {
 
     #[test]
     fn a_corrupted_payload_is_caught() {
+        // The payload, not an arbitrary byte. A ZIP holds its entry twice —
+        // local header and central directory — and this decoder reads the
+        // local one, so damage anywhere else is not what the CRC protects.
+        // The old version of this flipped the middle byte, which only landed
+        // in the payload because the fixture was a megabyte of deflate stream.
+        const LOCAL_HEADER: usize = 30;
+        let name_len = usize::from(read_u16(REAL, 26).expect("a name length"));
+        let payload = LOCAL_HEADER + name_len;
+
         let mut damaged = REAL.to_vec();
-        let middle = damaged.len() / 2;
-        if let Some(byte) = damaged.get_mut(middle) {
-            *byte ^= 0xFF;
-        }
+        let byte = damaged.get_mut(payload).expect("the fixture has a payload");
+        *byte ^= 0xFF;
+
         assert!(
             decode(&damaged, MAX_CHUNK).is_err(),
             "a corrupted ZIP chunk decoded without complaint"
