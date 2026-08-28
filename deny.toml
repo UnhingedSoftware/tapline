@@ -35,10 +35,10 @@ ignore = [
 
 [licenses]
 version = 2
-# AGPL-3.0-only for our own crates; the rest is what the pure-Rust ecosystem uses.
+# MPL-2.0 for our own crates; the rest is what the pure-Rust ecosystem uses.
 allow = [
     # tapline's own crates.
-    "AGPL-3.0-only",
+    "MPL-2.0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
