@@ -6,7 +6,7 @@
 //! replaces.
 //!
 //! ```sh
-//! # 1. Install with steamcmd first (see docs/PLAN.md).
+//! # 1. Install the same app with steamcmd first.
 //! # 2. Then:
 //! TAPLINE_STEAMCMD_DIR=~/.cache/tapline-test/steamcmd-valheim \
 //!   cargo test -p tapline --test differential -- --ignored --nocapture
