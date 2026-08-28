@@ -23,7 +23,16 @@ tapline-auth = { workspace = true }
 tapline-gmad = { workspace = true }
 tapline-pipe = { workspace = true }
 tapline-ids = { workspace = true }
+# Off by default. Links Valve's closed SDK to reach a running client's session
+# for account-scoped Workshop actions; opt-in only, so the default binary and
+# the container never touch it.
+tapline-steamworks = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[features]
+# `tapline workshop subscribe` through a running Steam client, when no account
+# token is available. Build with `--features steamworks`.
+steamworks = ["dep:tapline-steamworks"]
 
 [lints]
 workspace = true

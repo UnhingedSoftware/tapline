@@ -498,14 +498,11 @@ async fn subscribe(
 ) -> Result<(), String> {
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
 
-    // Said before the call rather than after it fails: a subscription belongs
-    // to an account, and an anonymous session has none. Steam's own refusal
-    // does not explain that.
+    // A subscription belongs to an account, and an anonymous session has none.
+    // With a token, do it over CM. Without one, and only if this build enabled
+    // it, reach the account's live session through a running Steam client.
     if session.account().is_none() {
-        return Err(
-            "subscribing needs an account; this session is anonymous. Run `tapline login`"
-                .to_owned(),
-        );
+        return via_running_client(app, item, remove, json);
     }
 
     let outcome = if remove {
@@ -528,6 +525,59 @@ async fn subscribe(
         println!("{verb} {item}");
     }
     Ok(())
+}
+
+/// Subscribes or unsubscribes through a running Steam client.
+///
+/// The path taken with no tapline token: the account's live session is in the
+/// running client, and this asks it. Built only under the `steamworks` feature,
+/// because it links Valve's closed SDK.
+#[cfg(feature = "steamworks")]
+fn via_running_client(
+    app: AppId,
+    item: PublishedFileId,
+    remove: bool,
+    json: bool,
+) -> Result<(), String> {
+    // A short-lived connection: held only for this action, so Steam does not
+    // keep counting the app as running. The CLI process exits right after.
+    let steam = tapline_steamworks::Steam::connect(app).map_err(|e| e.to_string())?;
+    let timeout = std::time::Duration::from_secs(20);
+    if remove {
+        steam
+            .unsubscribe(item, timeout)
+            .map_err(|e| e.to_string())?;
+    } else {
+        steam.subscribe(item, timeout).map_err(|e| e.to_string())?;
+    }
+
+    let verb = if remove { "unsubscribed" } else { "subscribed" };
+    if json {
+        emit(&serde_json::json!({
+            "event": verb,
+            "app": app.get(),
+            "item": item.get().to_string(),
+            "via": "running-client",
+        }));
+    } else {
+        println!("{verb} {item} through the running Steam client");
+    }
+    Ok(())
+}
+
+/// The refusal when the client bridge was not built into this binary.
+#[cfg(not(feature = "steamworks"))]
+fn via_running_client(
+    _app: AppId,
+    _item: PublishedFileId,
+    _remove: bool,
+    _json: bool,
+) -> Result<(), String> {
+    Err(
+        "subscribing needs an account; this session is anonymous. Run `tapline login`, \
+         or build with --features steamworks to use a running Steam client's session"
+            .to_owned(),
+    )
 }
 
 /// `workshop info`

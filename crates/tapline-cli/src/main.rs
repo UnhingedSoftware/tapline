@@ -58,8 +58,9 @@ Native:
   tapline workshop subscribe APPID ITEMID [--with-dependencies] [--json]
   tapline workshop unsubscribe APPID ITEMID [--json]
       Add or remove a subscription. Needs an account: run `tapline login`
-      first. Subscribing is not downloading — it tells Steam the account wants
-      the item, so a Steam client keeps it updated.
+      first, or build with --features steamworks to act through a running,
+      logged-in Steam client. Subscribing is not downloading — it tells Steam
+      the account wants the item, so a Steam client keeps it updated.
   tapline workshop info ITEMID... [--json]
       Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]
