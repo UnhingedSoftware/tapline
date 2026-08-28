@@ -616,6 +616,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
         sort,
         per_page: if limit == 0 { defaults.per_page } else { limit },
         cursor: unsafe { read_str(cursor) }.map(str::to_owned),
+        ..defaults
     };
     if let Err(error) = query.validate() {
         set_error(error.to_string());

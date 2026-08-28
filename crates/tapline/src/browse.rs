@@ -34,7 +34,9 @@
 
 use crate::{InstallError, WorkshopItem};
 use tapline_ids::AppId;
-use tapline_proto::steammessages_publishedfile_steamclient::CPublishedFile_QueryFiles_Request;
+use tapline_proto::steammessages_publishedfile_steamclient::{
+    CPublishedFile_QueryFiles_Request, c_published_file_query_files_request::TagGroup,
+};
 
 /// How Steam should order the results.
 ///
@@ -116,9 +118,24 @@ pub struct BrowseQuery {
     pub text: Option<String>,
     /// Tags an item must carry.
     pub required_tags: Vec<String>,
+    /// Groups of tags, of which an item must carry at least one from each.
+    ///
+    /// This is what Steam's own sidebar does. Ticking Scene and Video under
+    /// Type and Anime under Genre means *(Scene or Video) and Anime*, which
+    /// [`BrowseQuery::required_tags`] cannot express:
+    /// [`BrowseQuery::match_all_tags`] is a single switch over the whole set,
+    /// so it is every tag or any tag and nothing in between.
+    ///
+    /// Groups combine with `required_tags` rather than replacing it — a tag
+    /// that must always be present is simpler as a required tag than as a
+    /// group of one.
+    pub tag_groups: Vec<Vec<String>>,
     /// Tags that exclude an item.
     pub excluded_tags: Vec<String>,
     /// Whether an item must carry *every* required tag rather than any of them.
+    ///
+    /// Applies to [`BrowseQuery::required_tags`] only. Groups are always
+    /// any-within-group and all-across-groups.
     pub match_all_tags: bool,
     /// How to order results.
     pub sort: BrowseSort,
@@ -134,6 +151,7 @@ impl Default for BrowseQuery {
             app: AppId(0),
             text: None,
             required_tags: Vec::new(),
+            tag_groups: Vec::new(),
             excluded_tags: Vec::new(),
             match_all_tags: false,
             sort: BrowseSort::default(),
@@ -157,6 +175,9 @@ impl BrowseQuery {
         if self.sort == BrowseSort::TextMatch && self.text.is_none() {
             return Err(BrowseError::TextSortWithoutText);
         }
+        if self.tag_groups.iter().any(Vec::is_empty) {
+            return Err(BrowseError::EmptyTagGroup);
+        }
         Ok(())
     }
 
@@ -171,6 +192,11 @@ impl BrowseQuery {
             appid: Some(self.app.get()),
             search_text: self.text.clone(),
             requiredtags: self.required_tags.clone(),
+            taggroups: self
+                .tag_groups
+                .iter()
+                .map(|tags| TagGroup { tags: tags.clone() })
+                .collect(),
             excludedtags: self.excluded_tags.clone(),
             match_all_tags: Some(self.match_all_tags),
             numperpage: Some(self.per_page.clamp(1, MAX_PER_PAGE)),
@@ -240,6 +266,8 @@ pub enum BrowseError {
     NoApp,
     /// Sorting by text relevance without any text to match.
     TextSortWithoutText,
+    /// A tag group with no tags in it.
+    EmptyTagGroup,
 }
 
 impl std::fmt::Display for BrowseError {
@@ -254,6 +282,11 @@ impl std::fmt::Display for BrowseError {
                 f,
                 "sorting by text match needs search text; without it Steam \
                  returns an arbitrary order that looks like a ranking"
+            ),
+            Self::EmptyTagGroup => write!(
+                f,
+                "a tag group needs at least one tag; an empty group is a \
+                 filter that matches nothing and reads as a broken search"
             ),
         }
     }
@@ -361,6 +394,60 @@ mod tests {
         assert_eq!(request.requiredtags, vec!["Fun".to_owned()]);
         assert_eq!(request.excludedtags, vec!["NSFW".to_owned()]);
         assert_eq!(request.match_all_tags, Some(true));
+    }
+
+    #[test]
+    fn tag_groups_are_their_own_field_and_not_flattened() {
+        // Flattening (Scene or Video) and Anime into three required tags asks
+        // for either all three or any of the three. Both return a plausible
+        // page of the wrong query.
+        let request = BrowseQuery {
+            app: AppId(431_960),
+            tag_groups: vec![
+                vec!["Scene".to_owned(), "Video".to_owned()],
+                vec!["Anime".to_owned()],
+            ],
+            ..BrowseQuery::default()
+        }
+        .to_request();
+
+        assert!(
+            request.requiredtags.is_empty(),
+            "groups must not leak into the flat tag list"
+        );
+        assert_eq!(request.taggroups.len(), 2);
+        assert_eq!(
+            request.taggroups[0].tags,
+            vec!["Scene".to_owned(), "Video".to_owned()]
+        );
+        assert_eq!(request.taggroups[1].tags, vec!["Anime".to_owned()]);
+    }
+
+    #[test]
+    fn required_tags_and_groups_travel_together() {
+        // A tag that must always be present is simpler flat than as a group of
+        // one, so both fields have to survive the same request.
+        let request = BrowseQuery {
+            app: AppId(431_960),
+            required_tags: vec!["Wallpaper".to_owned()],
+            tag_groups: vec![vec!["Scene".to_owned()]],
+            ..BrowseQuery::default()
+        }
+        .to_request();
+        assert_eq!(request.requiredtags, vec!["Wallpaper".to_owned()]);
+        assert_eq!(request.taggroups.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_tag_group_is_refused() {
+        // Steam answers it with something; whatever that is, it is not the
+        // filter anyone meant.
+        let query = BrowseQuery {
+            app: AppId(431_960),
+            tag_groups: vec![Vec::new()],
+            ..BrowseQuery::default()
+        };
+        assert_eq!(query.validate(), Err(BrowseError::EmptyTagGroup));
     }
 
     #[test]

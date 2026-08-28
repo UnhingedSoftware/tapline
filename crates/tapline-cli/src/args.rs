@@ -164,6 +164,8 @@ pub struct SearchFilters {
     pub text: Option<String>,
     /// Tags an item must carry.
     pub tags: Vec<String>,
+    /// Groups of tags, of which an item must carry one from each.
+    pub tag_groups: Vec<Vec<String>>,
     /// Tags that exclude an item.
     pub exclude_tags: Vec<String>,
     /// Require every tag rather than any.
@@ -374,6 +376,34 @@ impl Options {
 }
 
 /// Parses the native subcommand grammar.
+/// Reads `--tag-group "Scene,Video"` into one group per flag.
+///
+/// Comma-separated because a group is a set and repeating the flag already
+/// means "another group": `--tag-group A --tag-group B` has to stay two groups
+/// rather than collapsing into one. No Workshop tag observed carries a comma;
+/// one that did could not be written this way.
+fn tag_groups(raw: &[String]) -> Result<Vec<Vec<String>>, ArgError> {
+    raw.iter()
+        .map(|group| {
+            let tags: Vec<String> = group
+                .split(',')
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if tags.is_empty() {
+                // Sending it would filter on nothing and return a page that
+                // looks like the search simply found little.
+                return Err(ArgError::new(format!(
+                    "--tag-group {group:?} names no tags; give one or more, \
+                     like --tag-group Scene,Video"
+                )));
+            }
+            Ok(tags)
+        })
+        .collect()
+}
+
 fn parse_native(args: &[String]) -> Result<Command, ArgError> {
     let options = Options::parse(args);
     let json = options.flag("json");
@@ -452,6 +482,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 app: app_id(positional.get(2))?,
                 text: options.value("text").map(str::to_owned),
                 tags: options.all_values("tag"),
+                tag_groups: tag_groups(&options.all_values("tag-group"))?,
                 exclude_tags: options.all_values("exclude-tag"),
                 all_tags: options.flag("all-tags"),
                 sort: options.value("sort").map(str::to_owned),
@@ -714,6 +745,36 @@ mod tests {
                 assert_eq!(filters.limit, Some(5));
             }
             other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tag_groups_stay_separate_groups() {
+        // Repeating the flag means another group; the two must not merge into
+        // one, which would turn "and" into "or".
+        let parsed = parse(&args(
+            "workshop search 431960 --tag-group Scene,Video --tag-group Anime",
+        ))
+        .expect("parse");
+        match parsed {
+            Command::WorkshopSearch { filters, .. } => {
+                assert_eq!(
+                    filters.tag_groups,
+                    vec![
+                        vec!["Scene".to_owned(), "Video".to_owned()],
+                        vec!["Anime".to_owned()],
+                    ]
+                );
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tag_group_naming_no_tags_is_refused() {
+        for bad in ["--tag-group ,", "--tag-group ,,"] {
+            let parsed = parse(&args(&format!("workshop search 431960 {bad}")));
+            assert!(parsed.is_err(), "{bad:?} was accepted");
         }
     }
 

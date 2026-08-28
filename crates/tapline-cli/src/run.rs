@@ -315,6 +315,7 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         app: filters.app,
         text: filters.text,
         required_tags: filters.tags,
+        tag_groups: filters.tag_groups,
         excluded_tags: filters.exclude_tags,
         match_all_tags: filters.all_tags,
         sort,

@@ -34,10 +34,13 @@ Native:
   tapline app info APPID [--json]
       Depots, branches and sizes.
   tapline workshop search APPID [--text QUERY] [--tag T]... [--exclude-tag T]...
-                         [--all-tags] [--sort NAME] [--limit N] [--cursor C] [--json]
+                         [--tag-group T,T]... [--all-tags] [--sort NAME]
+                         [--limit N] [--cursor C] [--json]
       Search an app's Workshop. --sort: vote, recent, updated, trend,
       subscribed, text (text needs --text). Paging is a cursor: pass the
       next_cursor from one page as --cursor to get the following one.
+      --tag-group is Steam's sidebar: one tag from each group, so
+      --tag-group Scene,Video --tag-group Anime means (Scene or Video) and Anime.
   tapline workshop info ITEMID... [--json]
       Describe items by id: title, size, and how they are delivered.
   tapline workshop download APPID ITEMID --dir DIR [--json] [--flat]

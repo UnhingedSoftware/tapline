@@ -169,3 +169,94 @@ async fn a_search_result_downloads_without_a_second_lookup() {
     assert!(!written.is_empty(), "nothing was written");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Wallpaper Engine, whose tag vocabulary has the overlapping groups this is about.
+const TAGGED_APP: AppId = AppId(431_960);
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn tag_groups_mean_any_within_a_group_and_all_across_them() {
+    // The claim is about Steam's behaviour, not tapline's field mapping, so it
+    // can only be checked against Steam. Counted rather than compared item by
+    // item: totals are stable between two calls a second apart, and the whole
+    // point is a set relation.
+    let mut session = Session::anonymous().await.expect("session");
+
+    let mut count = async |query: BrowseQuery| -> u32 {
+        session.browse_workshop(&query).await.expect("search").total
+    };
+
+    let base = BrowseQuery {
+        app: TAGGED_APP,
+        per_page: 1,
+        ..BrowseQuery::default()
+    };
+
+    let scene_or_video_and_anime = count(BrowseQuery {
+        tag_groups: vec![
+            vec!["Scene".to_owned(), "Video".to_owned()],
+            vec!["Anime".to_owned()],
+        ],
+        ..base.clone()
+    })
+    .await;
+    let any_of_the_three = count(BrowseQuery {
+        required_tags: vec!["Scene".to_owned(), "Video".to_owned(), "Anime".to_owned()],
+        ..base.clone()
+    })
+    .await;
+    let all_of_the_three = count(BrowseQuery {
+        required_tags: vec!["Scene".to_owned(), "Video".to_owned(), "Anime".to_owned()],
+        match_all_tags: true,
+        ..base.clone()
+    })
+    .await;
+
+    println!(
+        "(Scene|Video)&Anime {scene_or_video_and_anime}, any {any_of_the_three}, all {all_of_the_three}"
+    );
+
+    // Flat tags cannot express this: nothing is both Scene and Video, so the
+    // all-form is empty, and the any-form is the whole of three tags.
+    assert!(
+        scene_or_video_and_anime > all_of_the_three,
+        "groups returned no more than requiring every tag"
+    );
+    assert!(
+        scene_or_video_and_anime < any_of_the_three,
+        "groups returned as much as accepting any tag"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "talks to Steam"]
+async fn one_group_of_one_tag_is_the_same_search_as_a_required_tag() {
+    // The degenerate case, which is where a wrong field number hides: a group
+    // sent as a required tag would pass every other assertion here.
+    let mut session = Session::anonymous().await.expect("session");
+    let base = BrowseQuery {
+        app: TAGGED_APP,
+        per_page: 1,
+        ..BrowseQuery::default()
+    };
+
+    let grouped = session
+        .browse_workshop(&BrowseQuery {
+            tag_groups: vec![vec!["Scene".to_owned()]],
+            ..base.clone()
+        })
+        .await
+        .expect("search")
+        .total;
+    let flat = session
+        .browse_workshop(&BrowseQuery {
+            required_tags: vec!["Scene".to_owned()],
+            ..base
+        })
+        .await
+        .expect("search")
+        .total;
+
+    println!("grouped {grouped}, flat {flat}");
+    assert_eq!(grouped, flat, "one tag is one tag either way");
+}
