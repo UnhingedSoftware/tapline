@@ -66,6 +66,8 @@ export interface Ffi {
     page: number,
     countOnly: number,
   ): bigint;
+  /** Signs in with a QR code, emitting the code and its refreshes. */
+  qrLogin(timeoutSecs: number): bigint;
   /** Runs a pipeline given in its text form. */
   pipeline(
     app: number,
@@ -280,6 +282,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       parameters: ["u32", "u64", "buffer", "u32", "buffer"],
       result: "i32",
     },
+    tapline_qr_login: { parameters: ["u32", "buffer"], result: "i32" },
     tapline_workshop_search: {
       parameters: [
         "u32", "buffer", "buffer", "buffer", "buffer", "buffer", "buffer",
@@ -373,6 +376,11 @@ async function loadDeno(path: string): Promise<Ffi> {
         new Uint8Array(out.buffer),
       );
       return readJobPointer(out, code, "pipeline", lastError);
+    },
+    qrLogin(timeoutSecs) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_qr_login(timeoutSecs, new Uint8Array(out.buffer));
+      return readJobPointer(out, code, "qr login", lastError);
     },
     search(
       app,
@@ -483,6 +491,7 @@ async function loadBun(path: string): Promise<Ffi> {
       args: [FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr],
       returns: FFIType.i32,
     },
+    tapline_qr_login: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
     tapline_workshop_search: {
       args: [
         FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr,
@@ -559,6 +568,11 @@ async function loadBun(path: string): Promise<Ffi> {
         app, item, ptr(cstring(spec)), concurrency, ptr(out),
       );
       return readJobPointer(out, code, "pipeline", lastError);
+    },
+    qrLogin(timeoutSecs) {
+      const out = new BigUint64Array(1);
+      const code = lib.symbols.tapline_qr_login(timeoutSecs, ptr(out));
+      return readJobPointer(out, code, "qr login", lastError);
     },
     search(
       app,
@@ -676,6 +690,7 @@ async function loadNode(path: string): Promise<Ffi> {
   const pipelineFn = lib.func(
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
   );
+  const qrLoginFn = lib.func("int tapline_qr_login(uint32_t, _Out_ void**)");
   const searchFn = lib.func(
     "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, uint32_t, uint8_t, _Out_ void**)",
   );
@@ -734,6 +749,12 @@ async function loadNode(path: string): Promise<Ffi> {
       const out: unknown[] = [null];
       const code = pipelineFn(app, item, spec, concurrency, out);
       if (code !== OK) throw new Error(`pipeline: ${lastError() || `code ${code}`}`);
+      return asPointer(out);
+    },
+    qrLogin(timeoutSecs) {
+      const out: unknown[] = [null];
+      const code = qrLoginFn(timeoutSecs, out);
+      if (code !== OK) throw new Error(`qr login: ${lastError() || `code ${code}`}`);
       return asPointer(out);
     },
     search(
@@ -873,6 +894,7 @@ async function loadNodeBuiltin(path: string): Promise<Ffi> {
       return: "int32",
     },
     tapline_pipeline: { arguments: [u32, u64, str, u32, buf], return: "int32" },
+    tapline_qr_login: { arguments: [u32, buf], return: "int32" },
     tapline_job_next: {
       arguments: [ptr, u32, buf, "uint64", buf],
       return: "int32",
@@ -943,6 +965,11 @@ async function loadNodeBuiltin(path: string): Promise<Ffi> {
         updatedUntil, limit, cursor, page, countOnly, out.slot,
       ));
       return started(code, "workshop search", out.read);
+    },
+    qrLogin(timeoutSecs) {
+      const out = jobOut();
+      const code = Number(functions.tapline_qr_login(timeoutSecs, out.slot));
+      return started(code, "qr login", out.read);
     },
     pipeline(app, item, spec, concurrency) {
       const out = jobOut();

@@ -236,6 +236,16 @@ uint32_t tapline_total_concurrency(void);
 /* How much of that budget is free right now. Moves as you read it. */
 uint32_t tapline_available_concurrency(void);
 
+/* Signs in with a QR code, streaming the code to render and its refreshes.
+ *
+ * Emits a `qr` event carrying the URL to render, once at the start and again
+ * whenever Steam rotates the code — QR codes expire, so a UI redrawing on each
+ * event always shows a scannable one. On success it saves the token, so later
+ * calls sign in by themselves, and emits `loggedIn` with the account.
+ *
+ * timeout_secs bounds the whole attempt; 0 takes a five-minute default. */
+int32_t tapline_qr_login(uint32_t timeout_secs, TaplineJob **out);
+
 /* The library version, as a static NUL-terminated string. Do not free. */
 const char *tapline_version(void);
 

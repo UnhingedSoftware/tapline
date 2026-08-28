@@ -28,6 +28,7 @@ tapline-auth = { workspace = true }
 tapline-gmad = { workspace = true }
 tapline-pipe = { workspace = true }
 tapline-ids = { workspace = true }
+qrcode = { workspace = true }
 # Off by default. Links Valve's closed SDK to reach a running client's session
 # for account-scoped Workshop actions; opt-in only, so the default binary and
 # the container never touch it.

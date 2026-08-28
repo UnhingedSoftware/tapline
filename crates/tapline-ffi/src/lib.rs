@@ -34,7 +34,8 @@ mod json;
 use std::ffi::{CStr, c_char};
 use std::sync::OnceLock;
 use tapline::{
-    FileModes, InstallOptions, Os, PublishedFileId, Session, SessionPool, Shared, WorkshopLayout,
+    FileModes, InstallOptions, Os, PublishedFileId, Session, SessionPool, Shared, TokenStore,
+    WorkshopLayout,
 };
 use tapline_ids::AppId;
 
@@ -1127,6 +1128,71 @@ pub unsafe extern "C" fn tapline_last_error(buf: *mut u8, cap: usize, out_len: *
         unsafe { std::ptr::copy_nonoverlapping(message.as_ptr(), buf, message.len()) };
         TAPLINE_OK
     })
+}
+
+/// Signs in with a QR code, emitting the code to render and its refreshes.
+///
+/// A QR login is a stream: the job emits a `qr` event carrying the URL to
+/// render, once at the start and again every time Steam rotates the code —
+/// they expire — so a UI that redraws on each `qr` event always shows a
+/// scannable code. On success it saves the token (so later calls sign in by
+/// themselves) and emits `loggedIn` with the account name.
+///
+/// `timeout_secs` bounds the whole attempt; 0 takes a five-minute default.
+///
+/// # Safety
+///
+/// `out` must be a valid pointer to write the job handle to.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tapline_qr_login(timeout_secs: u32, out: *mut *mut TaplineJob) -> i32 {
+    let timeout = std::time::Duration::from_secs(if timeout_secs == 0 {
+        300
+    } else {
+        u64::from(timeout_secs)
+    });
+
+    spawn_job(
+        move |sender| async move {
+            // Anonymous on purpose: this command exists to sign in, and a
+            // session that reused a pooled token would hide that.
+            let mut session = match Session::anonymous().await {
+                Ok(session) => session,
+                Err(error) => {
+                    send_error(&sender, &error.to_string());
+                    return;
+                }
+            };
+
+            let codes = sender.clone();
+            let result = session
+                .qr_login(timeout, &mut |url| {
+                    let mut out = String::from("{");
+                    json::push_str_field(&mut out, "kind", "qr");
+                    json::push_str_field(&mut out, "url", url);
+                    out.push('}');
+                    let _ = codes.send(out);
+                })
+                .await;
+
+            match result {
+                Err(error) => send_error(&sender, &error.to_string()),
+                Ok(token) => {
+                    // Saved, so `tapline_install` and the rest sign in by
+                    // themselves from here on.
+                    if let Err(error) = tapline::TokenStore::default_file().save(&token) {
+                        send_error(&sender, &error.to_string());
+                        return;
+                    }
+                    let mut out = String::from("{");
+                    json::push_str_field(&mut out, "kind", "loggedIn");
+                    json::push_str_field(&mut out, "account", &token.account);
+                    out.push('}');
+                    let _ = sender.send(out);
+                }
+            }
+        },
+        out,
+    )
 }
 
 /// The library version, as a static NUL-terminated string.

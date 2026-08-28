@@ -963,52 +963,34 @@ async fn login(
     if let Some(name) = account.filter(|_| !qr) {
         return password_login(&mut session, &name, password_stdin, password).await;
     }
-    let pending = session
-        .begin_qr_login()
+    // The whole QR flow, including refreshing the code when Steam rotates it,
+    // is driven by the library. The closure re-renders on each new code.
+    println!("Sign in from the Steam mobile app: scan the code, or open the link.");
+    let token = session
+        .qr_login(std::time::Duration::from_secs(300), &mut |url| {
+            print_qr(url);
+        })
         .await
         .map_err(|error| error.to_string())?;
 
-    println!("{}", pending.instruction());
-    println!(
-        "waiting for approval, polling every {:.0}s...",
-        pending.interval
-    );
+    finish_login(&token.account, &token.refresh_token)
+}
 
-    let interval = std::time::Duration::from_secs_f32(pending.interval.max(1.0));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    let mut current = pending;
-
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(interval).await;
-
-        match session
-            .poll_login(&current)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            tapline::PollOutcome::Pending { had_interaction } => {
-                if had_interaction {
-                    println!("approval started...");
-                }
-            }
-            tapline::PollOutcome::Moved {
-                client_id,
-                challenge_url,
-            } => {
-                // Steam refreshed the code. Polling the old one waits forever.
-                current.client_id = client_id;
-                current.challenge_url = challenge_url;
-                println!("{}", current.instruction());
-            }
-            tapline::PollOutcome::Complete {
-                account,
-                refresh_token,
-                ..
-            } => return finish_login(&account, &refresh_token),
-        }
+/// Renders a QR code, and the URL under it as a fallback.
+///
+/// A URL in a terminal is not scannable, so this draws the code with
+/// half-block characters — two rows of modules per line, which most terminals
+/// show square enough to scan. If the terminal cannot, the link still works
+/// from any browser or phone.
+fn print_qr(url: &str) {
+    if let Ok(code) = qrcode::QrCode::new(url.as_bytes()) {
+        let image = code
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .quiet_zone(true)
+            .build();
+        println!("\n{image}");
     }
-
-    Err("timed out waiting for approval".to_owned())
+    println!("{url}\n");
 }
 
 /// `whoami`

@@ -32,6 +32,7 @@ import { type Ffi, load } from "./ffi.ts";
 import type {
   CountedEvent,
   InstallOptions,
+  LoggedInEvent,
   InstallReport,
   PipeReport,
   ResultEvent,
@@ -856,5 +857,44 @@ export function countWorkshop(options: SearchOptions): Job<number> {
       ),
     (events) => (lastOfKind(events, "counted") as CountedEvent).total,
     options.onEvent ? progressBridge(options.onEvent, undefined) : undefined,
+  );
+}
+
+/** How a QR login reports itself. */
+export interface QrLoginOptions {
+  /**
+   * Called with the URL to render as a QR code — once at the start, and again
+   * every time Steam rotates it. QR codes expire, so redraw on each call and
+   * the displayed code is always scannable. Render the URL however you like;
+   * tapline gives the string, not an image.
+   */
+  onCode: (url: string) => void;
+  /** How long to wait for approval, in seconds. Defaults to 300. */
+  timeoutSeconds?: number;
+}
+
+/**
+ * Signs in with a QR code, handling the refresh.
+ *
+ * ```ts
+ * const { account } = await qrLogin({ onCode: (url) => showQrSomewhere(url) });
+ * // token is saved; install()/plan() now sign in on their own.
+ * ```
+ *
+ * The returned job resolves once the phone approves it. On the way it calls
+ * `onCode` for each code Steam issues, so a display that redraws on each call
+ * never shows an expired one.
+ */
+export function qrLogin(options: QrLoginOptions): Job<{ account: string }> {
+  const onEvent = (event: TaplineEvent) => {
+    if (event.kind === "qr") options.onCode(event.url);
+  };
+  return new Job<{ account: string }>(
+    (ffi) => ffi.qrLogin(options.timeoutSeconds ?? 0),
+    (events) => {
+      const done = lastOfKind(events, "loggedIn") as LoggedInEvent;
+      return { account: done.account };
+    },
+    onEvent,
   );
 }

@@ -97,6 +97,18 @@ export interface CountedEvent {
   total: number;
 }
 
+export interface QrEvent {
+  kind: "qr";
+  /** The URL to render as a QR code. Changes when Steam rotates the code. */
+  url: string;
+}
+
+export interface LoggedInEvent {
+  kind: "loggedIn";
+  /** The account that signed in. Its token is now saved. */
+  account: string;
+}
+
 export interface SearchedEvent {
   kind: "searched";
   /** How many the whole search matched. */
@@ -170,6 +182,8 @@ export type TaplineEvent =
   | ExtendedEvent
   | StreamedEvent
   | ResultEvent
+  | QrEvent
+  | LoggedInEvent
   | CountedEvent
   | SearchedEvent
   | PipedEvent

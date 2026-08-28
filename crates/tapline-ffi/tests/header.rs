@@ -63,6 +63,8 @@ fn expected() -> Vec<(&'static str, usize)> {
     let free: unsafe extern "C" fn(*mut TaplineJob) = tapline_ffi::tapline_job_free;
     let last_error: unsafe extern "C" fn(*mut u8, usize, *mut usize) -> i32 =
         tapline_ffi::tapline_last_error;
+    let qr_login: unsafe extern "C" fn(u32, *mut *mut TaplineJob) -> i32 =
+        tapline_ffi::tapline_qr_login;
     let version: extern "C" fn() -> *const c_char = tapline_ffi::tapline_version;
     let set_total: extern "C" fn(u32) -> i32 = tapline_ffi::tapline_set_total_concurrency;
     let total: extern "C" fn() -> u32 = tapline_ffi::tapline_total_concurrency;
@@ -71,14 +73,17 @@ fn expected() -> Vec<(&'static str, usize)> {
     // Referenced so the bindings above are not dead code; the ascriptions are
     // what this function exists for.
     let _ = (
-        install, plan, workshop, next, cancel, free, last_error, version, set_total, total,
-        available,
+        install, plan, workshop, qr_login, next, cancel, free, last_error, version, set_total,
+        total, available,
     );
 
     vec![
         ("tapline_install", 10),
         ("tapline_plan", 6),
         ("tapline_workshop_download", 8),
+        ("tapline_workshop_search", 19),
+        ("tapline_pipeline", 5),
+        ("tapline_qr_login", 2),
         ("tapline_job_next", 5),
         ("tapline_job_cancel", 1),
         ("tapline_job_free", 1),

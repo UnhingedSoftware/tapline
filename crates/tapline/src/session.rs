@@ -1159,6 +1159,93 @@ impl Session {
         Ok(())
     }
 
+    /// Runs a QR login to completion, showing the code and refreshing it.
+    ///
+    /// This is the whole flow, so a caller does not have to drive the poll loop
+    /// by hand and remember the one thing that is easy to get wrong: a QR code
+    /// **expires**, and Steam hands back a new one mid-login. `on_code` is
+    /// called with the URL to render — once at the start, and again every time
+    /// Steam rotates it — so a display that redraws on each call always shows a
+    /// scannable code.
+    ///
+    /// Render the URL as a QR image however suits the caller; tapline gives the
+    /// string rather than pixels, so it pulls in no rendering dependency. The
+    /// URL is `https://s.team/q/...`, which the Steam mobile app scans.
+    ///
+    /// Returns the token to persist with [`TokenStore`]. After that,
+    /// [`Session::automatic`] signs in on its own.
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use tapline::Session;
+    /// use tapline_auth::TokenStore;
+    ///
+    /// let mut session = Session::anonymous().await?;
+    /// let token = session
+    ///     .qr_login(std::time::Duration::from_secs(300), &mut |url| {
+    ///         println!("scan this: {url}");
+    ///     })
+    ///     .await?;
+    /// TokenStore::default_file().save(&token)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// `timeout` bounds the whole attempt — a code nobody scans should not wait
+    /// forever. Steam's own rotation happens inside it.
+    ///
+    /// [`TokenStore`]: tapline_auth::TokenStore
+    pub async fn qr_login(
+        &mut self,
+        timeout: std::time::Duration,
+        on_code: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<tapline_auth::StoredToken, crate::LoginError> {
+        let mut current = self.begin_qr_login().await?;
+
+        // The first code, before any polling. A caller that only rendered on
+        // refresh would show nothing until Steam's first rotation.
+        if let Some(url) = &current.challenge_url {
+            on_code(url);
+        }
+
+        let interval = std::time::Duration::from_secs_f32(current.interval.max(1.0));
+        let deadline = std::time::Instant::now() + timeout;
+
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(interval).await;
+
+            match self.poll_login(&current).await? {
+                crate::PollOutcome::Pending { .. } => {}
+                crate::PollOutcome::Moved {
+                    client_id,
+                    challenge_url,
+                } => {
+                    // The old code has expired; polling it again waits forever.
+                    // Take the new one and show it.
+                    current.client_id = client_id;
+                    current.challenge_url = challenge_url;
+                    if let Some(url) = &current.challenge_url {
+                        on_code(url);
+                    }
+                }
+                crate::PollOutcome::Complete {
+                    account,
+                    refresh_token,
+                    ..
+                } => {
+                    return Ok(tapline_auth::StoredToken {
+                        account,
+                        refresh_token,
+                    });
+                }
+            }
+        }
+
+        Err(crate::LoginError::Session(
+            "the QR login was not approved in time".to_owned(),
+        ))
+    }
+
     /// Polls a login once.
     ///
     /// The caller sleeps for `PendingLogin::interval` between calls. Polling
