@@ -83,6 +83,12 @@ export interface ResultEvent {
 }
 
 /** The last event of a successful search. */
+/** How many items a search would match, with none of them fetched. */
+export interface CountedEvent {
+  kind: "counted";
+  total: number;
+}
+
 export interface SearchedEvent {
   kind: "searched";
   /** How many the whole search matched. */
@@ -156,6 +162,7 @@ export type TaplineEvent =
   | ExtendedEvent
   | StreamedEvent
   | ResultEvent
+  | CountedEvent
   | SearchedEvent
   | PipedEvent
   | FinishedEvent

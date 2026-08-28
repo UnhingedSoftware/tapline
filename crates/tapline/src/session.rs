@@ -1220,6 +1220,30 @@ impl Session {
         })
     }
 
+    /// Counts what a search would match, without fetching any of it.
+    ///
+    /// Steam answers a `totalonly` query with the count and no items, which is
+    /// what a filter sidebar needs: the number beside each option costs one
+    /// round trip rather than a page of results that gets thrown away. The
+    /// PICS lookup that `browse_workshop` does for the workshop depot is
+    /// skipped too, since nothing here is described.
+    ///
+    /// # Errors
+    /// The same as [`Session::browse_workshop`]: an invalid query, or the call
+    /// failing.
+    pub async fn count_workshop(
+        &mut self,
+        query: &crate::BrowseQuery,
+    ) -> Result<u32, InstallError> {
+        query.validate()?;
+        let mut request = query.to_request();
+        request.totalonly = Some(true);
+        // Asking for a page of results Steam is not going to send.
+        request.numperpage = Some(1);
+        let response = self.cm.call(&request).await?;
+        Ok(response.total.unwrap_or(0))
+    }
+
     /// Downloads one Workshop item.
     ///
     /// SteamPipe items go through the same path as depot content — request

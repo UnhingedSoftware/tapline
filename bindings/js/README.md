@@ -246,6 +246,12 @@ do {
 } while (cursor);
 ```
 
+A count costs no results, which is what a filter list wants:
+
+```ts
+const scenes = await countWorkshop({ app: 431960, tags: ["Scene"] });
+```
+
 ## Pipelines
 
 `downloadWorkshopItem` writes an item somewhere. When you want *part* of one, or

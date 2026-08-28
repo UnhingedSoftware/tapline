@@ -30,6 +30,7 @@
 
 import { type Ffi, load } from "./ffi.ts";
 import type {
+  CountedEvent,
   InstallOptions,
   InstallReport,
   PipeReport,
@@ -789,6 +790,7 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
         options.updated?.until ?? 0,
         options.limit ?? 0,
         options.cursor ?? null,
+        0,
       ),
     (events) => {
       const summary = lastOfKind(events, "searched") as SearchedEvent;
@@ -804,6 +806,45 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
         nextCursor: summary.nextCursor === "" ? null : summary.nextCursor,
       };
     },
+    options.onEvent ? progressBridge(options.onEvent, undefined) : undefined,
+  );
+}
+
+/**
+ * Counts what a search would match, fetching none of it.
+ *
+ * What a filter list wants: the number beside each option costs one round trip
+ * rather than a page of results thrown away.
+ *
+ * ```ts
+ * const scenes = await countWorkshop({ app: 431960, tags: ["Scene"] });
+ * ```
+ */
+export function countWorkshop(options: SearchOptions): Job<number> {
+  return new Job<number>(
+    (ffi) =>
+      ffi.search(
+        options.app,
+        options.text ?? null,
+        options.searchIn ?? null,
+        options.tags?.length ? options.tags.join(",") : null,
+        options.tagGroups?.length
+          ? options.tagGroups.map((group) => group.join(",")).join(";")
+          : null,
+        options.excludeTags?.length ? options.excludeTags.join(",") : null,
+        options.excludeContent?.length ? options.excludeContent.join(",") : null,
+        options.allTags ? 1 : 0,
+        options.sort ?? null,
+        options.days ?? 0,
+        options.created?.since ?? 0,
+        options.created?.until ?? 0,
+        options.updated?.since ?? 0,
+        options.updated?.until ?? 0,
+        0,
+        null,
+        1,
+      ),
+    (events) => (lastOfKind(events, "counted") as CountedEvent).total,
     options.onEvent ? progressBridge(options.onEvent, undefined) : undefined,
   );
 }

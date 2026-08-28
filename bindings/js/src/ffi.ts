@@ -63,6 +63,7 @@ export interface Ffi {
     updatedUntil: number,
     limit: number,
     cursor: string | null,
+    countOnly: number,
   ): bigint;
   /** Runs a pipeline given in its text form. */
   pipeline(
@@ -273,7 +274,7 @@ async function loadDeno(path: string): Promise<Ffi> {
     tapline_workshop_search: {
       parameters: [
         "u32", "buffer", "buffer", "buffer", "buffer", "buffer", "buffer",
-        "u8", "buffer", "u32", "u32", "u32", "u32", "u32", "u32", "buffer", "buffer",
+        "u8", "buffer", "u32", "u32", "u32", "u32", "u32", "u32", "buffer", "u8", "buffer",
       ],
       result: "i32",
     },
@@ -381,6 +382,7 @@ async function loadDeno(path: string): Promise<Ffi> {
       updatedUntil,
       limit,
       cursor,
+      countOnly,
     ) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_workshop_search(
@@ -400,6 +402,7 @@ async function loadDeno(path: string): Promise<Ffi> {
         updatedUntil,
         limit,
         cursor === null ? null : cstring(cursor),
+        countOnly,
         new Uint8Array(out.buffer),
       );
       return readJobPointer(out, code, "workshop search", lastError);
@@ -474,7 +477,7 @@ async function loadBun(path: string): Promise<Ffi> {
         FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr,
         FFIType.u8, FFIType.ptr, FFIType.u32,
         FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32,
-        FFIType.u32, FFIType.ptr, FFIType.ptr,
+        FFIType.u32, FFIType.ptr, FFIType.u8, FFIType.ptr,
       ],
       returns: FFIType.i32,
     },
@@ -567,6 +570,7 @@ async function loadBun(path: string): Promise<Ffi> {
       updatedUntil,
       limit,
       cursor,
+      countOnly,
     ) {
       const out = new BigUint64Array(1);
       const code = lib.symbols.tapline_workshop_search(
@@ -586,6 +590,7 @@ async function loadBun(path: string): Promise<Ffi> {
         updatedUntil,
         limit,
         cursor === null ? null : ptr(cstring(cursor)),
+        countOnly,
         ptr(out),
       );
       return readJobPointer(out, code, "workshop search", lastError);
@@ -654,7 +659,7 @@ async function loadNode(path: string): Promise<Ffi> {
     "int tapline_pipeline(uint32_t, uint64_t, const char*, uint32_t, _Out_ void**)",
   );
   const searchFn = lib.func(
-    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, _Out_ void**)",
+    "int tapline_workshop_search(uint32_t, const char*, const char*, const char*, const char*, const char*, const char*, uint8_t, const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const char*, uint8_t, _Out_ void**)",
   );
   const next = lib.func(
     "int tapline_job_next(void*, uint32_t, _Out_ uint8_t*, size_t, _Out_ size_t*)",
@@ -730,6 +735,7 @@ async function loadNode(path: string): Promise<Ffi> {
       updatedUntil,
       limit,
       cursor,
+      countOnly,
     ) {
       const out: unknown[] = [null];
       const code = searchFn(
@@ -749,6 +755,7 @@ async function loadNode(path: string): Promise<Ffi> {
         updatedUntil,
         limit,
         cursor,
+        countOnly,
         out,
       );
       if (code !== OK) {

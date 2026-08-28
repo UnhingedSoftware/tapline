@@ -18,6 +18,7 @@
 import { detectRuntime } from "../src/ffi.ts";
 import {
   concurrency,
+  countWorkshop,
   downloadWorkshopItem,
   install,
   Job,
@@ -173,6 +174,18 @@ await test("a bad directive fails before anything downloads", async () => {
 });
 
 if (process_env("TAPLINE_LIVE") === "1") {
+  await test("a count matches the search it stands for", async () => {
+    // The point of the count is that it costs no results, so the only thing
+    // worth asserting is that it agrees with the search it replaces.
+    const counted = await countWorkshop({ app: 431960, tags: ["Scene"] });
+    const searched = await searchWorkshop({ app: 431960, tags: ["Scene"], limit: 1 });
+    assert(counted > 0, "counted nothing");
+    assert(
+      counted === searched.total,
+      `count ${counted} disagrees with search total ${searched.total}`,
+    );
+  });
+
   await test("tag groups reach Steam as groups", async () => {
     // (Scene or Video) and Anime is a query the flat tag list cannot express,
     // so it must match fewer items than accepting any of the three tags.

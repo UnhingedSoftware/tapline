@@ -369,6 +369,20 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
     query.validate().map_err(|error| error.to_string())?;
 
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
+
+    if filters.count {
+        let total = session
+            .count_workshop(&query)
+            .await
+            .map_err(|error| error.to_string())?;
+        if json {
+            emit(&serde_json::json!({ "event": "counted", "total": total }));
+        } else {
+            println!("{total}");
+        }
+        return Ok(());
+    }
+
     let page = session
         .browse_workshop(&query)
         .await

@@ -567,6 +567,10 @@ pub unsafe extern "C" fn tapline_workshop_download(
 /// A flat tag list cannot express that, which is the whole reason it is a
 /// second parameter rather than more of the first.
 ///
+/// `count_only` asks how many match and fetches none of them, which is what a
+/// filter list showing a number beside each option wants. It emits a single
+/// `counted` event instead of any `result` or `searched` event.
+///
 /// `search_in` narrows where `text` is matched: `all`, `title` or
 /// `description`. Narrowing without text is refused, since there is nothing to
 /// narrow.
@@ -607,6 +611,7 @@ pub unsafe extern "C" fn tapline_workshop_search(
     updated_until: u32,
     limit: u32,
     cursor: *const c_char,
+    count_only: u8,
     out: *mut *mut TaplineJob,
 ) -> i32 {
     fn split(list: Option<&str>) -> Vec<String> {
@@ -720,6 +725,16 @@ pub unsafe extern "C" fn tapline_workshop_search(
             };
             match pool_handle.acquire().await {
                 Err(error) => send_error(&sender, &error.to_string()),
+                Ok(mut session) if count_only != 0 => match session.count_workshop(&query).await {
+                    Err(error) => send_error(&sender, &error.to_string()),
+                    Ok(total) => {
+                        let mut out = String::from("{");
+                        json::push_str_field(&mut out, "kind", "counted");
+                        json::push_u64(&mut out, "total", u64::from(total));
+                        out.push('}');
+                        let _ = sender.send(out);
+                    }
+                },
                 Ok(mut session) => match session.browse_workshop(&query).await {
                     Err(error) => send_error(&sender, &error.to_string()),
                     Ok(page) => {

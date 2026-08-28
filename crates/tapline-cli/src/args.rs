@@ -190,6 +190,8 @@ pub struct SearchFilters {
     pub limit: Option<u32>,
     /// Where to resume from.
     pub cursor: Option<String>,
+    /// Report how many match, without fetching any.
+    pub count: bool,
 }
 
 /// A point in time on the command line.
@@ -573,6 +575,7 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                     })?),
                 },
                 cursor: options.value("cursor").map(str::to_owned),
+                count: options.flag("count"),
             },
             json,
         }),
