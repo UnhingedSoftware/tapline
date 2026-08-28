@@ -1,0 +1,37 @@
+[package]
+name = "tapline-steamworks"
+description = "Optional bridge to a running Steam client through Valve's SDK, for account-scoped Workshop actions like subscribe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# NOT published, and NOT in the default build. This is the one place tapline
+# touches Valve's closed SDK, which its whole design otherwise avoids:
+#
+#  * The Steamworks SDK licence covers using it with your own Steam-distributed
+#    apps, so it must not ride along in the public crate or the container.
+#  * It links a proprietary blob, so the pure-Rust, no-C-toolchain, scratch
+#    container story does not apply and must not be contaminated by it.
+#
+# A caller opts in on purpose by enabling tapline's `steamworks` feature. The
+# SDK is loaded with dlopen, so a machine without it still compiles tapline.
+publish = false
+
+[dependencies]
+tapline-ids = { workspace = true }
+libloading = "0.8"
+
+[lints.rust]
+# The workspace forbids unsafe; a C ABI cannot be called without it, and
+# `forbid` cannot be lifted by an inner `allow`. The same exception tapline-ffi
+# makes, restated rather than inherited.
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"

@@ -21,6 +21,7 @@ members = [
     "crates/tapline-pipe",
     "crates/tapline-rt-tokio",
     "crates/tapline-state",
+    "crates/tapline-steamworks",
     "crates/tapline-vdf",
     "crates/tapline-wire",
     "crates/tapline-zip",
@@ -54,6 +55,7 @@ tapline-cdn = { path = "crates/tapline-cdn", version = "0.1.0" }
 tapline-cli = { path = "crates/tapline-cli", version = "0.1.0" }
 tapline-crypto = { path = "crates/tapline-crypto", version = "0.1.0" }
 tapline-state = { path = "crates/tapline-state", version = "0.1.0" }
+tapline-steamworks = { path = "crates/tapline-steamworks", version = "0.1.0" }
 tapline-vdf = { path = "crates/tapline-vdf", version = "0.1.0" }
 tapline-chunk = { path = "crates/tapline-chunk", version = "0.1.0" }
 tapline-event = { path = "crates/tapline-event", version = "0.1.0" }
