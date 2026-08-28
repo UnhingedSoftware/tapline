@@ -548,3 +548,32 @@ Disk hygiene, because this tool's entire job is writing tens of GB:
    warden's private tree) vs Apache-2.0/MIT vs AGPL. AGPL would poison warden.
 3. **Repo visibility** — public from M0 (invites contributors, and Valve's
    attention) vs private until M6.
+
+## Workshop query fields: what Steam honours
+
+Measured 2026-08-27 against Wallpaper Engine (431960, 3,182,822 items) and
+Garry's Mod (4000), on an anonymous session.
+
+Honoured, and shipped:
+
+| field | effect |
+|---|---|
+| `taggroups` | (Scene\|Video)&Anime = 807,624, where any-of-three is 3,082,286 and all-of-three is 0 |
+| `days` | trend only; 180 and 365 differ, 0 and 1 are Steam's default of one day |
+| `excluded_content_descriptors` | nudity drops 309,952; any-mature drops 339,156; different sets, neither is the `Mature` tag |
+| `date_range_created` | 45,523 published in thirty days |
+| `date_range_updated` | 6,268 revised in thirty days — **not** a superset of created |
+| `search_text_target` | "miku": 15,361 anywhere, 13,901 in titles, 4,132 in descriptions; 0 == unset |
+| `totalonly` | count with `returned: 0`, agreeing with the search's own total |
+
+Not honoured, and deliberately absent:
+
+* **`filetype`** — byte-identical results *and* totals for every value 0–12, on
+  both apps. Collections cannot be browsed this way. Worth retrying on a
+  logged-in session before concluding Steam never honours it.
+* **`language`** — changes neither totals nor the titles that come back.
+* **`child_publishedfileid`** — filters something real (3,182,822 → 15,434 for
+  one item) but returns ordinary downloadable items rather than the
+  collections that contain them. Semantics not understood, so not exposed.
+* **`special_filter`** — 1 result anonymously; needs a logged-in session to
+  mean anything.
