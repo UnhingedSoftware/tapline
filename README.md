@@ -55,11 +55,22 @@ tapline workshop info 104691717 3790437566
 
 # Download one, into the folder a server actually reads.
 tapline workshop download 4000 104691717 --dir /srv/gmod/garrysmod/addons --flat
+
+# Subscribe / unsubscribe. Downloading gets the files; subscribing tells Steam
+# the account wants them, so a client keeps them updated.
+tapline workshop subscribe 431960 1081733658
+tapline workshop unsubscribe 431960 1081733658
 ```
 
 `--sort` is `vote`, `recent`, `updated`, `trend`, `subscribed` or `text` (which
 needs `--text`). Paging is a cursor: pass the `next_cursor` a page prints back
 as `--cursor`.
+
+Subscribing needs an account. Either `tapline login` first, or — since the
+prebuilt binary is built with the `steamworks` feature — let it act through a
+**running, logged-in Steam client** on the same machine. That path uses Valve's
+SDK, loaded at runtime only if present; the container build leaves it out, and a
+machine with no Steam still runs everything else.
 
 **Take part of an item**, fetching only the chunks it lives in — an 8.4 MB addon
 filtered to `lua/**` moves 816 KB instead of 3.17 MB:

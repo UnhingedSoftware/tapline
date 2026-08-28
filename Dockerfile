@@ -17,7 +17,11 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY . .
 
-RUN cargo build --release --target x86_64-unknown-linux-musl -p tapline-cli \
+# `--no-default-features` drops the Steam-client bridge: there is no Steam in a
+# container to bridge to, and it keeps the image pure-Rust with nothing that
+# dlopens a proprietary blob.
+RUN cargo build --release --no-default-features \
+      --target x86_64-unknown-linux-musl -p tapline-cli \
  && strip target/x86_64-unknown-linux-musl/release/tapline
 
 # `scratch`, not alpine. There is nothing for a shell to do here, and an image

@@ -7,16 +7,18 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# NOT published, and NOT in the default build. This is the one place tapline
-# touches Valve's closed SDK, which its whole design otherwise avoids:
+# NOT published to crates.io, though it is in the default binary build. This is
+# the one place tapline touches Valve's closed SDK, which its whole design
+# otherwise avoids:
 #
-#  * The Steamworks SDK licence covers using it with your own Steam-distributed
-#    apps, so it must not ride along in the public crate or the container.
-#  * It links a proprietary blob, so the pure-Rust, no-C-toolchain, scratch
-#    container story does not apply and must not be contaminated by it.
+#  * It links (by runtime dlopen) a proprietary blob, so the pure-Rust,
+#    no-C-toolchain, scratch-container story does not apply to it. The container
+#    is built `--no-default-features` to keep that story true there.
+#  * Keeping it off crates.io keeps SDK-adjacent code from being redistributed
+#    under our name; the binary that uses it ships as a release artifact.
 #
-# A caller opts in on purpose by enabling tapline's `steamworks` feature. The
-# SDK is loaded with dlopen, so a machine without it still compiles tapline.
+# Loaded with dlopen, so a machine without the SDK still compiles and runs
+# everything else — this only fails at the point of use, cleanly.
 publish = false
 
 [dependencies]

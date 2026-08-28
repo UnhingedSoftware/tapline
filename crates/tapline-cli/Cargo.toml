@@ -11,6 +11,11 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+# Not on crates.io. The default build links the Steam-client bridge, which
+# is not published, and the binary is shipped as a prebuilt release artifact
+# rather than via `cargo install`. The libraries below it still publish.
+publish = false
+
 [[bin]]
 name = "tapline"
 path = "src/main.rs"
@@ -30,8 +35,11 @@ tapline-steamworks = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [features]
-# `tapline workshop subscribe` through a running Steam client, when no account
-# token is available. Build with `--features steamworks`.
+# On by default: the shipped binary can subscribe through a running Steam
+# client. The container turns it off (`--no-default-features`) — there is no
+# Steam in a container — and it is a runtime dlopen, so a machine without the
+# SDK still builds and runs everything else.
+default = ["steamworks"]
 steamworks = ["dep:tapline-steamworks"]
 
 [lints]
