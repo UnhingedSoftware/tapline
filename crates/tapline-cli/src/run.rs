@@ -49,7 +49,11 @@ pub async fn execute(command: Command) -> Result<(), String> {
         }
         Command::WorkshopSearch { filters, json } => search(filters, json).await,
         Command::WorkshopInfo { items, json } => workshop_info(items, json).await,
-        Command::Login { qr, account } => login(qr, account).await,
+        Command::Login {
+            qr,
+            account,
+            password_stdin,
+        } => login(qr, account, password_stdin).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
     }
@@ -827,7 +831,7 @@ async fn download_item(
 }
 
 /// `login`
-async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
+async fn login(qr: bool, account: Option<String>, password_stdin: bool) -> Result<(), String> {
     // A machine with Steam on it already knows who you are. Say so, so the
     // account name in the QR prompt is not a surprise.
     let local = tapline_auth::most_recent();
@@ -852,7 +856,7 @@ async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
 
     if let Some(name) = account.filter(|_| !qr) {
-        return password_login(&mut session, &name).await;
+        return password_login(&mut session, &name, password_stdin).await;
     }
     let pending = session
         .begin_qr_login()
@@ -904,18 +908,31 @@ async fn login(qr: bool, account: Option<String>) -> Result<(), String> {
 
 /// `whoami`
 /// Signs in with an account name and a password typed at the terminal.
-async fn password_login(session: &mut Session, account: &str) -> Result<(), String> {
+async fn password_login(
+    session: &mut Session,
+    account: &str,
+    password_stdin: bool,
+) -> Result<(), String> {
     let key = session
         .password_key(account)
         .await
         .map_err(|error| error.to_string())?;
 
-    // Read straight from the terminal with echo off, and never from an
-    // argument: a password on the command line is in the shell history and in
-    // every `ps` listing on the machine.
-    let password = read_hidden(&format!("password for {account}: "))?;
+    // Never from an argument: a password on the command line is in the shell
+    // history and in every `ps` listing for as long as the process runs. The
+    // three ways in, in the order a caller means them.
+    let password = if password_stdin {
+        read_all_stdin()?
+    } else if let Ok(from_env) = std::env::var(PASSWORD_ENV) {
+        from_env
+    } else {
+        read_hidden(&format!("password for {account}: "))?
+    };
     if password.is_empty() {
-        return Err("no password given".to_owned());
+        return Err(format!(
+            "no password given; pipe one with --password-stdin, set {PASSWORD_ENV}, \
+             or run this at a terminal"
+        ));
     }
 
     let mut pending = session
@@ -931,9 +948,17 @@ async fn password_login(session: &mut Session, account: &str) -> Result<(), Stri
         .copied()
         .find(|kind| kind.needs_a_code())
     {
-        let code = read_line(&format!("Steam Guard code ({kind}): "))?;
+        // A script has no one to ask, so it supplies the code the same way it
+        // supplied the password.
+        let code = match std::env::var(GUARD_ENV) {
+            Ok(code) => code,
+            Err(_) => read_line(&format!("Steam Guard code ({kind}): "))?,
+        };
         if code.is_empty() {
-            return Err("no Steam Guard code given".to_owned());
+            return Err(format!(
+                "this account needs a Steam Guard code ({kind}); set {GUARD_ENV}, \
+                 or run this at a terminal"
+            ));
         }
         session
             .submit_guard_code(&pending, code.trim(), kind)
@@ -962,6 +987,32 @@ async fn password_login(session: &mut Session, account: &str) -> Result<(), Stri
         tokio::time::sleep(interval).await;
     }
     Err("timed out waiting for the login to complete".to_owned())
+}
+
+/// Where a script may put the password instead of typing it.
+///
+/// An environment variable is visible to child processes and readable from
+/// `/proc/<pid>/environ` by the same user, so it is weaker than a pipe. It is
+/// here because the alternative people reach for is `--password` on the command
+/// line, which is worse: argv is in the shell history and readable by *every*
+/// process on the machine.
+const PASSWORD_ENV: &str = "TAPLINE_PASSWORD";
+
+/// Where a script may put the Steam Guard code.
+const GUARD_ENV: &str = "TAPLINE_GUARD_CODE";
+
+/// Reads the whole of standard input as a password.
+///
+/// The whole of it, then trimmed of the one trailing newline `echo` adds:
+/// `echo hunter2 | tapline login` should not send a password with a newline on
+/// the end and then report a wrong password.
+fn read_all_stdin() -> Result<String, String> {
+    use std::io::Read;
+    let mut buffer = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(|error| error.to_string())?;
+    Ok(buffer.trim_end_matches(['\n', '\r']).to_owned())
 }
 
 /// Saves the token and says where it went.

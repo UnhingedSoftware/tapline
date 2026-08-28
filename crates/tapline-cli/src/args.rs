@@ -141,6 +141,12 @@ pub enum Command {
         qr: bool,
         /// The account name, for a password login.
         account: Option<String>,
+        /// Read the password from standard input rather than prompting.
+        ///
+        /// What a script uses. There is deliberately no `--password`: an
+        /// argument is in the shell history and in every `ps` listing on the
+        /// machine for as long as the process runs.
+        password_stdin: bool,
     },
     /// `tapline whoami`
     WhoAmI,
@@ -645,10 +651,21 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
                 json,
             })
         }
-        (Some("login"), _) => Ok(Command::Login {
-            qr: options.flag("qr") || positional.get(1).is_none(),
-            account: options.value("account").map(str::to_owned),
-        }),
+        (Some("login"), _) => {
+            let password_stdin = options.flag("password-stdin");
+            if password_stdin && options.value("account").is_none() {
+                return Err(ArgError::new(
+                    "--password-stdin needs --account: a password is for a named account",
+                ));
+            }
+            Ok(Command::Login {
+                // A password login is the point of --password-stdin, so it
+                // wins over the QR default.
+                qr: !password_stdin && (options.flag("qr") || positional.get(1).is_none()),
+                account: options.value("account").map(str::to_owned),
+                password_stdin,
+            })
+        }
         (Some("whoami"), _) => Ok(Command::WhoAmI),
         (Some(other), _) => Err(ArgError::new(format!("unknown command {other:?}"))),
         (None, _) => Ok(Command::Help),
@@ -817,6 +834,45 @@ mod tests {
     fn an_unknown_native_command_names_itself() {
         let error = parse(&args("frobnicate 1")).expect_err("must refuse");
         assert!(error.message.contains("frobnicate"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_password_can_be_piped_in_for_a_script() {
+        let parsed = parse(&args("login --account someone --password-stdin")).expect("parse");
+        match parsed {
+            Command::Login {
+                account,
+                password_stdin,
+                qr,
+            } => {
+                assert_eq!(account.as_deref(), Some("someone"));
+                assert!(password_stdin);
+                assert!(!qr, "--password-stdin is a password login, not a QR one");
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn piping_a_password_without_an_account_is_refused() {
+        // Otherwise it reads a secret off stdin and has nothing to do with it.
+        let error = parse(&args("login --password-stdin")).expect_err("must refuse");
+        assert!(error.message.contains("--account"), "{}", error.message);
+    }
+
+    #[test]
+    fn there_is_no_password_argument() {
+        // The whole reason --password-stdin exists. If someone adds --password
+        // later, this fails and says why.
+        let parsed = parse(&args("login --account someone --password hunter2")).expect("parse");
+        match parsed {
+            Command::Login { password_stdin, .. } => assert!(
+                !password_stdin,
+                "a password must never be accepted as an argument: argv is in \
+                 the shell history and in every ps listing"
+            ),
+            other => panic!("wrong command: {other:?}"),
+        }
     }
 
     #[test]
