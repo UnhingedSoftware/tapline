@@ -311,10 +311,14 @@ async fn print_info(session: &mut Session, app: AppId, json: bool) -> Result<(),
 
 /// `workshop search`
 #[allow(clippy::too_many_arguments)]
-async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
+/// Turns the parsed CLI filters into a validated `BrowseQuery`.
+///
+/// All the name-to-enum resolution and validation that should fail before a
+/// login and a round trip, rather than after: an unknown sort or a misspelt
+/// content label costs a message, not a wasted request.
+fn build_query(filters: SearchFilters) -> Result<tapline::BrowseQuery, String> {
     let defaults = tapline::BrowseQuery::default();
-    // Resolved before connecting: an unknown sort should cost a message rather
-    // than a login and a round trip.
+
     let sort = match filters.sort.as_deref() {
         None => defaults.sort,
         Some(name) => tapline::BrowseSort::parse(name).ok_or_else(|| {
@@ -324,8 +328,7 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
             )
         })?,
     };
-    // Resolved before connecting, like the sort: a misspelt label should cost
-    // a message rather than a round trip that quietly filters nothing.
+
     let mut excluded_descriptors = Vec::new();
     for name in &filters.exclude_content {
         let descriptor = tapline::ContentDescriptor::parse(name).ok_or_else(|| {
@@ -381,10 +384,16 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         page: filters.page,
     };
     query.validate().map_err(|error| error.to_string())?;
+    Ok(query)
+}
+
+async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
+    let count = filters.count;
+    let query = build_query(filters)?;
 
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
 
-    if filters.count {
+    if count {
         let total = session
             .count_workshop(&query)
             .await
@@ -403,73 +412,80 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     if json {
-        for found in &page.items {
-            emit(&serde_json::json!({
-                "event": "result",
-                "app": found.item.app.get(),
-                // A string, because item ids exceed what JSON numbers hold
-                // exactly and a rounded id downloads the wrong thing.
-                "item": found.item.id.get().to_string(),
-                "title": found.item.title,
-                "size": found.item.size,
-                "updated": found.item.updated,
-                "created": found.created,
-                "creator": found.creator.map(|id| id.to_string()),
-                "subscriptions": found.subscriptions,
-                "favorites": found.favorites,
-                "views": found.views,
-                "score": found.score,
-                "votes_up": found.votes_up,
-                "votes_down": found.votes_down,
-                "tags": found.tags,
-                "description": found.description,
-                "preview_url": found.preview_url,
-                "previews": found
-                    .previews
-                    .iter()
-                    .map(|preview| {
-                        serde_json::json!({
-                            "url": preview.url,
-                            "youtube_id": preview.youtube_id,
-                            "kind": preview.kind,
-                            "order": preview.order,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            }));
-        }
-        emit(&serde_json::json!({
-            "event": "searched",
-            "total": page.total,
-            "returned": page.items.len(),
-            "next_cursor": page.next_cursor,
-            "skipped": page.skipped.len(),
-        }));
+        emit_search_page(&page);
     } else {
-        for found in &page.items {
-            println!(
-                "{:>12}  {:>9}  {:>8} subs  {}",
-                found.item.id.get(),
-                human_bytes(found.item.size),
-                found.subscriptions,
-                found.item.title
-            );
-        }
-        println!(
-            "{} of {} matches{}",
-            page.items.len(),
-            page.total,
-            match &page.next_cursor {
-                Some(cursor) => format!("; next page: --cursor {cursor}"),
-                None => String::new(),
-            }
-        );
-        // Never silent about what was left out.
-        for (id, why) in &page.skipped {
-            eprintln!("skipped {id}: {why}");
-        }
+        print_search_page(&page);
     }
     Ok(())
+}
+
+/// Emits a search page as newline-delimited JSON: one `result` per item, then a
+/// `searched` summary.
+fn emit_search_page(page: &tapline::BrowsePage) {
+    for found in &page.items {
+        emit(&serde_json::json!({
+            "event": "result",
+            "app": found.item.app.get(),
+            // A string, because item ids exceed what JSON numbers hold exactly
+            // and a rounded id downloads the wrong thing.
+            "item": found.item.id.get().to_string(),
+            "title": found.item.title,
+            "size": found.item.size,
+            "updated": found.item.updated,
+            "created": found.created,
+            "creator": found.creator.map(|id| id.to_string()),
+            "subscriptions": found.subscriptions,
+            "favorites": found.favorites,
+            "views": found.views,
+            "score": found.score,
+            "votes_up": found.votes_up,
+            "votes_down": found.votes_down,
+            "tags": found.tags,
+            "description": found.description,
+            "preview_url": found.preview_url,
+            "previews": found
+                .previews
+                .iter()
+                .map(|preview| {
+                    serde_json::json!({
+                        "url": preview.url,
+                        "youtube_id": preview.youtube_id,
+                        "kind": preview.kind,
+                        "order": preview.order,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+    }
+    emit(&serde_json::json!({
+        "event": "searched",
+        "total": page.total,
+        "returned": page.items.len(),
+        "next_cursor": page.next_cursor,
+        "skipped": page.skipped.len(),
+    }));
+}
+
+/// Prints a search page as a table, with a next-page hint and any skips.
+fn print_search_page(page: &tapline::BrowsePage) {
+    for found in &page.items {
+        println!(
+            "{:>12}  {:>9}  {:>8} subs  {}",
+            found.item.id.get(),
+            human_bytes(found.item.size),
+            found.subscriptions,
+            found.item.title
+        );
+    }
+    let more = match &page.next_cursor {
+        Some(cursor) => format!("; next page: --cursor {cursor}"),
+        None => String::new(),
+    };
+    println!("{} of {} matches{more}", page.items.len(), page.total);
+    // Never silent about what was left out.
+    for (id, why) in &page.skipped {
+        eprintln!("skipped {id}: {why}");
+    }
 }
 
 /// Renders a byte count the way a person reads it.
