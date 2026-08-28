@@ -53,7 +53,8 @@ pub async fn execute(command: Command) -> Result<(), String> {
             qr,
             account,
             password_stdin,
-        } => login(qr, account, password_stdin).await,
+            password,
+        } => login(qr, account, password_stdin, password).await,
         Command::WhoAmI => whoami().await,
         Command::Help | Command::Version => Ok(()),
     }
@@ -831,7 +832,12 @@ async fn download_item(
 }
 
 /// `login`
-async fn login(qr: bool, account: Option<String>, password_stdin: bool) -> Result<(), String> {
+async fn login(
+    qr: bool,
+    account: Option<String>,
+    password_stdin: bool,
+    password: Option<String>,
+) -> Result<(), String> {
     // A machine with Steam on it already knows who you are. Say so, so the
     // account name in the QR prompt is not a surprise.
     let local = tapline_auth::most_recent();
@@ -856,7 +862,7 @@ async fn login(qr: bool, account: Option<String>, password_stdin: bool) -> Resul
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
 
     if let Some(name) = account.filter(|_| !qr) {
-        return password_login(&mut session, &name, password_stdin).await;
+        return password_login(&mut session, &name, password_stdin, password).await;
     }
     let pending = session
         .begin_qr_login()
@@ -912,6 +918,7 @@ async fn password_login(
     session: &mut Session,
     account: &str,
     password_stdin: bool,
+    given: Option<String>,
 ) -> Result<(), String> {
     let key = session
         .password_key(account)
@@ -921,12 +928,13 @@ async fn password_login(
     // Never from an argument: a password on the command line is in the shell
     // history and in every `ps` listing for as long as the process runs. The
     // three ways in, in the order a caller means them.
-    let password = if password_stdin {
-        read_all_stdin()?
-    } else if let Ok(from_env) = std::env::var(PASSWORD_ENV) {
-        from_env
-    } else {
-        read_hidden(&format!("password for {account}: "))?
+    let password = match given {
+        Some(password) => password,
+        None if password_stdin => read_all_stdin()?,
+        None => match std::env::var(PASSWORD_ENV) {
+            Ok(from_env) => from_env,
+            Err(_) => read_hidden(&format!("password for {account}: "))?,
+        },
     };
     if password.is_empty() {
         return Err(format!(

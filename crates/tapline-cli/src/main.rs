@@ -71,16 +71,17 @@ Native:
                               than the whole item. They imply --stream's target,
                               which defaults to unpacking into DIR.
       One Workshop item.
-  tapline login [--qr | --account NAME [--password-stdin]]
+  tapline login [--qr | --username NAME [--password PASS | --password-stdin]]
       Sign in and save the token, so later commands sign in by themselves.
-      --qr              approve in the Steam mobile app; no password is typed
-      --account NAME    sign in with a password
-      --password-stdin  read the password from stdin, for scripts:
-                          cat pass.txt | tapline login --account NAME --password-stdin
-      Otherwise the password comes from TAPLINE_PASSWORD, or is prompted for at
-      the terminal. Steam Guard codes come from TAPLINE_GUARD_CODE or a prompt.
-      There is no --password flag on purpose: an argument is in the shell
-      history and in every ps listing on the machine.
+      --qr              approve in the Steam mobile app; nothing to type
+      --username NAME   the account name (--account also works)
+      --password PASS   the password, directly
+      --password-stdin  read it from stdin instead:
+                          cat pass.txt | tapline login --username NAME --password-stdin
+      With neither, the password comes from TAPLINE_PASSWORD or a prompt. Steam
+      Guard codes come from TAPLINE_GUARD_CODE or a prompt.
+      Note --password puts the password in your shell history and in every ps
+      listing on the machine while it runs; --password-stdin does not.
       Only needed for content an account owns; every dedicated server and the
       Workshop search work anonymously. Names the account this machine's Steam
       client last used, if there is one.

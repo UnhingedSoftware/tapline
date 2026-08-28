@@ -1036,6 +1036,90 @@ impl Session {
         })
     }
 
+    /// Signs in with a username and a password, in one call.
+    ///
+    /// The whole flow — RSA key, encrypted credentials, an optional Steam Guard
+    /// code, and polling until Steam finishes — behind the two things a caller
+    /// actually has. Returns the token to persist with [`TokenStore`], after
+    /// which [`Session::automatic`] signs in by itself and this is never needed
+    /// again.
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use tapline::Session;
+    /// use tapline_auth::TokenStore;
+    ///
+    /// let mut session = Session::anonymous().await?;
+    /// let token = session.sign_in("username", "password", None).await?;
+    /// TokenStore::default_file().save(&token)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// `guard_code` is the emailed or authenticator code. Pass `None` when
+    /// there is none; if Steam asks for one and none was given, the error says
+    /// so rather than polling until it times out.
+    ///
+    /// Steam refuses a login whose password is right and whose code is missing,
+    /// so an account with Steam Guard on it cannot be signed into with two
+    /// strings alone — that is Steam's rule, not this one. Either supply the
+    /// code or use the QR flow, which needs neither.
+    ///
+    /// [`TokenStore`]: tapline_auth::TokenStore
+    pub async fn sign_in(
+        &mut self,
+        username: &str,
+        password: &str,
+        guard_code: Option<&str>,
+    ) -> Result<tapline_auth::StoredToken, crate::LoginError> {
+        let key = self.password_key(username).await?;
+        let pending = self
+            .begin_password_login(username, password.to_owned(), &key)
+            .await?;
+
+        let wanted = pending
+            .confirmations
+            .iter()
+            .copied()
+            .find(|kind| kind.needs_a_code());
+
+        match (wanted, guard_code) {
+            (Some(kind), Some(code)) => self.submit_guard_code(&pending, code, kind).await?,
+            (Some(kind), None) => {
+                // Said now rather than after polling for two minutes at
+                // something that is never going to complete.
+                return Err(crate::LoginError::Password(format!(
+                    "this account needs {kind}; pass it as guard_code"
+                )));
+            }
+            (None, _) => {}
+        }
+
+        let interval = std::time::Duration::from_secs_f32(pending.interval.max(1.0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut current = pending;
+        while std::time::Instant::now() < deadline {
+            match self.poll_login(&current).await? {
+                crate::PollOutcome::Complete {
+                    account,
+                    refresh_token,
+                    ..
+                } => {
+                    return Ok(tapline_auth::StoredToken {
+                        account,
+                        refresh_token,
+                    });
+                }
+                crate::PollOutcome::Moved { client_id, .. } => current.client_id = client_id,
+                crate::PollOutcome::Pending { .. } => {}
+            }
+            tokio::time::sleep(interval).await;
+        }
+        Err(crate::LoginError::Session(
+            "timed out waiting for the login to complete".to_owned(),
+        ))
+    }
+
     /// Submits a Steam Guard code for a pending login.
     ///
     /// Needed when [`PendingLogin::confirmations`] asks for a code — emailed or

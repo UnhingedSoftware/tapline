@@ -142,11 +142,13 @@ pub enum Command {
         /// The account name, for a password login.
         account: Option<String>,
         /// Read the password from standard input rather than prompting.
-        ///
-        /// What a script uses. There is deliberately no `--password`: an
-        /// argument is in the shell history and in every `ps` listing on the
-        /// machine for as long as the process runs.
         password_stdin: bool,
+        /// The password, given directly.
+        ///
+        /// Worth knowing what it costs: an argument is in the shell history and
+        /// readable from every `ps` listing on the machine for as long as the
+        /// process runs. `--password-stdin` avoids both.
+        password: Option<String>,
     },
     /// `tapline whoami`
     WhoAmI,
@@ -653,17 +655,34 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
         }
         (Some("login"), _) => {
             let password_stdin = options.flag("password-stdin");
-            if password_stdin && options.value("account").is_none() {
+            let password = options.value("password").map(str::to_owned);
+            // `--username` and `--account` name the same thing; steamcmd says
+            // one and this said the other, so take either.
+            let account = options
+                .value("username")
+                .or_else(|| options.value("account"))
+                .map(str::to_owned);
+
+            if (password_stdin || password.is_some()) && account.is_none() {
                 return Err(ArgError::new(
-                    "--password-stdin needs --account: a password is for a named account",
+                    "a password needs --username: it is for a named account",
+                ));
+            }
+            if password_stdin && password.is_some() {
+                return Err(ArgError::new(
+                    "--password and --password-stdin are two answers to the same \
+                     question; give one",
                 ));
             }
             Ok(Command::Login {
-                // A password login is the point of --password-stdin, so it
-                // wins over the QR default.
-                qr: !password_stdin && (options.flag("qr") || positional.get(1).is_none()),
-                account: options.value("account").map(str::to_owned),
+                // A password login is the point of either flag, so it wins over
+                // the QR default.
+                qr: !password_stdin
+                    && password.is_none()
+                    && (options.flag("qr") || positional.get(1).is_none()),
+                account,
                 password_stdin,
+                password,
             })
         }
         (Some("whoami"), _) => Ok(Command::WhoAmI),
@@ -844,6 +863,7 @@ mod tests {
                 account,
                 password_stdin,
                 qr,
+                ..
             } => {
                 assert_eq!(account.as_deref(), Some("someone"));
                 assert!(password_stdin);
@@ -854,25 +874,49 @@ mod tests {
     }
 
     #[test]
-    fn piping_a_password_without_an_account_is_refused() {
-        // Otherwise it reads a secret off stdin and has nothing to do with it.
-        let error = parse(&args("login --password-stdin")).expect_err("must refuse");
-        assert!(error.message.contains("--account"), "{}", error.message);
+    fn a_password_without_an_account_is_refused() {
+        // Otherwise it takes a secret and has nothing to do with it.
+        for line in ["login --password-stdin", "login --password hunter2"] {
+            let error = parse(&args(line)).expect_err("must refuse");
+            assert!(
+                error.message.contains("--username"),
+                "{line}: {}",
+                error.message
+            );
+        }
     }
 
     #[test]
-    fn there_is_no_password_argument() {
-        // The whole reason --password-stdin exists. If someone adds --password
-        // later, this fails and says why.
-        let parsed = parse(&args("login --account someone --password hunter2")).expect("parse");
-        match parsed {
-            Command::Login { password_stdin, .. } => assert!(
-                !password_stdin,
-                "a password must never be accepted as an argument: argv is in \
-                 the shell history and in every ps listing"
-            ),
-            other => panic!("wrong command: {other:?}"),
+    fn a_username_and_password_can_be_given_directly() {
+        for line in [
+            "login --username someone --password hunter2",
+            "login --account someone --password hunter2",
+        ] {
+            let parsed = parse(&args(line)).expect("parse");
+            match parsed {
+                Command::Login {
+                    account,
+                    password,
+                    qr,
+                    ..
+                } => {
+                    assert_eq!(account.as_deref(), Some("someone"));
+                    assert_eq!(password.as_deref(), Some("hunter2"));
+                    assert!(!qr, "a password login is not a QR one");
+                }
+                other => panic!("wrong command: {other:?}"),
+            }
         }
+    }
+
+    #[test]
+    fn two_ways_of_giving_the_password_at_once_are_refused() {
+        // They can disagree, and picking one silently is worse than asking.
+        let error = parse(&args(
+            "login --username someone --password hunter2 --password-stdin",
+        ))
+        .expect_err("must refuse");
+        assert!(error.message.contains("give one"), "{}", error.message);
     }
 
     #[test]
