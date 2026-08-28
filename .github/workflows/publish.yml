@@ -39,16 +39,15 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      # cargo works out the order from the dependency graph. Sibling
-      # dev-dependencies are declared path-only so cargo strips them when
-      # packaging — otherwise a crate could not be published before the crates
-      # its own tests use.
+      # cargo works out the order from the dependency graph and verifies each
+      # crate builds from its own packaged tarball, which catches a crate that
+      # compiles in the workspace and not on its own.
       - name: Package every crate
         run: cargo publish --workspace --dry-run
 
       - name: Publish to crates.io
         if: ${{ inputs.dry-run == false }}
-        run: cargo publish --workspace --no-verify
+        run: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
