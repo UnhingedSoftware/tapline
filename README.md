@@ -175,14 +175,25 @@ are strings — they exceed `Number.MAX_SAFE_INTEGER`.
 
 ## In a container
 
+A prebuilt image is on GHCR — no clone, no build:
+
 ```sh
-docker run --rm --memory=96m -v /srv/valheim:/data tapline \
+docker run --rm -v /srv/valheim:/data ghcr.io/unhingedsoftware/tapline \
   app download 896660 --dir /data
 ```
 
-Give it 96 MB rather than the 80 MB it survives on: the same install takes 36 s
-at 80m and 19 s at 96m, because a cgroup limit counts page cache and a tight one
-starves the writeback path.
+It is one static binary on `scratch`: no shell, no Steam client, no CA bundle.
+The entrypoint is `tapline`, so arguments pass straight through. Build it from
+source instead with `docker build -t tapline .` if you prefer.
+
+Give it 96 MB of memory rather than the 80 MB it survives on: the same install
+takes 36 s at 80m and 19 s at 96m, because a cgroup limit counts page cache and
+a tight one starves the writeback path.
+
+```sh
+docker run --rm --memory=96m -v /srv/valheim:/data ghcr.io/unhingedsoftware/tapline \
+  app download 896660 --dir /data
+```
 
 ## Numbers
 
