@@ -1,21 +1,8 @@
-//! The 64-bit SteamID and its bit layout.
-//!
-//! ```text
-//!  63        56 55      52 51                 32 31                        0
-//! +------------+----------+---------------------+---------------------------+
-//! |  universe  |   type   |      instance       |        account id         |
-//! +------------+----------+---------------------+---------------------------+
-//!      8 bits     4 bits         20 bits                  32 bits
-//! ```
-//!
-//! Anonymous logons — the common case for dedicated servers — come back with an
-//! [`AccountType::AnonUser`] id whose account number Steam picked, so parsing
-//! this correctly is not optional even for a workload that never signs in.
+//! The 64-bit SteamID: `universe(8) | type(4) | instance(20) | account id(32)`.
 
 use std::fmt;
 
-/// Which Steam universe an id belongs to. Public is the only one reachable from
-/// outside Valve, but the field still has to round-trip.
+/// Which Steam universe an id belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Universe {
     /// Unset or invalid.
@@ -46,8 +33,7 @@ impl Universe {
         }
     }
 
-    /// Decodes the wire encoding, preserving anything unrecognised rather than
-    /// collapsing it to invalid.
+    /// Decodes the wire encoding, preserving unrecognised values.
     #[must_use]
     pub const fn from_u8(v: u8) -> Self {
         match v {
@@ -163,8 +149,7 @@ impl SteamId {
         Self(raw)
     }
 
-    /// Builds an id from its parts. Values wider than their field are masked to
-    /// fit rather than silently corrupting a neighbouring field.
+    /// Builds an id from its parts; oversized values are masked to fit.
     #[must_use]
     pub const fn from_parts(
         universe: Universe,
@@ -221,8 +206,7 @@ impl SteamId {
             && !matches!(self.universe(), Universe::Invalid)
     }
 
-    /// The id an anonymous logon starts from: no account number yet, Steam fills
-    /// one in and hands it back in the logon response.
+    /// The id an anonymous logon starts from; Steam fills in the account number.
     #[must_use]
     pub const fn anonymous() -> Self {
         Self::from_parts(Universe::Public, AccountType::AnonUser, INSTANCE_DESKTOP, 0)
@@ -290,8 +274,6 @@ mod tests {
 
     #[test]
     fn oversized_fields_are_masked_not_smeared_into_neighbours() {
-        // An instance wider than 20 bits must not corrupt the type field above
-        // it; getting this wrong turns an individual account into a chat room.
         let id = SteamId::from_parts(Universe::Public, AccountType::Individual, u32::MAX, 7);
         assert_eq!(id.account_type(), AccountType::Individual);
         assert_eq!(id.instance(), 0xF_FFFF);
@@ -308,8 +290,6 @@ mod tests {
 
     #[test]
     fn unknown_enum_values_survive_a_round_trip() {
-        // Valve adds types; a build that collapses them to Invalid would send
-        // back a different id than it received.
         assert_eq!(AccountType::from_u8(13).to_u8(), 13);
         assert_eq!(Universe::from_u8(200).to_u8(), 200);
     }

@@ -1,23 +1,4 @@
-//! A minimal HTTP/1.1 client, scoped to what fetching content needs.
-//!
-//! `GET`, optionally with a byte range. That is the entire surface: the CDN
-//! serves manifests and chunks and nothing else, and a general HTTP stack would
-//! be a much larger dependency for no additional capability.
-//!
-//! What it does implement, because the CDN requires it:
-//!
-//! * **Keep-alive with connection reuse.** A depot is tens of thousands of
-//!   chunks; a fresh TLS handshake per chunk would cost more than the transfer.
-//! * **Chunked transfer decoding**, which the CDN uses for manifests.
-//! * **A hard body cap**, checked as the body arrives rather than after. The
-//!   caller knows how large the thing it asked for should be — a chunk's size
-//!   comes from the manifest — so a response that runs long is detectable before
-//!   it is fully read.
-//!
-//! What it deliberately does not implement: redirects (the CDN does not issue
-//! them, and following one blindly would let a host redirect a download
-//! anywhere), cookies, and compression negotiation (chunks are already
-//! compressed).
+//! A minimal HTTP/1.1 client: GET with ranges, keep-alive, chunked decoding, body cap.
 
 use crate::tls::connect_tls;
 use std::collections::HashMap;
@@ -26,45 +7,19 @@ use tapline_io::{Fetch, FetchError, Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-/// A pooled connection.
 struct Connection {
-    /// Which runtime opened it.
-    ///
-    /// A socket belongs to the runtime that created it. Reusing one from
-    /// another produces "A Tokio 1.x context was found, but it is being
-    /// shutdown" at the next read, which names the symptom and not the cause.
-    ///
-    /// One process usually has one runtime and this never matters. A test
-    /// binary has one per test while this pool is process-wide, so it matters
-    /// at once — which is how it was found.
+    /// A socket belongs to the runtime that created it; reuse across runtimes fails.
     runtime: tokio::runtime::Id,
     stream: crate::tls::TlsStream,
-    /// Bytes read past the end of the last response, if any.
-    ///
-    /// Keep-alive means the next response may already be partly in the buffer;
-    /// dropping these would desynchronise the connection.
+    /// Bytes read past the last response; dropping them would desynchronise keep-alive.
     leftover: Vec<u8>,
 }
 
-/// An HTTP client with a per-host connection pool.
-///
-/// `Fetch` takes `&self` so one client backs many concurrent chunk fetches. The
-/// pool is per-host because that is the unit the CDN rate-limits on.
+/// An HTTP client with a per-host connection pool; `Fetch` takes `&self`.
 pub struct HttpClient {
     pools: Mutex<HashMap<String, Vec<Connection>>>,
-    /// How many idle connections to keep across all hosts.
-    ///
-    /// Per-host alone is not a bound: with a wide host list it multiplies. At
-    /// 84 hosts and 8 idle each, an install could sit on 672 idle sockets on
-    /// top of the ones actually in flight and the files being written — enough
-    /// to run a 1,024-descriptor process out of descriptors without a single
-    /// one of them doing any work.
+    /// Total idle cap; the per-host cap alone multiplies across a wide host list.
     idle_total: usize,
-    /// How many idle connections to keep per host.
-    ///
-    /// Small: an idle TLS connection costs memory on both ends, and the
-    /// download's parallelism comes from concurrent requests rather than from a
-    /// deep idle pool.
     idle_per_host: usize,
 }
 
@@ -85,16 +40,13 @@ impl HttpClient {
         }
     }
 
-    /// Takes a pooled connection to `host`, or opens one.
     async fn acquire(&self, host: &str, port: u16) -> Result<Connection, FetchError> {
         let here = tokio::runtime::Handle::try_current()
             .map_err(|error| FetchError::Transport(error.to_string()))?
             .id();
 
         if let Some(pool) = self.pools.lock().await.get_mut(host) {
-            // Only one this runtime can use. Anything else is dropped rather
-            // than kept: a socket from a runtime that has gone is never coming
-            // back to life.
+            // Sockets from a dead runtime never come back to life.
             pool.retain(|connection| connection.runtime == here);
             if let Some(connection) = pool.pop() {
                 return Ok(connection);
@@ -111,12 +63,9 @@ impl HttpClient {
         })
     }
 
-    /// Returns a connection to the pool, dropping it if the pool is full.
     async fn release(&self, host: &str, connection: Connection) {
         let mut pools = self.pools.lock().await;
-        // Both bounds, because either alone lets the other run away: per-host
-        // keeps one cache from hoarding the pool, and the total keeps a wide
-        // host list from exhausting the process's descriptors.
+        // Either bound alone lets the other run away.
         let idle: usize = pools.values().map(Vec::len).sum();
         if idle >= self.idle_total {
             return;
@@ -133,7 +82,6 @@ impl HttpClient {
     }
 }
 
-/// Splits a URL into host, port and path.
 fn split_url(url: &str) -> Result<(String, u16, String), FetchError> {
     let (scheme, rest) = url
         .split_once("://")
@@ -141,8 +89,7 @@ fn split_url(url: &str) -> Result<(String, u16, String), FetchError> {
 
     let default_port = match scheme {
         "https" => 443,
-        // Plain HTTP is only ever used for a locally configured lancache, where
-        // it is safe because chunks are verified against their content hash.
+        // Plain HTTP is for lancache only; chunks are verified by content hash.
         "http" => 80,
         _ => return Err(FetchError::InvalidUrl(url.to_owned())),
     };
@@ -174,9 +121,7 @@ impl Fetch for HttpClient {
     async fn get(&self, request: Request, limit: u64) -> Result<Response, FetchError> {
         let (host, port, path) = split_url(&request.url)?;
 
-        // One retry, and only on a pooled connection: a keep-alive connection
-        // the server closed while idle fails on first write, and that is not a
-        // real failure. A fresh connection failing is.
+        // One retry: a pooled connection the server closed idle fails on first write.
         let mut last_error = None;
         for attempt in 0..2 {
             let connection = self.acquire(&host, port).await?;
@@ -200,9 +145,7 @@ impl Fetch for HttpClient {
     }
 }
 
-/// Sends one request and reads its response.
-///
-/// Returns the connection when it may be reused.
+/// Sends one request; returns the connection when it may be reused.
 async fn perform(
     mut connection: Connection,
     host: &str,
@@ -231,7 +174,6 @@ async fn perform(
         .await
         .map_err(|e| FetchError::Transport(e.to_string()))?;
 
-    // Read until the header block is complete.
     let mut buffer = std::mem::take(&mut connection.leftover);
     let header_end = loop {
         if let Some(index) = find_header_end(&buffer) {
@@ -289,7 +231,6 @@ async fn perform(
     let content_length: Option<u64> = header("content-length").and_then(|v| v.parse().ok());
     let keep_alive = !header("connection").is_some_and(|v| v.eq_ignore_ascii_case("close"));
 
-    // A declared length over the cap is refused before the body is read at all.
     if let Some(length) = content_length
         && length > limit
     {
@@ -308,8 +249,7 @@ async fn perform(
                 (body, keep_alive)
             }
             None => {
-                // No length and no chunking: the body ends at EOF, so the
-                // connection cannot be reused.
+                // No length and no chunking: body ends at EOF, connection not reusable.
                 let body = read_to_end(&mut connection, body_start, limit).await?;
                 (body, false)
             }
@@ -324,12 +264,10 @@ async fn perform(
     Ok((response, reusable.then_some(connection)))
 }
 
-/// Finds the `\r\n\r\n` that ends the header block.
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-/// Reads a body of known length.
 async fn read_sized(
     connection: &mut Connection,
     mut body: Vec<u8>,
@@ -347,8 +285,7 @@ async fn read_sized(
     body.reserve(length - body.len());
     while body.len() < length {
         let mut chunk = [0_u8; 16 * 1024];
-        // Never read past the declared length: the bytes after it belong to the
-        // next response on this keep-alive connection.
+        // Never read past the declared length; those bytes are the next response's.
         let want = (length - body.len()).min(chunk.len());
         let slice = chunk.get_mut(..want).unwrap_or_default();
         let read = connection
@@ -364,7 +301,6 @@ async fn read_sized(
     Ok(body)
 }
 
-/// Reads a body that ends at EOF.
 async fn read_to_end(
     connection: &mut Connection,
     mut body: Vec<u8>,
@@ -387,7 +323,6 @@ async fn read_to_end(
     }
 }
 
-/// Reads a chunked body.
 async fn read_chunked(
     connection: &mut Connection,
     start: Vec<u8>,
@@ -414,8 +349,7 @@ async fn read_chunked(
 
         let data_start = line_end + 2;
         if size == 0 {
-            // The trailer and final CRLF follow; anything after belongs to the
-            // next response.
+            // Trailer and final CRLF follow; anything after is the next response's.
             let after = raw.get(data_start..).unwrap_or_default();
             connection.leftover = after
                 .strip_prefix(b"\r\n".as_slice())
@@ -439,7 +373,6 @@ async fn read_chunked(
     }
 }
 
-/// Finds a CRLF at or after `from`.
 fn find_crlf(buffer: &[u8], from: usize) -> Option<usize> {
     buffer
         .get(from..)?
@@ -448,7 +381,6 @@ fn find_crlf(buffer: &[u8], from: usize) -> Option<usize> {
         .map(|index| index + from)
 }
 
-/// Reads more bytes into `buffer`.
 async fn fill(connection: &mut Connection, buffer: &mut Vec<u8>) -> Result<(), FetchError> {
     let mut chunk = [0_u8; 16 * 1024];
     let read = connection
@@ -499,7 +431,6 @@ mod tests {
 
     #[test]
     fn unusable_urls_are_refused() {
-        // A scheme we do not speak must not be silently treated as HTTPS.
         assert!(split_url("ftp://example.invalid/x").is_err());
         assert!(split_url("no-scheme.invalid/x").is_err());
         assert!(split_url("https:///path").is_err());
@@ -508,8 +439,7 @@ mod tests {
 
     #[test]
     fn the_header_terminator_is_found_where_it_is() {
-        // "HTTP/1.1 200 OK" is 15 bytes, so the terminator starts at 15 and the
-        // body at 19.
+        // "HTTP/1.1 200 OK" is 15 bytes.
         assert_eq!(find_header_end(b"HTTP/1.1 200 OK\r\n\r\nbody"), Some(15));
         assert_eq!(find_header_end(b"HTTP/1.1 200 OK\r\n"), None);
         assert_eq!(find_header_end(b""), None);
@@ -517,8 +447,6 @@ mod tests {
 
     #[test]
     fn crlf_search_respects_its_starting_offset() {
-        // The chunked reader relies on this to walk chunk by chunk without
-        // rescanning what it has already consumed.
         let buffer = b"5\r\nhello\r\n0\r\n\r\n";
         assert_eq!(find_crlf(buffer, 0), Some(1));
         assert_eq!(find_crlf(buffer, 2), Some(8));

@@ -1,7 +1,4 @@
 //! Events, as JSON objects a JS runtime can hand straight to `JSON.parse`.
-//!
-//! One shape per event, discriminated by `kind`, with `kind` spelled in the
-//! lower-snake-case a JS consumer expects rather than the Rust variant name.
 
 use crate::json::{push_str_field, push_u64};
 use tapline::{Event, InstallReport, Plan, RetryReason};
@@ -22,8 +19,7 @@ pub fn encode(event: &Event) -> String {
         } => {
             push_str_field(&mut out, "kind", "depotStarted");
             push_u64(&mut out, "depot", u64::from(depot.get()));
-            // Manifest ids exceed 2^53 and would lose precision as a JS number,
-            // so they cross as strings and stay exact.
+            // Manifest ids exceed 2^53, so they cross as strings to stay exact in JS.
             push_str_field(&mut out, "manifest", &manifest.get().to_string());
             push_u64(&mut out, "bytes", *bytes);
         }
@@ -78,9 +74,7 @@ pub fn encode(event: &Event) -> String {
             push_u64(&mut out, "downloadedBytes", *downloaded_bytes);
             push_u64(&mut out, "reusedBytes", *reused_bytes);
         }
-        // `Event` is `#[non_exhaustive]` on purpose, and a consumer that sees an
-        // event this build does not know about should be told so rather than be
-        // handed a silently dropped one.
+        // `Event` is `#[non_exhaustive]`; unknown variants surface instead of dropping.
         other => {
             push_str_field(&mut out, "kind", "unknown");
             push_str_field(&mut out, "debug", &format!("{other:?}"));
@@ -91,10 +85,6 @@ pub fn encode(event: &Event) -> String {
 }
 
 /// Encodes the final report as a `finished` event.
-///
-/// Not an [`Event`]: the report is what the Rust API returns rather than
-/// something it emits, and a JS caller wants it as the last thing on the stream
-/// instead of as a second channel to read.
 #[must_use]
 pub fn encode_report(report: &InstallReport) -> String {
     let mut out = String::from("{");
@@ -106,7 +96,6 @@ pub fn encode_report(report: &InstallReport) -> String {
     push_u64(&mut out, "chunksReused", report.chunks_reused);
     push_u64(&mut out, "depotsUnchanged", report.depots_unchanged);
     push_key_array_of_depots(&mut out, report);
-    // Never silent about what was left out.
     crate::json::push_key(&mut out, "skipped");
     out.push('[');
     for (index, (path, reason)) in report.skipped.iter().enumerate() {
@@ -181,9 +170,7 @@ mod tests {
 
     #[test]
     fn a_manifest_id_crosses_as_a_string() {
-        // 964598927051546960 is a real GMod manifest id and is larger than
-        // Number.MAX_SAFE_INTEGER. As a JSON number JavaScript would round it,
-        // and the value would come back wrong without anything erroring.
+        // Real GMod manifest id, larger than Number.MAX_SAFE_INTEGER.
         let json = encode(&Event::DepotStarted {
             depot: DepotId(4021),
             manifest: ManifestId(964_598_927_051_546_960),

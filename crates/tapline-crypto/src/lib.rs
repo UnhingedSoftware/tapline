@@ -1,17 +1,4 @@
-//! The cryptography Steam's protocol needs.
-//!
-//! Two kinds of thing live here. The primitives — AES, RSA, SHA-1, HMAC — are
-//! thin wrappers over RustCrypto, present so the rest of the workspace has one
-//! place to look and one place to change if a primitive is ever swapped. The
-//! *compositions* are ours to get right: Steam layers ECB and CBC in a specific
-//! order, and derives its CBC IV from an HMAC in a specific way, and neither is
-//! something a general-purpose crypto crate offers.
-//!
-//! # What is deliberately not here
-//!
-//! Valve's universe public key. It is a constant, and a constant that must be
-//! verified against a real handshake rather than typed from memory, so it lives
-//! next to the handshake that uses it in `tapline-net`.
+//! The cryptography Steam's protocol needs: RustCrypto wrappers plus Steam's compositions.
 
 mod symmetric;
 
@@ -24,12 +11,7 @@ use hmac::{Hmac, Mac};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
-/// SHA-1 of `data`.
-///
-/// SHA-1 is not a security boundary here and is not being used as one: Steam
-/// identifies every content chunk by the SHA-1 of its plaintext, so this is
-/// content addressing. The integrity guarantee comes from the id having been
-/// named in a manifest that arrived over an authenticated channel.
+/// SHA-1 of `data`; content addressing, not a security boundary.
 #[must_use]
 pub fn sha1(data: &[u8]) -> [u8; 20] {
     let mut hasher = Sha1::new();
@@ -48,8 +30,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// HMAC-SHA1 of `data` under `key`.
 #[must_use]
 pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
-    // `new_from_slice` only fails for key lengths HMAC cannot accommodate, and
-    // HMAC accommodates every length by construction, so this cannot fail.
+    // HMAC accepts keys of any length, so this cannot fail.
     let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(key)
         .unwrap_or_else(|_| unreachable!("HMAC accepts keys of any length"));
     mac.update(data);
@@ -57,11 +38,6 @@ pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
 }
 
 /// Fills an array from the operating system's RNG.
-///
-/// Every random value in the workspace comes from here so there is one place to
-/// look when asking "is this actually random". Used for session keys and for
-/// WebSocket frame masks — the latter looks cosmetic but is not, since a
-/// predictable mask defeats the cache-poisoning defence the mask exists for.
 #[must_use]
 pub fn random_bytes<const N: usize>() -> [u8; N] {
     use rand_core::{OsRng, RngCore};
@@ -71,17 +47,12 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
 }
 
 /// Compares two byte strings in time independent of their contents.
-///
-/// Used for MAC comparison. A short-circuiting `==` would leak how many leading
-/// bytes an attacker guessed correctly, which is enough to forge a MAC one byte
-/// at a time.
 #[must_use]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    // The length is public — it is a protocol constant — so returning early on
-    // a mismatch there leaks nothing. The contents are not.
+    // Lengths are protocol constants, so the early return leaks nothing.
     let mut diff = 0_u8;
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;
@@ -138,8 +109,7 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
-        // The first byte differing must be no different from the last byte
-        // differing, as far as the caller can tell.
+        // A first-byte mismatch must be indistinguishable from a last-byte one.
         assert!(!constant_time_eq(b"xbc", b"abc"));
     }
 }

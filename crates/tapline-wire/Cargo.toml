@@ -11,8 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# A leaf. No dependencies is the point: this is what keeps `prost` out of every
-# downstream consumer's graph.
+# No dependencies is the point: keeps `prost` out of downstream graphs.
 [dependencies]
 
 [lints]

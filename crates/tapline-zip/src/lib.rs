@@ -1,30 +1,4 @@
 //! Reading a ZIP that has not been downloaded.
-//!
-//! The format that motivated ranged reads. A ZIP keeps its index — the central
-//! directory — at the **end**, so nothing sequential can know what is inside
-//! until it has read all of it. Given the ability to fetch a range, that stops
-//! being a limitation and becomes a read from the tail.
-//!
-//! # The three parts
-//!
-//! ```text
-//! local header + data   per entry, in whatever order the writer chose
-//! central directory     one record per entry, with each local header's offset
-//! end of central dir    where the directory starts, and how many entries
-//! ```
-//!
-//! Read the tail, find the end record, and the directory tells you every name,
-//! size and offset. Which is why this needs two phases: the directory points at
-//! a **local header**, and that header's own length depends on fields only it
-//! carries, so an entry's data offset is one more read away. [`plan`] says what
-//! it needs; [`finalize`] finishes the job.
-//!
-//! # What this is not
-//!
-//! Not a general ZIP library. No ZIP64, no encryption, no multi-disk, no
-//! methods beyond stored and deflate. Each of those is refused by name rather
-//! than guessed at, because a reader that half-supports a format produces
-//! files that are wrong rather than missing.
 
 #![forbid(unsafe_code)]
 
@@ -45,34 +19,18 @@ const STORE: u16 = 0;
 /// Deflate.
 const DEFLATE: u16 = 8;
 
-/// How much of the tail to read to find the end record.
-///
-/// The end record is 22 bytes plus a comment of up to 65,535, so 64 KiB + a
-/// little always contains it. That is one chunk, whatever the archive's size.
+/// Tail window: the 22-byte end record plus a comment of up to 65,535.
 #[must_use]
 pub const fn index_location() -> IndexLocation {
     IndexLocation::Tail(66 * 1024)
 }
 
-/// Finds the end-of-central-directory record.
-///
-/// Backwards, because the record is near the end and an arbitrary comment
-/// follows it. Backwards alone is not enough: the comment may itself contain
-/// the signature, and it sits **after** the real record, so taking the last
-/// match takes the decoy. Every candidate is checked instead — a real record's
-/// comment length reaches exactly the end of the file, and a decoy's does not.
-///
-/// Found by reading an archive built elsewhere with a comment containing
-/// `PK\x05\x06`. A fixture written by this crate would never have contained one.
+/// Every candidate is verified: a comment can contain a decoy signature.
 fn find_end_record(tail: &[u8]) -> Option<usize> {
     let mut at = tail.len().checked_sub(4)?;
     loop {
         if tail.get(at..at.saturating_add(4)) == Some(&END_SIGNATURE) {
-            // A candidate that cannot even hold a full record is not one. This
-            // must reject the candidate and keep looking, not abandon the
-            // search: a `?` here walked out of the whole function the first
-            // time a decoy appeared too near the end to read, and reported no
-            // end record at all for an archive that plainly had one.
+            // Reject implausible candidates and keep searching; a decoy may sit too near the end.
             let plausible = tail
                 .get(at..)
                 .and_then(|rest| u16_at(rest, 20))
@@ -109,12 +67,6 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// Reads the index out of the archive's tail.
-///
-/// `tail` is the last bytes of the file and `tail_start` is where they begin,
-/// so offsets can be translated into the whole file's coordinates.
-///
-/// The entries come back with their **local header** offsets and the ranges
-/// needed to turn those into data offsets; see [`finalize`].
 pub fn plan(tail: &[u8], tail_start: u64) -> Result<IndexPlan, ExtensionError> {
     let end_at = find_end_record(tail).ok_or(ExtensionError::Malformed {
         extension: "zip",
@@ -135,7 +87,6 @@ pub fn plan(tail: &[u8], tail_start: u64) -> Result<IndexPlan, ExtensionError> {
         });
     }
 
-    // The directory may start before the tail we were given. Ask for it.
     if directory_start < tail_start {
         return Ok(IndexPlan {
             entries: Vec::new(),
@@ -179,8 +130,7 @@ pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, Ex
         let comment_len = u16_at(record, 32).ok_or_else(|| short("central directory"))? as usize;
         let local = u64::from(u32_at(record, 42).ok_or_else(|| short("central directory"))?);
 
-        // Bit 0 is encryption. A reader that ignored it would write ciphertext
-        // to disk and call it a file.
+        // Bit 0 is encryption; ignoring it would write ciphertext to disk.
         if flags & 1 != 0 {
             return Err(ExtensionError::Malformed {
                 extension: "zip",
@@ -206,8 +156,7 @@ pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, Ex
         let name_bytes = record
             .get(name_at..name_at + name_len)
             .ok_or_else(|| short("an entry name"))?;
-        // Lossy on purpose: a name that is not UTF-8 is still a file that has
-        // to be called something, and the path validator sees the result.
+        // Lossy on purpose; the path validator sees the result.
         let path = String::from_utf8_lossy(name_bytes).into_owned();
 
         entries.push(ArchiveEntry {
@@ -230,9 +179,6 @@ pub fn read_directory(directory: &[u8], expected: usize) -> Result<IndexPlan, Ex
 }
 
 /// Turns local-header offsets into data offsets.
-///
-/// `headers` are the ranges [`plan`] asked for, in the same order as the
-/// entries.
 pub fn finalize(
     mut entries: Vec<ArchiveEntry>,
     headers: &[Vec<u8>],
@@ -258,9 +204,7 @@ pub fn finalize(
                 ),
             });
         }
-        // The local header's name and extra lengths are its own, and need not
-        // match the central directory's — which is exactly why this second read
-        // exists rather than assuming.
+        // The local header's name and extra lengths need not match the central directory's.
         let name_len = u64::from(u16_at(header, 26).ok_or_else(|| short("a local header"))?);
         let extra_len = u64::from(u16_at(header, 28).ok_or_else(|| short("a local header"))?);
         entry.offset = entry
@@ -297,8 +241,6 @@ pub fn decode(entry: &ArchiveEntry, stored: &[u8]) -> Result<Vec<u8>, ExtensionE
 mod tests {
     use super::*;
 
-    /// Builds a ZIP the way a writer would, so the reader can be tested against
-    /// bytes rather than against itself.
     fn build(files: &[(&str, &[u8], bool)]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut records = Vec::new();
@@ -324,8 +266,7 @@ mod tests {
             out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             out.extend_from_slice(&(body.len() as u32).to_le_bytes());
             out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            // A non-empty extra field, because a reader that assumed the local
-            // header matched the central one would pass without it.
+            // A non-empty extra field catches readers that assume it matches the central record.
             out.extend_from_slice(&4_u16.to_le_bytes());
             out.extend_from_slice(name.as_bytes());
             out.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
@@ -375,7 +316,6 @@ mod tests {
         out
     }
 
-    /// Reads an archive the way the pipeline does: tail, plan, headers, finalize.
     fn read(raw: &[u8]) -> Vec<ArchiveEntry> {
         let IndexLocation::Tail(want) = index_location() else {
             panic!("zip should read from the tail");
@@ -407,7 +347,6 @@ mod tests {
 
     #[test]
     fn an_entry_can_be_cut_out_by_its_offset() {
-        // The whole point: read only these bytes and get the file.
         let raw = build(&[("a.txt", b"hello", false), ("b.txt", b"world!", false)]);
         let entries = read(&raw);
         for (entry, expected) in entries.iter().zip([&b"hello"[..], &b"world!"[..]]) {
@@ -437,10 +376,6 @@ mod tests {
 
     #[test]
     fn the_local_headers_extra_field_is_honoured() {
-        // The fixture writes a 4-byte extra field into every local header and
-        // none into the central directory. A reader that took the data offset
-        // from the central record alone would be four bytes early on every
-        // entry — and would produce files that are wrong rather than missing.
         let raw = build(&[("a.txt", b"exact", false)]);
         let entries = read(&raw);
         let stored = raw
@@ -461,8 +396,7 @@ mod tests {
     #[test]
     fn an_unknown_compression_method_names_itself() {
         let mut raw = build(&[("a.txt", b"body", false)]);
-        // Method lives at offset 10 of the central record, which is at the
-        // directory start recorded in the end record.
+        // Method lives at offset 10 of the central record.
         let end_at = raw
             .windows(4)
             .rposition(|w| w == END_SIGNATURE)
@@ -508,8 +442,6 @@ mod tests {
 
     #[test]
     fn a_directory_before_the_tail_is_asked_for() {
-        // A large archive keeps its directory far from the end. The reader must
-        // say so rather than read past the buffer it was given.
         let raw = build(&[("a.txt", b"one", false)]);
         // Pretend the tail we hold starts after the directory does.
         let tail_start = raw.len() as u64 - 30;

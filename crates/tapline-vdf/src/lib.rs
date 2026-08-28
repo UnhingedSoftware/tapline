@@ -1,17 +1,4 @@
-//! Valve's KeyValues text format — what `appmanifest_*.acf` is written in.
-//!
-//! This matters more than a config parser normally would, because tapline is
-//! expected to *share* state with the real Steam client and with steamcmd. An
-//! install we produce has to be one they can read and update, and an install
-//! they produced has to be one we can take over and patch incrementally. That
-//! only works if a file survives a parse-and-write round trip byte for byte,
-//! which is why the writer reproduces Valve's exact layout — tab indent, two
-//! tabs between a key and its value, brace on its own line — rather than
-//! whatever looks tidy.
-//!
-//! Ordering is preserved for the same reason: KeyValues is a list of pairs, not
-//! a map. Duplicate keys are legal and Valve emits them, so nothing here
-//! deduplicates.
+//! Valve's KeyValues text format; files must round-trip byte for byte.
 
 mod parse;
 mod write;
@@ -20,19 +7,10 @@ pub use parse::{VdfError, parse};
 
 use std::fmt;
 
-/// How deep nesting may go.
-///
-/// Valve's own files reach five or six levels. The limit is for hostile input:
-/// KeyValues arrives from the network as well as from disk, and a file that is
-/// nothing but open braces would otherwise recurse until the stack runs out.
+/// Nesting bound for hostile input; Valve's own files reach five or six levels.
 pub const MAX_DEPTH: u32 = 64;
 
-/// A KeyValues value: either a string or a nested object.
-///
-/// There are no numeric variants. Text KeyValues has no types — `"appid"
-/// "232250"` is a string, and whether it means a number is the caller's
-/// business. Inventing an integer variant here would mean guessing, and then
-/// writing back a different spelling than we read.
+/// A KeyValues value; text KeyValues has no numeric types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     /// A leaf string.
@@ -61,11 +39,7 @@ impl Value {
     }
 }
 
-/// An ordered list of key/value pairs.
-///
-/// Deliberately not a map: KeyValues preserves order and permits duplicate keys,
-/// and an install file that came back with its keys reordered would no longer
-/// match what Steam wrote.
+/// An ordered list of pairs; KeyValues permits duplicates and preserves order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Object {
     pairs: Vec<(String, Value)>,
@@ -100,10 +74,7 @@ impl Object {
         self.pairs.iter().map(|(k, v)| (k.as_str(), v))
     }
 
-    /// The first value for `key`.
-    ///
-    /// Case-insensitive, because Valve's own reader is: `appid` and `AppID`
-    /// address the same field, and different Steam versions have written both.
+    /// The first value for `key`, case-insensitive like Valve's own reader.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.pairs
@@ -124,20 +95,13 @@ impl Object {
         self.get(key).and_then(Value::as_object)
     }
 
-    /// The first value for `key`, parsed as an unsigned integer.
-    ///
-    /// Returns `None` rather than zero when the field is missing or is not a
-    /// number: a missing `size` and a `size` of 0 mean very different things to
-    /// a downloader.
+    /// The first value parsed as unsigned; missing or non-numeric is `None`, not zero.
     #[must_use]
     pub fn get_u64(&self, key: &str) -> Option<u64> {
         self.get_str(key)?.trim().parse().ok()
     }
 
-    /// Replaces the first value for `key`, or appends it if absent.
-    ///
-    /// Replacing in place is what keeps a rewritten `appmanifest` in the same
-    /// field order Steam wrote it in.
+    /// Replaces the first value for `key` in place, or appends it if absent.
     pub fn set(&mut self, key: &str, value: Value) {
         if let Some(slot) = self
             .pairs

@@ -1,30 +1,4 @@
-//! The protobuf wire format, implemented directly.
-//!
-//! This exists so nothing downstream inherits `prost`, a build script, or a
-//! `protoc` binary. Code generation happens once in `xtask` and its output is
-//! committed; at runtime the generated structs call straight into [`Decoder`]
-//! and [`Encoder`] here.
-//!
-//! # Reading untrusted bytes
-//!
-//! Every byte this crate parses came off a socket. The decoder therefore:
-//!
-//! * never panics — `indexing_slicing` is denied workspace-wide, so a truncated
-//!   message returns [`WireError::Truncated`] instead of slicing past the end;
-//! * bounds every allocation by the remaining input, so a length prefix claiming
-//!   4 GB inside a 100-byte message cannot make us reserve 4 GB;
-//! * bounds nesting depth, so a message that is nothing but nested
-//!   length-delimited headers cannot blow the stack.
-//!
-//! # Scope
-//!
-//! Steam's `.proto` files are proto2. The subset used here is what Steam
-//! actually puts on the wire: varints, 32- and 64-bit fixed fields,
-//! length-delimited fields, and packed repeated scalars. Groups (wire types 3
-//! and 4) were removed from protobuf before Steam's schema was written and are
-//! rejected rather than skipped, because silently ignoring a field we do not
-//! understand is how a decoder ends up disagreeing with the sender about what a
-//! message said.
+//! The protobuf wire format, implemented directly; no `prost`, no build script.
 
 mod decode;
 mod encode;
@@ -32,11 +6,7 @@ mod encode;
 pub use decode::{Decoder, WireError};
 pub use encode::Encoder;
 
-/// How many nested length-delimited messages the decoder will follow.
-///
-/// Steam's own messages nest three or four deep. The limit exists for hostile
-/// input, not legitimate input, so it is set far above what the protocol needs
-/// and far below what would exhaust the stack.
+/// Nesting bound for hostile input; Steam's own messages nest three or four deep.
 pub const MAX_DEPTH: u32 = 64;
 
 /// A protobuf wire type: the low three bits of a field key.
@@ -53,10 +23,7 @@ pub enum WireType {
 }
 
 impl WireType {
-    /// Decodes the low three bits of a field key.
-    ///
-    /// Wire types 3 and 4 are the deprecated group markers, and 6 and 7 have
-    /// never been assigned; all are rejected.
+    /// Decodes the low three bits; groups (3, 4) and unassigned (6, 7) are rejected.
     pub const fn from_bits(bits: u32) -> Result<Self, WireError> {
         match bits {
             0 => Ok(Self::Varint),
@@ -89,14 +56,8 @@ pub struct FieldKey {
 }
 
 /// A protobuf message that can be read from and written to the wire.
-///
-/// Generated code implements this; hand-written code should not need to.
 pub trait Message: Sized + Default {
-    /// Merges the fields in `decoder` into `self`.
-    ///
-    /// Merging rather than replacing is protobuf's own semantics: a repeated
-    /// field appends, and a message field merges recursively. It also means a
-    /// message split across two length-delimited chunks reassembles correctly.
+    /// Merges the fields in `decoder` into `self`, protobuf's own semantics.
     fn merge(&mut self, decoder: &mut Decoder<'_>) -> Result<(), WireError>;
 
     /// Appends this message's fields to `encoder`.
@@ -119,15 +80,6 @@ pub trait Message: Sized + Default {
 }
 
 /// A request message that names its own response type and RPC target.
-///
-/// Steam's unified messages are addressed by a string such as
-/// `Authentication.BeginAuthSessionViaCredentials`, and every one of them has
-/// exactly one response type. Tying the three together in the type system means
-/// the RPC layer can be written once, generically, and a caller cannot ask for
-/// one method and decode another's reply — a mistake that otherwise surfaces as
-/// a message that decodes to all-default fields with no error at all.
-///
-/// Implemented by generated code from the `service` blocks in Valve's schema.
 pub trait Rpc: Message {
     /// The reply Steam sends.
     type Response: Message;
@@ -199,8 +151,6 @@ mod tests {
 
     #[test]
     fn group_wire_types_are_rejected_rather_than_skipped() {
-        // A decoder that skipped these would silently disagree with the sender
-        // about the contents of the message.
         assert!(matches!(
             WireType::from_bits(3),
             Err(WireError::InvalidWireType(3))

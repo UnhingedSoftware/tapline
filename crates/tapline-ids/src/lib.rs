@@ -1,13 +1,4 @@
-//! Steam's identifier types.
-//!
-//! These are newtypes rather than bare `u32`/`u64` because the protocol hands
-//! you half a dozen different integers that all look alike on the wire, and
-//! passing a depot id where a manifest id belongs is otherwise a silent bug that
-//! surfaces as an HTTP 401 from the CDN three layers away.
-//!
-//! The crate has no dependencies, internal or external. It is not `no_std`:
-//! browsers are out of scope, so that would buy portability nobody asked for at
-//! the cost of friction in every test.
+//! Steam's identifier types, as newtypes so ids cannot be swapped silently.
 
 mod eresult;
 mod steamid;
@@ -17,8 +8,7 @@ pub use steamid::{AccountType, SteamId, Universe};
 
 use std::fmt;
 
-/// Declares a transparent integer newtype with the conversions and formatting
-/// every id in this crate wants, and nothing else.
+/// Declares a transparent integer id newtype with conversions and formatting.
 macro_rules! id_newtype {
     ($(#[$meta:meta])* $name:ident($inner:ty)) => {
         $(#[$meta])*
@@ -59,24 +49,16 @@ macro_rules! id_newtype {
 
 id_newtype! {
     /// An application: a game, a tool, or a dedicated server.
-    ///
-    /// Dedicated servers have their own appid distinct from the game's — Team
-    /// Fortress 2 is 440 but its server is 232250 — which is why installing a
-    /// server never needs the game to be owned.
     AppId(u32)
 }
 
 id_newtype! {
-    /// A depot: one bucket of content belonging to an app, usually split by
-    /// platform, architecture or language.
+    /// One bucket of an app's content, split by platform, architecture or language.
     DepotId(u32)
 }
 
 id_newtype! {
-    /// A specific build of a depot's contents.
-    ///
-    /// This is the thing that pins an install to an exact set of bytes, and the
-    /// only way to reproduce an old build.
+    /// A specific build of a depot's contents; pins an install to exact bytes.
     ManifestId(u64)
 }
 
@@ -90,13 +72,7 @@ id_newtype! {
     PackageId(u32)
 }
 
-/// A depot's AES-256 decryption key, as handed out by Steam.
-///
-/// Wrapped rather than passed as a bare `[u8; 32]` so it cannot be logged by
-/// accident: the [`fmt::Debug`] impl deliberately prints nothing useful. Steam
-/// grants these only for depots the signed-in account is entitled to, and that
-/// entitlement check is the whole reason this crate never learned to cache them
-/// to disk.
+/// A depot's AES-256 key; `Debug` prints nothing so it cannot leak into logs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DepotKey([u8; 32]);
 
@@ -134,8 +110,6 @@ mod tests {
 
     #[test]
     fn depot_key_does_not_leak_through_debug() {
-        // The point of the wrapper: a key that reaches a tracing span must not
-        // print itself.
         let key = DepotKey::new([0xAB; 32]);
         let rendered = format!("{key:?}");
         assert_eq!(rendered, "DepotKey(<redacted>)");

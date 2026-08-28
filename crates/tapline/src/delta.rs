@@ -1,24 +1,4 @@
 //! Working out what an update actually has to fetch.
-//!
-//! A depot's content is chunked and every chunk is named by the SHA-1 of its
-//! plaintext. Two builds of the same depot therefore share every chunk whose
-//! content did not change, and a manifest diff is a set difference over chunk
-//! ids. That is where a "20 GB update" becomes 200 MB.
-//!
-//! Two independent sources of reuse, and both matter:
-//!
-//! * **The old manifest.** If the depot is installed at a known manifest, the
-//!   chunks that appear in both are already on disk at known offsets, and can be
-//!   copied locally rather than downloaded.
-//! * **What is actually on disk.** A resumed download has files that are
-//!   partially correct, and a `validate` run has files that may have rotted.
-//!   Reading a chunk back and hashing it answers the question directly, without
-//!   trusting any record of what happened last time.
-//!
-//! The second is slower and always right; the first is instant and depends on
-//! the install record being honest. An update uses the first, `validate` uses
-//! the second, and a resume after a crash uses the second for the file it was
-//! part-way through.
 
 use std::collections::{HashMap, HashSet};
 use tapline_manifest::{Chunk, Manifest};
@@ -29,8 +9,6 @@ pub enum ChunkSource {
     /// Fetch it from the CDN.
     Download,
     /// Copy it from somewhere already on disk.
-    ///
-    /// The path is relative to the install root, as the old manifest named it.
     Local {
         /// The file holding the bytes.
         path: String,
@@ -71,15 +49,9 @@ impl DeltaPlan {
 }
 
 /// Diffs a new manifest against the build already installed.
-///
-/// `old` is the manifest the depot is currently at. Chunks present in both are
-/// marked reusable, with the location the *old* manifest gave them — that is
-/// where the bytes are on disk right now.
 #[must_use]
 pub fn diff(old: &Manifest, new: &Manifest) -> DeltaPlan {
-    // Where each chunk currently lives. First occurrence wins: a chunk repeated
-    // across files is the same bytes either way, and reading the first is as
-    // good as reading the fifth.
+    // First occurrence wins: a repeated chunk is the same bytes anywhere.
     let mut existing: HashMap<[u8; 20], (String, u64)> = HashMap::new();
     for file in old.regular_files() {
         for chunk in &file.chunks {
@@ -128,12 +100,6 @@ pub fn full(new: &Manifest) -> DeltaPlan {
 }
 
 /// Files present in `old` but not in `new`.
-///
-/// An update must delete these. Leaving them behind is how an install
-/// accumulates dead files across updates until it no longer matches what a
-/// fresh install of the same build would produce — which is exactly what the
-/// differential test against steamcmd would catch, and exactly what an operator
-/// would not.
 #[must_use]
 pub fn removed_files(old: &Manifest, new: &Manifest) -> Vec<String> {
     let kept: HashSet<&str> = new.files.iter().map(|file| file.path.as_str()).collect();
@@ -184,8 +150,6 @@ mod tests {
 
     #[test]
     fn an_unchanged_build_downloads_nothing() {
-        // The most important case for an operator: running an update when
-        // nothing changed must not move a byte.
         let build = manifest(
             1,
             vec![file("a", vec![chunk(1, 0, 100), chunk(2, 100, 100)])],
@@ -203,7 +167,6 @@ mod tests {
 
     #[test]
     fn only_the_changed_chunks_are_fetched() {
-        // The claim the whole crate exists to support.
         let old = manifest(
             1,
             vec![file(
@@ -231,8 +194,6 @@ mod tests {
 
     #[test]
     fn a_chunk_that_moved_is_still_reused() {
-        // Content addressing means a chunk that changed position is the same
-        // bytes. Fetching it again would be paying for a memmove.
         let old = manifest(
             1,
             vec![file("a", vec![chunk(1, 0, 100), chunk(2, 100, 100)])],
@@ -249,7 +210,6 @@ mod tests {
 
     #[test]
     fn a_chunk_that_moved_between_files_is_still_reused() {
-        // And the source it is copied from is the file that actually holds it.
         let old = manifest(1, vec![file("a", vec![chunk(1, 0, 100)])]);
         let new = manifest(2, vec![file("b", vec![chunk(1, 0, 100)])]);
 
@@ -292,7 +252,6 @@ mod tests {
 
     #[test]
     fn a_realistic_update_reuses_almost_everything() {
-        // The shape of a real patch: one changed chunk in two hundred.
         let old_chunks: Vec<Chunk> = (0..200).map(|i| chunk(i as u8, i * 1000, 1000)).collect();
         let mut new_chunks = old_chunks.clone();
         if let Some(slot) = new_chunks.get_mut(100) {
@@ -313,8 +272,6 @@ mod tests {
 
     #[test]
     fn files_dropped_from_a_build_are_reported_for_deletion() {
-        // Left behind, they accumulate across updates until the install no
-        // longer matches what a fresh install of the same build would produce.
         let old = manifest(
             1,
             vec![

@@ -1,35 +1,10 @@
 //! Where a refresh token lives between runs.
-//!
-//! A refresh token is what lets a second run skip the login. It is worth less
-//! than the password it replaces — Steam can revoke it, it is scoped to one
-//! platform, and it expires — but it is still a credential, and it is treated
-//! like one.
-//!
-//! # Storing it is opt-in
-//!
-//! Nothing is written unless the caller asks. A dedicated-server install needs
-//! no account at all, so the default for this whole crate is that it is never
-//! reached.
-//!
-//! # Two backends, and why the file is the default
-//!
-//! The OS keyring is the better place and is available behind the `keyring`
-//! feature. It is not the default because a headless game-server node usually
-//! has no keyring daemon running, and a download that refuses to start because
-//! `dbus` is absent would be a worse failure than a `0600` file.
-//!
-//! The file is created with mode `0600` **before** anything is written to it, so
-//! there is no window where the token exists world-readable. That ordering is
-//! the whole trick, and getting it backwards is the usual bug.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// A stored refresh token.
-///
-/// Zeroed on drop and refuses to print itself: a token in a log line is a
-/// credential in a log line.
+/// A stored refresh token; zeroed on drop, never printed.
 #[derive(Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
 pub struct StoredToken {
     /// The account the token belongs to.
@@ -39,35 +14,21 @@ pub struct StoredToken {
 }
 
 impl StoredToken {
-    /// The SteamID this token belongs to.
-    ///
-    /// A logon has to name the account's own SteamID, and the token already
-    /// carries it: a Steam refresh token is a JWT whose `sub` claim is the
-    /// 64-bit id. Reading it here means the store keeps one field instead of
-    /// two that could disagree, and it works for the keyring backend, which
-    /// holds nothing but the token string.
-    ///
-    /// Returns `None` for anything that is not a token with a readable `sub`,
-    /// which the caller should treat as "log in again" rather than as a crash.
+    /// The SteamID from the token's `sub` claim; `None` means "log in again".
     #[must_use]
     pub fn steam_id(&self) -> Option<u64> {
         steam_id_from_jwt(&self.refresh_token)
     }
 }
 
-/// Reads the `sub` claim of a JWT without verifying it.
-///
-/// Not verifying is the point: this is Steam's own token being handed back to
-/// Steam, and the only thing wanted from it is which account it is for. Steam
-/// decides whether it is valid.
+/// Reads the JWT `sub` claim without verifying; Steam validates the token itself.
 fn steam_id_from_jwt(token: &str) -> Option<u64> {
     // header.payload.signature — the middle part is the claims.
     let payload = token.split('.').nth(1)?;
     let decoded = base64url_decode(payload)?;
     let text = std::str::from_utf8(&decoded).ok()?;
 
-    // A targeted scan rather than a JSON parser: this crate does not have one,
-    // and one field of one shape does not justify adding it.
+    // Targeted scan; one field does not justify a JSON parser.
     let start = text.find("\"sub\"")?;
     let rest = text.get(start + 5..)?;
     let quoted = rest.find('"')?;
@@ -86,7 +47,6 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
             b'A'..=b'Z' => Some(byte - b'A'),
             b'a'..=b'z' => Some(byte - b'a' + 26),
             b'0'..=b'9' => Some(byte - b'0' + 52),
-            // The url alphabet, which is why a standard decoder would fail here.
             b'-' => Some(62),
             b'_' => Some(63),
             _ => None,
@@ -127,10 +87,7 @@ pub enum TokenStoreError {
     Backend(String),
     /// The stored data was not in the expected shape.
     Malformed,
-    /// The token file's permissions are wider than they should be.
-    ///
-    /// Refused rather than read: a token another local user can read is one that
-    /// should be replaced, and silently using it would hide that.
+    /// The token file is readable by other users; refused rather than used.
     Insecure {
         /// The file's mode.
         mode: u32,
@@ -163,15 +120,11 @@ pub enum TokenStore {
     /// The OS keyring.
     #[cfg(feature = "keyring")]
     Keyring,
-    /// Nowhere. Logging in works; the token is discarded when the process ends.
-    ///
-    /// The default, and the right one for a scheduler that holds credentials
-    /// itself and does not want a second copy on the node.
+    /// Nowhere: the token is discarded when the process ends.
     #[default]
     None,
 }
 
-/// The keyring service name, when that backend is in use.
 #[cfg(feature = "keyring")]
 const KEYRING_SERVICE: &str = "tapline";
 
@@ -226,21 +179,7 @@ impl TokenStore {
         }
     }
 
-    /// Forgets an account's token.
-    ///
-    /// What a logout does locally. It does not revoke the token with Steam —
-    /// that is a separate request, and pretending otherwise would leave someone
-    /// believing a stolen token was dead.
-    /// The accounts with a saved token, so a caller can show or clear them
-    /// without connecting to Steam.
-    ///
-    /// The file backend enumerates them. The OS keyring cannot be listed by
-    /// service on every platform, so it returns empty there rather than a
-    /// partial answer that looks complete — check a specific account with
-    /// [`TokenStore::load`] instead.
-    ///
-    /// # Errors
-    /// If the store cannot be read.
+    /// The accounts with a saved token; the keyring backend returns empty.
     pub fn accounts(&self) -> Result<Vec<String>, TokenStoreError> {
         match self {
             Self::None => Ok(Vec::new()),
@@ -250,13 +189,7 @@ impl TokenStore {
         }
     }
 
-    /// Forgets every saved token.
-    ///
-    /// Only the file backend, where the set is known; the keyring is cleared
-    /// one named account at a time with [`TokenStore::forget`].
-    ///
-    /// # Errors
-    /// If the store cannot be written.
+    /// Forgets every saved token; file backend only.
     pub fn forget_all(&self) -> Result<(), TokenStoreError> {
         match self {
             Self::None => Ok(()),
@@ -266,11 +199,7 @@ impl TokenStore {
         }
     }
 
-    /// Forgets one account's token.
-    ///
-    /// What a logout does locally. It does not revoke the token with Steam —
-    /// that is a separate request, and pretending otherwise would leave someone
-    /// believing a stolen token was dead.
+    /// Forgets one account's token locally; it does not revoke with Steam.
     pub fn forget(&self, account: &str) -> Result<(), TokenStoreError> {
         match self {
             Self::None => Ok(()),
@@ -292,7 +221,6 @@ impl TokenStore {
     }
 }
 
-/// Reads every stored entry.
 fn read_all(path: &Path) -> Result<Vec<(String, String)>, TokenStoreError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -307,15 +235,13 @@ fn read_all(path: &Path) -> Result<Vec<(String, String)>, TokenStoreError> {
         if line.trim().is_empty() {
             continue;
         }
-        // `account\ttoken`. A tab because an account name cannot contain one and
-        // a token is base64url, so nothing needs escaping.
+        // `account\ttoken`; a tab needs no escaping in either field.
         let (account, token) = line.split_once('\t').ok_or(TokenStoreError::Malformed)?;
         out.push((account.to_owned(), token.to_owned()));
     }
     Ok(out)
 }
 
-/// Writes every entry back.
 fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
@@ -334,17 +260,12 @@ fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStore
     Ok(())
 }
 
-/// Creates the file with `0600` **before** writing to it.
-///
-/// The ordering is the point. Writing first and chmod-ing after leaves a window
-/// where the token is world-readable, and that window is exactly long enough for
-/// anything watching the directory.
+/// Creates the file with `0600` before writing, so no world-readable window exists.
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
-    // A temporary file, so a crash midway cannot truncate an existing token
-    // file into nothing.
+    // Temp file + rename, so a crash cannot truncate the existing file.
     let temporary = path.with_extension("tmp");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -363,7 +284,6 @@ fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     std::fs::rename(&temporary, path).map_err(|e| TokenStoreError::Backend(e.to_string()))
 }
 
-/// Refuses a token file other users can read.
 fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -398,14 +318,11 @@ fn read_file(path: &Path, account: &str) -> Result<Option<StoredToken>, TokenSto
 mod tests {
     use super::*;
 
-    /// A token shaped like Steam's: header.payload.signature, unpadded
-    /// base64url, with the SteamID in `sub`.
+    /// header.payload.signature, unpadded base64url, with the SteamID in `sub`.
     const REAL_SHAPE: &str = "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiAic3RlYW0iLCAic3ViIjogIjc2NTYxMTk4MTYwNTcwMjA4IiwgImF1ZCI6IFsiY2xpZW50IiwgIndlYiJdLCAiZXhwIjogMTkwMDAwMDAwMH0.c2lnbmF0dXJl";
 
     #[test]
     fn a_token_knows_which_account_it_is_for() {
-        // The logon header needs this and the store does not hold it, so a
-        // wrong answer here is a logon that fails with no useful message.
         let token = StoredToken {
             account: "someone".to_owned(),
             refresh_token: REAL_SHAPE.to_owned(),
@@ -432,8 +349,7 @@ mod tests {
 
     #[test]
     fn base64url_reads_the_alphabet_a_jwt_uses() {
-        // `-` and `_` rather than `+` and `/`, and no padding: a standard
-        // decoder rejects exactly the tokens this has to read.
+        // `-`/`_` alphabet, no padding; a standard decoder rejects these.
         assert_eq!(base64url_decode("Zm9vYmFy"), Some(b"foobar".to_vec()));
         assert_eq!(base64url_decode("Zg"), Some(b"f".to_vec()));
         assert_eq!(base64url_decode("Zg=="), Some(b"f".to_vec()));
@@ -445,7 +361,6 @@ mod tests {
     }
     use std::os::unix::fs::PermissionsExt;
 
-    /// A scratch directory that removes itself.
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -532,8 +447,6 @@ mod tests {
 
     #[test]
     fn a_world_readable_token_file_is_refused_rather_than_used() {
-        // A token another local user can read should be replaced, and silently
-        // using it would hide that.
         let scratch = Scratch::new("tokens-insecure");
         let store = scratch.store();
         store.save(&token("someone")).expect("save");
@@ -594,8 +507,6 @@ mod tests {
 
     #[test]
     fn the_default_store_keeps_nothing() {
-        // Right for a scheduler that holds credentials itself and does not want
-        // a second copy on the node.
         let store = TokenStore::default();
         store.save(&token("someone")).expect("save");
         assert_eq!(store.load("someone").expect("load"), None);

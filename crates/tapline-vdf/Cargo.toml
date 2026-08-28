@@ -11,7 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# A leaf. No dependencies.
 [dependencies]
 
 [lints]

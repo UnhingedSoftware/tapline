@@ -1,13 +1,4 @@
-//! Writing content to disk.
-//!
-//! Positional writes, so many chunks land at once. `Sink::write_at` takes
-//! `&self` for exactly this reason: chunks arrive from several CDN hosts
-//! concurrently at unrelated offsets, and serialising them behind one cursor
-//! would throw away the parallelism the host pool exists to create.
-//!
-//! The file is allocated to its full size before the first chunk is written.
-//! That keeps it contiguous, and it means a full disk is discovered up front
-//! rather than ninety per cent of the way through a download.
+//! Writing content to disk with positional writes.
 
 use std::fs::File;
 use std::io;
@@ -21,11 +12,7 @@ pub struct FileSink {
 }
 
 impl FileSink {
-    /// Creates or truncates the file at `path`, creating parent directories.
-    ///
-    /// The path must already have been validated by `tapline-fs`: this opens
-    /// what it is given and does not second-guess it, which is precisely why
-    /// nothing should call it with a path straight out of a manifest.
+    /// Creates the file and its parents; the path must be pre-validated by `tapline-fs`.
     pub fn create(path: &Path) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -35,20 +22,12 @@ impl FileSink {
     }
 
     /// Opens an existing file for update, keeping its contents.
-    ///
-    /// Used by a resume, where most of the file is already correct.
     pub fn open_existing(path: &Path) -> io::Result<Self> {
         let file = File::options().write(true).read(true).open(path)?;
         Ok(Self { file })
     }
 
-    /// Flushes to disk, blocking.
-    ///
-    /// The `Sink` trait's `sync` is an async method whose body is this same
-    /// blocking call, which is fine when it is awaited somewhere that can
-    /// afford to block and wrong when it is awaited on a task that is also
-    /// dispatching work. Exposing it directly lets the caller put it on a
-    /// blocking thread where it belongs.
+    /// Flushes to disk, blocking; put it on a blocking thread.
     pub fn sync_blocking(&self) -> io::Result<()> {
         self.file.sync_all()
     }
@@ -63,8 +42,7 @@ impl FileSink {
 
 impl Sink for FileSink {
     async fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
-        // `write_all_at` is a positional write: it does not move a shared file
-        // offset, so concurrent callers cannot interleave.
+        // Positional write: no shared offset, so concurrent callers cannot interleave.
         self.file.write_all_at(data, offset)
     }
 
@@ -82,10 +60,7 @@ mod tests {
     use super::*;
     use tapline_io::testing::block_on;
 
-    /// A scratch directory that removes itself, including on panic.
-    ///
-    /// Never under `/tmp`: it is tmpfs on the development machine, so a depot
-    /// test there would be tens of gigabytes of RAM.
+    /// Scratch dir, never under `/tmp`: that is tmpfs on the dev machine.
     struct Scratch(std::path::PathBuf);
 
     impl Scratch {
@@ -117,8 +92,6 @@ mod tests {
 
     #[test]
     fn out_of_order_writes_assemble_the_same_file() {
-        // Chunks arrive from several hosts at once and land wherever their
-        // offsets say. Order must not matter.
         let scratch = Scratch::new("sink-order");
         let path = scratch.join("nested/dir/file.bin");
 
@@ -136,7 +109,6 @@ mod tests {
 
     #[test]
     fn allocation_sets_the_final_size_up_front() {
-        // So a full disk is found before the download rather than during it.
         let scratch = Scratch::new("sink-allocate");
         let path = scratch.join("sized.bin");
 
@@ -149,7 +121,6 @@ mod tests {
 
     #[test]
     fn an_existing_file_can_be_read_back_for_verification() {
-        // What a resume does: check what is on disk before refetching it.
         let scratch = Scratch::new("sink-resume");
         let path = scratch.join("partial.bin");
         std::fs::write(&path, b"0123456789").expect("seed");
@@ -163,9 +134,6 @@ mod tests {
 
     #[test]
     fn concurrent_writes_do_not_interleave() {
-        // The property that makes &self correct: positional writes do not share
-        // a cursor, so two threads writing different offsets cannot corrupt
-        // each other.
         let scratch = Scratch::new("sink-concurrent");
         let path = scratch.join("parallel.bin");
 

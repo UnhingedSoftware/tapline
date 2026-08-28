@@ -1,10 +1,4 @@
 //! Choosing which CDN host to ask.
-//!
-//! Steam offers a dozen or so hosts per cell and reports a load figure for each.
-//! The pool spreads work across them and stops asking one that has started
-//! refusing — which is as much about not being throttled as about resilience.
-//! A download that hammers a single host is a download that gets rate-limited,
-//! and being fast must never look like abuse.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -14,38 +8,18 @@ use std::fmt;
 pub struct Host {
     /// The hostname to connect to.
     pub host: String,
-    /// The `Host:` header value, when it differs — a lancache serves many
-    /// origins from one address and needs the vhost to know what was asked for.
+    /// The `Host:` header value, when it differs from the hostname.
     pub vhost: String,
     /// Steam's load figure, lower being better.
     pub load: u32,
     /// Whether Steam says TLS is mandatory for this host.
-    ///
-    /// Measured 2026-08-26: every host Steam returned said `mandatory`. A host
-    /// that says otherwise is almost certainly a local cache.
     pub https_required: bool,
 }
 
 /// Whether a host Steam offered can be used, given that every fetch is TLS.
-///
-/// Steam's directory mixes its own caches with third-party CDN entries, and one
-/// of those declares `https_support: "unavailable"`. It is not a hostname with a
-/// missing certificate — it is a hostname that resolves into CloudFront,
-/// CacheFly or Alibaba depending on the lookup, none of which present a
-/// certificate for `steamcontent.com`. Connecting to it over TLS fails
-/// verification, correctly, and takes the whole install with it.
-///
-/// Asking Steam for 20 servers never surfaced this. Asking for 100 did.
-///
-/// Such a host is skipped rather than fetched over plaintext. Chunk integrity
-/// would survive the downgrade — every chunk is checked against the SHA-1 that
-/// names it — but this is one host out of eighty-three, and a plaintext path
-/// that exists for a 1.2% widening of the pool is a plaintext path that will
-/// eventually be used for something else.
 #[must_use]
 pub fn usable_over_tls(https_support: Option<&str>) -> bool {
-    // Absent means an older directory response that predates the field; those
-    // hosts spoke TLS fine, so absence is not a reason to drop one.
+    // Absent predates the field; absence is not a refusal.
     !matches!(https_support, Some("unavailable"))
 }
 
@@ -70,9 +44,6 @@ impl fmt::Display for PoolError {
 impl std::error::Error for PoolError {}
 
 /// How many failures retire a host for the rest of the download.
-///
-/// Low on purpose. A host failing repeatedly is either broken or rate-limiting
-/// us, and both are answered by going elsewhere rather than by trying harder.
 const FAILURE_LIMIT: u32 = 3;
 
 /// A rotating set of CDN hosts.
@@ -84,11 +55,7 @@ pub struct HostPool {
 }
 
 impl HostPool {
-    /// Builds a pool, best host first.
-    ///
-    /// Hosts that require TLS are kept as-is; the caller decides scheme. Order
-    /// is by Steam's load figure, so the head of the list is the host Steam
-    /// thinks is least busy.
+    /// Builds a pool, ordered by Steam's load figure, best host first.
     #[must_use]
     pub fn new(mut hosts: Vec<Host>) -> Self {
         hosts.sort_by_key(|host| host.load);
@@ -108,11 +75,7 @@ impl HostPool {
             .count()
     }
 
-    /// The next host to use.
-    ///
-    /// Round-robins rather than always returning the best one: concentrating a
-    /// depot's tens of thousands of requests on a single host is what triggers
-    /// rate limiting in the first place.
+    /// The next host to use, round-robin; concentrating on one host invites rate limits.
     pub fn acquire(&mut self) -> Result<Host, PoolError> {
         if self.hosts.is_empty() {
             return Err(PoolError::Empty);
@@ -132,17 +95,12 @@ impl HostPool {
         Err(PoolError::AllDemoted)
     }
 
-    /// Records that a host failed.
-    ///
-    /// Three strikes and it is out for the rest of the download.
+    /// Records that a host failed; three strikes retire it.
     pub fn demote(&mut self, host: &str) {
         *self.failures.entry(host.to_owned()).or_insert(0) += 1;
     }
 
     /// Records that a host succeeded, forgiving one earlier failure.
-    ///
-    /// A single timeout on an otherwise healthy host should not retire it over
-    /// the course of a long download.
     pub fn succeed(&mut self, host: &str) {
         if let Some(count) = self.failures.get_mut(host) {
             *count = count.saturating_sub(1);
@@ -150,9 +108,6 @@ impl HostPool {
     }
 
     /// The hostnames still worth using, best first.
-    ///
-    /// Taken once before a download and handed to the fetch tasks, so they need
-    /// no lock on the pool to pick a host. Health is folded back afterwards.
     #[must_use]
     pub fn snapshot(&self) -> Vec<String> {
         self.hosts
@@ -198,8 +153,6 @@ mod tests {
 
     #[test]
     fn requests_rotate_rather_than_piling_onto_one_host() {
-        // Concentrating a depot's tens of thousands of requests on the best
-        // host is what gets a download rate-limited.
         let mut pool = pool();
         let picked: Vec<String> = (0..3)
             .filter_map(|_| pool.acquire().ok())
@@ -232,8 +185,6 @@ mod tests {
 
     #[test]
     fn a_success_forgives_an_earlier_failure() {
-        // One timeout on an otherwise healthy host should not retire it over a
-        // long download.
         let mut pool = pool();
         pool.demote("cache8.invalid");
         pool.demote("cache8.invalid");
@@ -269,10 +220,7 @@ mod tests {
     fn https_hosts_and_older_responses_are_kept() {
         assert!(usable_over_tls(Some("mandatory")));
         assert!(usable_over_tls(Some("optional")));
-        // A field Steam has not sent is not a refusal.
         assert!(usable_over_tls(None));
-        // An unrecognised value is not assumed hostile: the connection either
-        // verifies or it does not, and that check is the real gate.
         assert!(usable_over_tls(Some("something-new")));
     }
 }

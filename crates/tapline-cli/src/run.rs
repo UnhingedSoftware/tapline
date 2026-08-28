@@ -4,7 +4,6 @@ use crate::args::{Command, Moment, SearchFilters, Step};
 use std::path::PathBuf;
 use tapline::{AppId, InstallOptions, Os, PublishedFileId, Session};
 
-/// Runs one command.
 pub async fn execute(command: Command) -> Result<(), String> {
     match command {
         Command::Script(steps) => run_script(steps).await,
@@ -68,11 +67,6 @@ pub async fn execute(command: Command) -> Result<(), String> {
     }
 }
 
-/// Runs a steamcmd-style script.
-///
-/// Steps are evaluated in order and later ones use state the earlier ones set,
-/// which is how steamcmd behaves and what every script relies on: the
-/// `force_install_dir` before an `app_update` is the directory it installs to.
 async fn run_script(steps: Vec<Step>) -> Result<(), String> {
     let mut install_dir = PathBuf::from(".");
     let mut session: Option<Session> = None;
@@ -81,9 +75,6 @@ async fn run_script(steps: Vec<Step>) -> Result<(), String> {
         match step {
             Step::Login { account } => {
                 if let Some(account) = account {
-                    // Stated rather than silently ignored: a script asking for
-                    // a named account and getting an anonymous session would
-                    // install the wrong thing, or nothing, with no explanation.
                     return Err(format!(
                         "logging in as {account} is not supported from a script yet; \
                          run `tapline login` first, or use `+login anonymous`"
@@ -138,8 +129,6 @@ async fn run_script(steps: Vec<Step>) -> Result<(), String> {
                 let session = session
                     .as_mut()
                     .ok_or("+workshop_download_item needs a +login before it")?;
-                // The steamcmd grammar has no flag for this, and steamcmd's own
-                // layout is what a script using that grammar expects.
                 let dir = download_item(session, app, item, install_dir.clone(), false).await?;
                 println!("Success. Downloaded item {item} to \"{}\"", dir.display());
             }
@@ -150,7 +139,6 @@ async fn run_script(steps: Vec<Step>) -> Result<(), String> {
     Ok(())
 }
 
-/// `app plan`
 async fn plan(app: AppId, dir: PathBuf, branch: String, json: bool) -> Result<(), String> {
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let options = InstallOptions {
@@ -183,7 +171,6 @@ async fn plan(app: AppId, dir: PathBuf, branch: String, json: bool) -> Result<()
     Ok(())
 }
 
-/// `app download`
 async fn download(
     app: AppId,
     dir: PathBuf,
@@ -195,10 +182,7 @@ async fn download(
     let defaults = InstallOptions::default();
     let concurrency = concurrency.unwrap_or(defaults.concurrency);
 
-    // The budget is per process and a download draws from it as well as from
-    // its own limit, so a session built with the default budget caps
-    // `--concurrency` at the default however high the flag is set. This process
-    // runs one download, so the two are the same number.
+    // The process budget caps `--concurrency` unless the session is built with it.
     let mut session = Session::anonymous_shared(tapline::Shared::new(concurrency))
         .await
         .map_err(|e| e.to_string())?;
@@ -236,7 +220,6 @@ async fn download(
             report.bytes_downloaded,
             elapsed.as_secs_f64()
         );
-        // Never silent about what was left out.
         for (path, reason) in &report.skipped {
             println!("skipped {path}: {reason}");
         }
@@ -244,7 +227,6 @@ async fn download(
     Ok(())
 }
 
-/// `app info`
 async fn info(app: AppId, json: bool) -> Result<(), String> {
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     print_info(&mut session, app, json).await
@@ -309,13 +291,7 @@ async fn print_info(session: &mut Session, app: AppId, json: bool) -> Result<(),
     Ok(())
 }
 
-/// `workshop search`
 #[allow(clippy::too_many_arguments)]
-/// Turns the parsed CLI filters into a validated `BrowseQuery`.
-///
-/// All the name-to-enum resolution and validation that should fail before a
-/// login and a round trip, rather than after: an unknown sort or a misspelt
-/// content label costs a message, not a wasted request.
 fn build_query(filters: SearchFilters) -> Result<tapline::BrowseQuery, String> {
     let defaults = tapline::BrowseQuery::default();
 
@@ -340,9 +316,6 @@ fn build_query(filters: SearchFilters) -> Result<tapline::BrowseQuery, String> {
         excluded_descriptors.push(descriptor);
     }
 
-    // One clock reading for the whole query, so --created-since 1d and
-    // --updated-since 1d mean the same instant rather than two a millisecond
-    // apart.
     let now = u32::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -419,15 +392,12 @@ async fn search(filters: SearchFilters, json: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Emits a search page as newline-delimited JSON: one `result` per item, then a
-/// `searched` summary.
 fn emit_search_page(page: &tapline::BrowsePage) {
     for found in &page.items {
         emit(&serde_json::json!({
             "event": "result",
             "app": found.item.app.get(),
-            // A string, because item ids exceed what JSON numbers hold exactly
-            // and a rounded id downloads the wrong thing.
+            // A string: item ids exceed what JSON numbers hold exactly.
             "item": found.item.id.get().to_string(),
             "title": found.item.title,
             "size": found.item.size,
@@ -466,7 +436,6 @@ fn emit_search_page(page: &tapline::BrowsePage) {
     }));
 }
 
-/// Prints a search page as a table, with a next-page hint and any skips.
 fn print_search_page(page: &tapline::BrowsePage) {
     for found in &page.items {
         println!(
@@ -482,13 +451,11 @@ fn print_search_page(page: &tapline::BrowsePage) {
         None => String::new(),
     };
     println!("{} of {} matches{more}", page.items.len(), page.total);
-    // Never silent about what was left out.
     for (id, why) in &page.skipped {
         eprintln!("skipped {id}: {why}");
     }
 }
 
-/// Renders a byte count the way a person reads it.
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -498,14 +465,11 @@ fn human_bytes(bytes: u64) -> String {
         unit += 1;
     }
     match UNITS.get(unit) {
-        // The loop cannot walk past the last unit, so this is unreachable by
-        // construction — but a panic in a formatter is a poor way to find out.
         None | Some(&"B") => format!("{bytes} B"),
         Some(name) => format!("{value:.1} {name}"),
     }
 }
 
-/// `workshop subscribe` and `workshop unsubscribe`
 async fn subscribe(
     app: AppId,
     item: PublishedFileId,
@@ -515,9 +479,6 @@ async fn subscribe(
 ) -> Result<(), String> {
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
 
-    // A subscription belongs to an account, and an anonymous session has none.
-    // With a token, do it over CM. Without one, and only if this build enabled
-    // it, reach the account's live session through a running Steam client.
     if session.account().is_none() {
         return via_running_client(app, item, remove, json);
     }
@@ -544,11 +505,6 @@ async fn subscribe(
     Ok(())
 }
 
-/// Subscribes or unsubscribes through a running Steam client.
-///
-/// The path taken with no tapline token: the account's live session is in the
-/// running client, and this asks it. Built only under the `steamworks` feature,
-/// because it links Valve's closed SDK.
 #[cfg(feature = "steamworks")]
 fn via_running_client(
     app: AppId,
@@ -556,8 +512,7 @@ fn via_running_client(
     remove: bool,
     json: bool,
 ) -> Result<(), String> {
-    // A short-lived connection: held only for this action, so Steam does not
-    // keep counting the app as running. The CLI process exits right after.
+    // Held briefly, or Steam keeps counting the app as running.
     let steam = tapline_steamworks::Steam::connect(app).map_err(|e| e.to_string())?;
     let timeout = std::time::Duration::from_secs(20);
     if remove {
@@ -582,7 +537,6 @@ fn via_running_client(
     Ok(())
 }
 
-/// The refusal when the client bridge was not built into this binary.
 #[cfg(not(feature = "steamworks"))]
 fn via_running_client(
     _app: AppId,
@@ -597,7 +551,6 @@ fn via_running_client(
     )
 }
 
-/// `workshop info`
 async fn workshop_info(items: Vec<PublishedFileId>, json: bool) -> Result<(), String> {
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let described = session
@@ -653,16 +606,13 @@ async fn workshop_info(items: Vec<PublishedFileId>, json: bool) -> Result<(), St
         }
     }
 
-    // A lookup where every id failed is a failure, not a silent empty result.
     if failed > 0 && failed == items.len() {
         return Err(format!("none of the {failed} items could be described"));
     }
     Ok(())
 }
 
-/// `workshop download`
 #[allow(clippy::too_many_arguments)]
-/// What a caller asked to take out of the archive, and how to read it.
 struct Selection {
     only: Vec<String>,
     pick: Vec<String>,
@@ -670,7 +620,6 @@ struct Selection {
 }
 
 impl Selection {
-    /// Whether anything narrows what is taken.
     fn is_selective(&self) -> bool {
         !self.only.is_empty() || !self.pick.is_empty()
     }
@@ -687,9 +636,6 @@ async fn workshop(
     selection: Selection,
     json: bool,
 ) -> Result<(), String> {
-    // A selection is what makes this a pipeline rather than a download: only
-    // the chunks holding the selected entries are fetched. A named format is
-    // the same, since reading it at all means decoding it.
     if selection.is_selective() || selection.decode.is_some() {
         let target = stream.as_deref().unwrap_or("dir");
         return pipe_workshop(app, item, dir, target, &selection, json).await;
@@ -697,8 +643,6 @@ async fn workshop(
     if let Some(target) = stream {
         return stream_workshop(app, item, dir, &target, json).await;
     }
-    // Resolved before connecting. A typo should cost a message, not a login and
-    // a round trip to Steam first.
     let resolved: Vec<_> = extensions
         .iter()
         .map(|name| extension_by_name(name))
@@ -723,12 +667,6 @@ async fn workshop(
     Ok(())
 }
 
-/// `workshop download --only/--pick`
-///
-/// Runs the item through a pipeline instead of downloading it whole. The saving
-/// is on the wire, not just on disk: a selection is resolved against the
-/// archive's index first, and only the chunks the selected entries live in are
-/// fetched.
 async fn pipe_workshop(
     app: AppId,
     item: PublishedFileId,
@@ -739,9 +677,6 @@ async fn pipe_workshop(
 ) -> Result<(), String> {
     let format = selection.decode.as_deref().unwrap_or("gma");
 
-    // A zip target names a file; a directory target names a directory. Same
-    // convention as --stream, so the two flags do not disagree about where
-    // things land.
     let zip_path = dir.join(format!("{item}.zip"));
     let sink = match target {
         "zip" => tapline_pipe::Sink::Zip {
@@ -761,8 +696,6 @@ async fn pipe_workshop(
         picks: selection.pick.clone(),
         sink: Some(sink),
     };
-    // Before connecting: an unknown format should cost a message rather than a
-    // login and a round trip to Steam.
     pipeline.validate().map_err(|error| error.to_string())?;
 
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
@@ -808,11 +741,6 @@ async fn pipe_workshop(
     Ok(())
 }
 
-/// `workshop download --stream`
-///
-/// Unpacks the addon as it downloads. The `.gma` is never written: GMAD's
-/// header and index come first and its contents follow in index order, so each
-/// file can be written the moment its bytes land.
 async fn stream_workshop(
     app: AppId,
     item: PublishedFileId,
@@ -831,7 +759,6 @@ async fn stream_workshop(
         .ok_or_else(|| format!("Steam said nothing about item {item}"))?
         .map_err(|error| error.to_string())?;
 
-    // A zip target names a file; a directory target names a directory.
     let zip_path = dir.join(format!("{item}.zip"));
     let chosen = match target {
         "zip" => tapline_gmad::StreamTarget::Zip(&zip_path),
@@ -887,11 +814,6 @@ async fn stream_workshop(
     Ok(())
 }
 
-/// Looks up a built-in extension.
-///
-/// An unknown name is refused rather than ignored: a caller who asked for
-/// unpacking and got a directory of untouched `.gma` files has been told
-/// nothing about why.
 fn extension_by_name(name: &str) -> Result<std::sync::Arc<dyn tapline::Extension>, String> {
     match name {
         "gmad" => Ok(std::sync::Arc::new(tapline_gmad::Extract::new())),
@@ -910,7 +832,6 @@ fn extension_by_name(name: &str) -> Result<std::sync::Arc<dyn tapline::Extension
     }
 }
 
-/// Downloads one Workshop item and returns where it landed.
 async fn download_item(
     session: &mut Session,
     app: AppId,
@@ -947,15 +868,12 @@ async fn download_item(
     Ok(tapline::target_dir(&options, details.app, details.id))
 }
 
-/// `login`
 async fn login(
     qr: bool,
     account: Option<String>,
     password_stdin: bool,
     password: Option<String>,
 ) -> Result<(), String> {
-    // A machine with Steam on it already knows who you are. Say so, so the
-    // account name in the QR prompt is not a surprise.
     let local = tapline_auth::most_recent();
     if account.is_none()
         && let Some(found) = &local
@@ -973,15 +891,12 @@ async fn login(
         }
     }
 
-    // Anonymous on purpose: signing in is what this command is for, and a
-    // session that quietly reused an old token would hide a failed login.
+    // Anonymous on purpose: a reused token would hide a failed login.
     let mut session = Session::anonymous().await.map_err(|e| e.to_string())?;
 
     if let Some(name) = account.filter(|_| !qr) {
         return password_login(&mut session, &name, password_stdin, password).await;
     }
-    // The whole QR flow, including refreshing the code when Steam rotates it,
-    // is driven by the library. The closure re-renders on each new code.
     println!("Sign in from the Steam mobile app: scan the code, or open the link.");
     let token = session
         .qr_login(std::time::Duration::from_secs(300), &mut |url| {
@@ -993,12 +908,6 @@ async fn login(
     finish_login(&token.account, &token.refresh_token)
 }
 
-/// Renders a QR code, and the URL under it as a fallback.
-///
-/// A URL in a terminal is not scannable, so this draws the code with
-/// half-block characters — two rows of modules per line, which most terminals
-/// show square enough to scan. If the terminal cannot, the link still works
-/// from any browser or phone.
 fn print_qr(url: &str) {
     if let Ok(code) = qrcode::QrCode::new(url.as_bytes()) {
         let image = code
@@ -1010,8 +919,6 @@ fn print_qr(url: &str) {
     println!("{url}\n");
 }
 
-/// `whoami`
-/// Signs in with an account name and a password typed at the terminal.
 async fn password_login(
     session: &mut Session,
     account: &str,
@@ -1023,9 +930,6 @@ async fn password_login(
         .await
         .map_err(|error| error.to_string())?;
 
-    // Never from an argument: a password on the command line is in the shell
-    // history and in every `ps` listing for as long as the process runs. The
-    // three ways in, in the order a caller means them.
     let password = match given {
         Some(password) => password,
         None if password_stdin => read_all_stdin()?,
@@ -1046,16 +950,12 @@ async fn password_login(
         .await
         .map_err(|error| error.to_string())?;
 
-    // A code, when Steam wants one. The confirmations are alternatives, so
-    // take the first that a typed code satisfies.
     if let Some(kind) = pending
         .confirmations
         .iter()
         .copied()
         .find(|kind| kind.needs_a_code())
     {
-        // A script has no one to ask, so it supplies the code the same way it
-        // supplied the password.
         let code = match std::env::var(GUARD_ENV) {
             Ok(code) => code,
             Err(_) => read_line(&format!("Steam Guard code ({kind}): "))?,
@@ -1095,23 +995,10 @@ async fn password_login(
     Err("timed out waiting for the login to complete".to_owned())
 }
 
-/// Where a script may put the password instead of typing it.
-///
-/// An environment variable is visible to child processes and readable from
-/// `/proc/<pid>/environ` by the same user, so it is weaker than a pipe. It is
-/// here because the alternative people reach for is `--password` on the command
-/// line, which is worse: argv is in the shell history and readable by *every*
-/// process on the machine.
 const PASSWORD_ENV: &str = "TAPLINE_PASSWORD";
 
-/// Where a script may put the Steam Guard code.
 const GUARD_ENV: &str = "TAPLINE_GUARD_CODE";
 
-/// Reads the whole of standard input as a password.
-///
-/// The whole of it, then trimmed of the one trailing newline `echo` adds:
-/// `echo hunter2 | tapline login` should not send a password with a newline on
-/// the end and then report a wrong password.
 fn read_all_stdin() -> Result<String, String> {
     use std::io::Read;
     let mut buffer = String::new();
@@ -1121,10 +1008,6 @@ fn read_all_stdin() -> Result<String, String> {
     Ok(buffer.trim_end_matches(['\n', '\r']).to_owned())
 }
 
-/// Saves the token and says where it went.
-///
-/// Saved by default, because a login that has to be repeated every run is not
-/// a login. The file is the store's own, under the user's config directory.
 fn finish_login(account: &str, refresh_token: &str) -> Result<(), String> {
     let store = tapline_auth::TokenStore::default_file();
     let token = tapline_auth::StoredToken {
@@ -1136,7 +1019,6 @@ fn finish_login(account: &str, refresh_token: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads a line from the terminal.
 fn read_line(prompt: &str) -> Result<String, String> {
     use std::io::Write;
     print!("{prompt}");
@@ -1148,12 +1030,6 @@ fn read_line(prompt: &str) -> Result<String, String> {
     Ok(line.trim().to_owned())
 }
 
-/// Reads a line without echoing it.
-///
-/// Turns the terminal's echo off around the read rather than pulling in a
-/// dependency for it. If the terminal cannot be reconfigured — a pipe, a CI
-/// job — it refuses instead of echoing the password, because printing a
-/// password to a log is worse than failing.
 fn read_hidden(prompt: &str) -> Result<String, String> {
     use std::io::Write;
     use std::process::Command;
@@ -1166,8 +1042,6 @@ fn read_hidden(prompt: &str) -> Result<String, String> {
         );
     }
 
-    // `stty` rather than a crate: it is present wherever a terminal is, and
-    // the alternative is a dependency for two syscalls.
     let off = Command::new("stty").arg("-echo").status();
     print!("{prompt}");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
@@ -1183,7 +1057,6 @@ fn read_hidden(prompt: &str) -> Result<String, String> {
     Ok(line.trim().to_owned())
 }
 
-/// `logout` — forget a saved login.
 fn logout(account: Option<String>, all: bool) -> Result<(), String> {
     let store = tapline_auth::TokenStore::default_file();
 
@@ -1197,8 +1070,6 @@ fn logout(account: Option<String>, all: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // A named account, or the single one if there is exactly one — so a machine
-    // with one login can `tapline logout` with no argument.
     let name = match account {
         Some(name) => name,
         None => {
@@ -1232,9 +1103,6 @@ async fn whoami() -> Result<(), String> {
         None => println!("anonymous session, cell {}", session.cell_id()),
     }
 
-    // The logins saved on disk, which is what `automatic` will reuse — shown
-    // offline, distinct from the live session above and the local Steam client
-    // below.
     match tapline_auth::TokenStore::default_file().accounts() {
         Ok(saved) if !saved.is_empty() => {
             for name in saved {
@@ -1245,8 +1113,6 @@ async fn whoami() -> Result<(), String> {
         Err(error) => eprintln!("could not read saved logins: {error}"),
     }
 
-    // The local Steam client's accounts are a different thing from tapline's
-    // session, and saying which is which is the whole point of printing both.
     let accounts = tapline_auth::discover();
     if accounts.is_empty() {
         println!("no local Steam client found");
@@ -1275,7 +1141,6 @@ async fn whoami() -> Result<(), String> {
     Ok(())
 }
 
-/// Writes one newline-delimited JSON event.
 fn emit(value: &serde_json::Value) {
     println!("{value}");
 }

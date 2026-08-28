@@ -1,8 +1,4 @@
 //! Unwrapping the manifest container.
-//!
-//! Two layers: a ZIP holding one deflated entry, and inside it a sequence of
-//! magic-delimited protobuf blocks. Both layouts were read off a real manifest
-//! rather than taken from a description — see the crate docs for the dump.
 
 use std::fmt;
 use tapline_proto::content_manifest::{
@@ -20,9 +16,6 @@ const MAGIC_END: u32 = 0x32C4_15AB;
 const ZIP_LOCAL_HEADER: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 
 /// The largest manifest we will decompress.
-///
-/// A depot with a million files produces a manifest of tens of megabytes. This
-/// is well above that and well below anything that would trouble a small node.
 pub const MAX_MANIFEST: usize = 512 * 1024 * 1024;
 
 /// What went wrong reading a manifest.
@@ -38,19 +31,13 @@ pub enum ManifestError {
     ChecksumMismatch,
     /// A length or offset ran past the end of the data.
     Truncated,
-    /// A block magic we do not know.
-    ///
-    /// Reported rather than skipped: a block we cannot identify may be the one
-    /// that says what the depot contains.
+    /// A block magic we do not know; reported rather than skipped.
     UnknownBlock(u32),
     /// A required block was absent.
     MissingBlock(&'static str),
     /// A protobuf block did not decode.
     Wire(WireError),
-    /// The manifest is for a different depot or build than the one requested.
-    ///
-    /// A CDN or a cache serving the wrong manifest would otherwise produce a
-    /// confidently wrong install.
+    /// The manifest is for a different depot or build than requested.
     WrongManifest {
         /// What was asked for.
         expected: u64,
@@ -59,9 +46,7 @@ pub enum ManifestError {
     },
     /// Filenames are encrypted and no key was supplied.
     FilenamesEncrypted,
-    /// A filename failed to decrypt, or was not valid base64.
-    ///
-    /// Almost always the wrong depot key.
+    /// A filename failed to decrypt; almost always the wrong depot key.
     FilenameUndecryptable,
 }
 
@@ -104,11 +89,7 @@ pub struct RawManifest {
     pub payload: ContentManifestPayload,
     /// Depot id, build sizes, and whether filenames are encrypted.
     pub metadata: ContentManifestMetadata,
-    /// Valve's signature over the manifest, when present.
-    ///
-    /// Not verified: the public key is not published, so a check here could only
-    /// ever be theatre. Integrity comes from the manifest id being named over an
-    /// authenticated session and every chunk being content-addressed.
+    /// Valve's signature over the manifest, when present; not verified.
     pub signature: Option<ContentManifestSignature>,
 }
 
@@ -144,8 +125,6 @@ impl RawManifest {
                 MAGIC_PAYLOAD => payload = Some(ContentManifestPayload::decode(block)?),
                 MAGIC_METADATA => metadata = Some(ContentManifestMetadata::decode(block)?),
                 MAGIC_SIGNATURE => signature = Some(ContentManifestSignature::decode(block)?),
-                // Skipping an unrecognised block would mean claiming to have
-                // read a manifest whose contents we do not know.
                 other => return Err(ManifestError::UnknownBlock(other)),
             }
         }
@@ -158,12 +137,7 @@ impl RawManifest {
     }
 }
 
-/// Extracts the single entry from the manifest's ZIP wrapper.
-///
-/// Deliberately not a general ZIP reader. A manifest holds exactly one entry, so
-/// the local file header is enough and the central directory is never consulted
-/// — which also sidesteps every ZIP-parsing trick that depends on the two
-/// disagreeing.
+/// Extracts the single entry from the manifest's ZIP wrapper; local header only.
 fn unzip(bytes: &[u8]) -> Result<Vec<u8>, ManifestError> {
     if bytes.get(..4) != Some(&ZIP_LOCAL_HEADER) {
         // Some paths hand us an already-unwrapped block sequence.
@@ -204,8 +178,6 @@ fn unzip(bytes: &[u8]) -> Result<Vec<u8>, ManifestError> {
         other => return Err(ManifestError::UnsupportedCompression(other)),
     };
 
-    // The ZIP header carries a CRC-32, and checking it costs nothing next to
-    // the download that produced these bytes.
     if crc32fast::hash(&out) != expected_crc {
         return Err(ManifestError::ChecksumMismatch);
     }
@@ -227,7 +199,6 @@ fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
 mod tests {
     use super::*;
 
-    /// A real manifest for depot 232257, fetched from the CDN on 2026-08-26.
     const REAL: &[u8] = include_bytes!("../tests/fixtures/manifest_232257_4797708003880603728.bin");
 
     #[test]
@@ -239,8 +210,6 @@ mod tests {
             manifest.metadata.gid_manifest,
             Some(4_797_708_003_880_603_728)
         );
-        // This depot really does encrypt its filenames, which is why the
-        // decryption path exists.
         assert_eq!(manifest.metadata.filenames_encrypted, Some(true));
         assert!(!manifest.payload.mappings.is_empty());
         assert!(manifest.signature.is_some());
@@ -251,7 +220,6 @@ mod tests {
         let manifest = RawManifest::parse(REAL).expect("must parse");
         let mapping = manifest.payload.mappings.first().expect("a file");
 
-        // Encrypted, so the name is a base64 blob rather than a path.
         let name = mapping.filename.as_deref().expect("a filename");
         assert!(
             !name.contains('/'),
@@ -265,7 +233,6 @@ mod tests {
         );
 
         let chunk = mapping.chunks.first().expect("a chunk");
-        // The chunk id is a SHA-1, which is what makes content addressing work.
         assert_eq!(chunk.sha.as_deref().map(<[u8]>::len), Some(20));
         assert!(chunk.cb_original.is_some());
         assert!(chunk.cb_compressed.is_some());
@@ -285,8 +252,6 @@ mod tests {
 
     #[test]
     fn a_corrupted_manifest_fails_its_checksum() {
-        // The ZIP CRC-32 is free to check and catches a truncated or damaged
-        // download before any of it is believed.
         let mut damaged = REAL.to_vec();
         let middle = damaged.len() / 2;
         if let Some(byte) = damaged.get_mut(middle) {
@@ -300,10 +265,7 @@ mod tests {
 
     #[test]
     fn truncation_before_the_data_ends_is_an_error_and_never_a_panic() {
-        // The compressed entry ends before the file does: what follows is the
-        // ZIP central directory, which this reader never consults on purpose.
-        // So a prefix reaching the end of the deflate stream is a complete
-        // manifest, and only shorter ones must fail.
+        // A prefix reaching the end of the deflate stream is a complete manifest.
         let name_len = read_u16(REAL, 26).expect("a header") as usize;
         let extra_len = read_u16(REAL, 28).expect("a header") as usize;
         let compressed = read_u32(REAL, 18).expect("a header") as usize;
@@ -317,7 +279,6 @@ mod tests {
                 "a {cut}-byte prefix, cut inside the entry, parsed"
             );
         }
-        // And every prefix from there on is the whole manifest.
         for cut in [data_end, REAL.len()] {
             let prefix = REAL.get(..cut).expect("in range");
             RawManifest::parse(prefix).expect("a complete entry must parse");
@@ -335,9 +296,6 @@ mod tests {
 
     #[test]
     fn an_unknown_block_is_refused_rather_than_skipped() {
-        // A block we cannot identify may be the one saying what the depot
-        // contains, so carrying on would mean claiming to have read a manifest
-        // whose contents we do not know.
         let mut blocks = Vec::new();
         blocks.extend_from_slice(&0xDEAD_BEEF_u32.to_le_bytes());
         blocks.extend_from_slice(&4_u32.to_le_bytes());

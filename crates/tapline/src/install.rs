@@ -21,118 +21,10 @@ pub struct InstallOptions {
     /// Whether to include DLC depots.
     pub include_dlc: bool,
     /// Check what is already on disk before fetching each chunk.
-    ///
-    /// Turns a killed download into a cheap resume and a corrupted file into a
-    /// surgical repair: a chunk that already hashes correctly costs a read
-    /// rather than a transfer. Costs one read per chunk, which is why it is not
-    /// on by default for a fresh install into an empty directory.
     pub resume: bool,
-    /// Reinstall even when the install record says the depot is already at this
-    /// build.
-    ///
-    /// What `validate` turns on. Without it an update that finds nothing changed
-    /// does nothing, which is the behaviour an operator wants by default.
+    /// Reinstall even when the install record says the depot is already at this build.
     pub force: bool,
-    /// How many chunks to fetch at once.
-    ///
-    /// 48 by default: the fewest slots that reach full speed, and not one more.
-    ///
-    /// This is the only thing bounding peak memory and most of what decides
-    /// install speed. A chunk in flight holds its compressed bytes and its
-    /// plaintext at once, because the plaintext has to be complete before its
-    /// SHA-1 can be checked and nothing reaches the disk before that check.
-    /// That is roughly 1.1 MB per slot and it is a floor, not an inefficiency:
-    /// chunks are written straight to their offset as they pass, so nothing
-    /// accumulates per file. Memory is flat against install size — 6.8 GB costs
-    /// what 1.5 GB does — and only this number moves it.
-    ///
-    /// Measured on both dedicated servers, allocator pinned as [`retune`] does
-    /// it. Medians of interleaved repeats, because a single sweep cannot tell a
-    /// 2% difference from the link having a bad minute:
-    ///
-    /// | in flight | Valheim 1.5 GB | GMod 6.8 GB | peak RSS |
-    /// |---|---|---|---|
-    /// | 16 | 11.5 s | 29.6 s | 40 MB |
-    /// | 32 | 9.3 s | 21.4 s | 60 MB |
-    /// | **48** | **8.5 s** | **19.3 s** | **73 MB** |
-    /// | 64 | 8.0 s | 19.7 s | 84 MB |
-    ///
-    /// The curve flattens at 48: GMod is at its best there and 64 is slightly
-    /// worse, while Valheim gains 6% for another 11 MB. So 48 is the last
-    /// setting that buys speed on both.
-    ///
-    /// An earlier version of this table had the same shape and much worse
-    /// numbers — 33.5 s for GMod at this default — because the blocking pool
-    /// that runs chunk decode was capped at four threads. The concurrency was
-    /// never the constraint there; the decode was. See `BLOCKING_THREADS` in
-    /// the CLI.
-    ///
-    /// Peak RSS is close to `15 + 1.1 × concurrency` MB, and the fit holds from
-    /// 4 slots to 128. So the memory a default costs is predictable from the
-    /// number, which is what makes this a choice rather than a surprise.
-    ///
-    /// # Why the fewest slots rather than the cheapest
-    ///
-    /// The rule is: use the minimum memory required for full speed. That is
-    /// 48 — 40 is consistently ~2% behind it across two independent sweeps, and
-    /// 64 is slower. An earlier default of 24 came from a different rule, the
-    /// fastest setting under a 50 MB ceiling, and it is 5% off the plateau on
-    /// GMod and 7% on Valheim. The ceiling has been retired rather than quietly
-    /// kept, because it was answering a question nobody is asking now.
-    ///
-    /// A smaller footprint is still one flag away: 10 holds a download to
-    /// ~25 MB and costs about 25% on Valheim and 39% on GMod.
-    ///
-    /// The allocator pinning is what makes any of this reproducible. Without it
-    /// the same runs measure 46–57 MB and drift by ±20% between repeats; see
-    /// [`retune`].
-    ///
-    /// # This is not the only limit
-    ///
-    /// A chunk needs a permit from here *and* one from the process-wide budget
-    /// in [`Shared`], so what actually runs is the smaller of the two.
-    /// [`Session::anonymous`] builds its budget from this default, which means
-    /// raising this alone does nothing:
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), tapline::InstallError> {
-    /// use tapline::{Session, Shared};
-    ///
-    /// // Caps at the default budget, not at 96.
-    /// let session = Session::anonymous().await?;
-    ///
-    /// // Actually 96.
-    /// let session = Session::anonymous_shared(Shared::new(96)).await?;
-    /// # let _ = session;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// The cap is deliberate — it is what stops three concurrent downloads
-    /// opening three full budgets against Steam. But it silently bounds a
-    /// number a caller just set, and that is how the tables here were wrong
-    /// twice: a sweep from 8 to 64 that moved neither time nor memory, because
-    /// every run in it was really the default. A flat curve is evidence of a
-    /// broken experiment at least as often as it is evidence about the system.
-    ///
-    /// # The default has been wrong before
-    ///
-    /// 16, chosen as "deliberately modest" with no measurement. Then 32, from a
-    /// single sweep. Then 64, from paired runs. Then 8 and 10, when memory
-    /// appeared to scale with this number — it did, but the slope was mostly
-    /// the allocator's, and pinning it moved the whole curve down. Then 24,
-    /// under a memory ceiling. Every wrong answer came from one of two things:
-    /// explaining a measurement rather than isolating what produced it, or
-    /// optimising a rule nobody had actually asked for.
-    ///
-    /// Around 200 MB/s the link stops being ours: more CDN hosts and fewer CDN
-    /// hosts were each measured and neither moves it, on a 2.5 Gb link with a
-    /// 1.9 GB/s disk. It appears to be what Steam serves one client from one
-    /// cell.
-    ///
-    /// [`retune`]: crate::retune
-    /// [`Shared`]: crate::Shared
-    /// [`Session::anonymous`]: crate::Session::anonymous
+    /// How many chunks to fetch at once; 48 is the measured plateau.
     pub concurrency: usize,
     /// What permissions to give installed files.
     pub file_modes: FileModes,
@@ -143,50 +35,20 @@ pub struct InstallOptions {
 /// Where a Workshop item's files are written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkshopLayout {
-    /// `<dir>/steamapps/workshop/content/<app>/<item>/`, which is what
-    /// steamcmd does.
-    ///
-    /// The default, because it is the layout the Steam client, LinuxGSM and
-    /// every wings egg already expect to find items in, and because a server
-    /// configured with a Workshop collection looks there.
+    /// `<dir>/steamapps/workshop/content/<app>/<item>/`, which is what steamcmd does.
     #[default]
     SteamCmd,
     /// Straight into the directory given, with no path built underneath it.
-    ///
-    /// What you want when the destination is already the right folder — a
-    /// Garry's Mod addon belongs in `garrysmod/addons`, and an item downloaded
-    /// there under the steamcmd layout would sit four directories below where
-    /// the server looks.
-    ///
-    /// An item is one or more named files, so several items downloaded flat
-    /// into one directory sit side by side. They collide only if two items ship
-    /// a file of the same name, which is why this is not the default.
     Flat,
 }
 
 /// What permissions installed files get.
-///
-/// This is a compatibility choice rather than a preference, and it was made
-/// from a measurement. Installing Garry's Mod Dedicated Server with both tools
-/// on 2026-08-26 gave two trees whose 2,329 files were byte-for-byte identical
-/// and whose modes disagreed on 2,291 of them: steamcmd had set **every** file
-/// to `0o755`, including text, models and sounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FileModes {
     /// `0o755` on everything, which is what steamcmd does.
-    ///
-    /// The default, because tapline is a drop-in replacement and the things
-    /// that shell out to steamcmd — LinuxGSM, wings eggs, a decade of Docker
-    /// images — were built against trees that look like this. A depot whose
-    /// manifest forgets the executable flag on a start script still produces a
-    /// runnable server under steamcmd, and swapping in a tool that is stricter
-    /// would break it for a reason its operator cannot see.
     #[default]
     SteamCmd,
     /// `0o755` for files the manifest flags executable, `0o644` for the rest.
-    ///
-    /// What the depot actually describes, and the better answer everywhere the
-    /// blunt one is not required for compatibility.
     Manifest,
 }
 
@@ -248,10 +110,6 @@ pub struct InstallReport {
     /// Depots that were already at the requested build and so were skipped.
     pub depots_unchanged: u64,
     /// Files the manifest named that were skipped, with the reason.
-    ///
-    /// Never silent: a path a manifest asked for and tapline refused to create
-    /// is reported, because "the install succeeded" must not quietly mean
-    /// "minus three files".
     pub skipped: Vec<(String, String)>,
 }
 
@@ -269,9 +127,6 @@ pub enum InstallError {
     /// No CDN host is usable.
     Pool(PoolError),
     /// A path in the manifest was refused.
-    ///
-    /// Fatal rather than skipped. A manifest naming a path outside the install
-    /// root is not a file to leave out; it is a manifest to stop trusting.
     UnsafePath {
         /// The path as the manifest wrote it.
         path: String,
@@ -281,9 +136,6 @@ pub enum InstallError {
     /// The filesystem refused.
     Io(String),
     /// Steam granted no decryption key for a depot.
-    ///
-    /// For an anonymous session this usually means the depot is not anonymously
-    /// accessible, which is a different thing from the app not existing.
     NoDepotKey {
         /// Which depot.
         depot: DepotId,
@@ -313,8 +165,6 @@ impl fmt::Display for InstallError {
             Self::Io(message) => write!(f, "filesystem error: {message}"),
             Self::NoDepotKey { depot, eresult } => {
                 if *eresult == ACCESS_DENIED {
-                    // The common case by far, and the message decides whether
-                    // someone reaches for `tapline login` or files a bug.
                     write!(
                         f,
                         "Steam refused a key for depot {depot}: access denied. \
@@ -338,17 +188,10 @@ impl fmt::Display for InstallError {
 }
 
 /// Steam's `EResult` for a refusal on permission grounds.
-///
-/// Named because the number appears in three places and 15 means nothing on
-/// sight.
 pub const ACCESS_DENIED: i32 = 15;
 
 impl InstallError {
-    /// Whether this failed because the session is not signed in as someone who
-    /// may see the content.
-    ///
-    /// The distinction worth acting on: a caller can retry this after a login,
-    /// and there is no point retrying anything else.
+    /// Whether this failed for lack of a signed-in account that owns the content.
     #[must_use]
     pub fn needs_login(&self) -> bool {
         match self {
@@ -420,16 +263,6 @@ mod tests {
 
     #[test]
     fn concurrency_defaults_to_something_a_cdn_will_tolerate() {
-        // The upper bound is measured, not assumed. This test used to cap the
-        // default at 32 on the reasoning that "a download that opens fifty
-        // connections gets throttled" — and 64 turned out to be both the
-        // fastest setting and entirely untroubled, with no 429 or 403 in any
-        // run. The throttling actually observed came from pulling ~100 GB in an
-        // hour, which is a volume limit and not a connection-count one.
-        //
-        // Everything above 64 measured slower, and 64 itself is slower than
-        // the plateau at 48, so the bound stays: it exists to catch someone
-        // raising the default on a hunch, in either direction.
         let concurrency = InstallOptions::default().concurrency;
         assert!(
             (1..=64).contains(&concurrency),
@@ -439,20 +272,6 @@ mod tests {
 
     #[test]
     fn the_default_concurrency_is_the_measured_plateau() {
-        // The rule is: the minimum memory required for full speed. Not the
-        // cheapest setting, and not the fastest at any price.
-        //
-        // Measured as medians of interleaved repeats on both dedicated servers,
-        // the curve rises to 48 and turns over: 64 is slower on both *and*
-        // costs 15-18 MB more, and 40 is ~2% behind 48 in two independent
-        // sweeps. So the plateau is a single value, and this pins it.
-        //
-        // There used to be a 50 MB ceiling asserted here with 5 MB of headroom.
-        // It has been retired deliberately: the default that satisfies it (24)
-        // is 5-7% off full speed, so the ceiling was answering a question that
-        // is no longer being asked. Peak RSS is still predictable — about
-        // `15 + 1.1 x concurrency` MB, which puts the default near 68 MB — it
-        // is simply no longer bounded by a number this test enforces.
         const PLATEAU: usize = 48;
 
         let concurrency = InstallOptions::default().concurrency;
@@ -465,8 +284,6 @@ mod tests {
 
     #[test]
     fn an_access_denied_depot_says_to_sign_in() {
-        // The message decides whether someone reaches for `tapline login` or
-        // files a bug, so it has to name the fix rather than the number.
         let error = InstallError::NoDepotKey {
             depot: DepotId(4001),
             eresult: ACCESS_DENIED,
@@ -479,8 +296,6 @@ mod tests {
 
     #[test]
     fn another_refusal_is_not_reported_as_a_login_problem() {
-        // Telling someone to sign in when signing in cannot help is worse than
-        // saying nothing.
         let error = InstallError::NoDepotKey {
             depot: DepotId(4001),
             eresult: 2,
@@ -491,8 +306,6 @@ mod tests {
 
     #[test]
     fn an_unsafe_path_reads_as_a_refusal_rather_than_a_skip() {
-        // The message matters: this is fatal, and an operator reading it should
-        // understand the manifest was refused, not that a file was missed.
         let error = InstallError::UnsafePath {
             path: "../../etc/passwd".to_owned(),
             reason: PathError::ParentTraversal,

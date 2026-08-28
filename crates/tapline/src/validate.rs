@@ -1,15 +1,4 @@
 //! Checking an install against its manifest, and repairing what is wrong.
-//!
-//! An update trusts the install record: same manifest id means nothing to do.
-//! That is right almost always and wrong exactly when it matters — a half-
-//! finished download, a disk that dropped a sector, a file someone edited by
-//! hand. `validate` answers the question directly instead, by reading every
-//! chunk back off disk and hashing it.
-//!
-//! The chunk id *is* the SHA-1 of its plaintext, so this needs no reference
-//! copy and no checksum file: the manifest already says what every chunk should
-//! hash to. A chunk that does not is refetched, and only that chunk — a single
-//! bad megabyte in a 30 GB install costs one megabyte to repair.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,9 +10,6 @@ pub enum Damage {
     /// The file is not there at all.
     Missing,
     /// The file is the wrong length.
-    ///
-    /// Checked before hashing because it is free and localises the problem
-    /// immediately — a truncated download looks exactly like this.
     WrongSize {
         /// What the manifest says.
         expected: u64,
@@ -31,9 +17,6 @@ pub enum Damage {
         actual: u64,
     },
     /// Some of the file's chunks do not hash to what the manifest named.
-    ///
-    /// Carries the offsets, so repair refetches those chunks rather than the
-    /// whole file.
     CorruptChunks(Vec<u64>),
     /// The file could not be read.
     Unreadable(String),
@@ -64,8 +47,7 @@ impl ValidationReport {
             .values()
             .map(|damage| match damage {
                 Damage::CorruptChunks(offsets) => offsets.len(),
-                // A missing or wrong-length file needs all of its chunks; the
-                // caller knows how many from the manifest.
+                // Whole-file damage counts as one; the manifest says how many chunks.
                 _ => 1,
             })
             .sum()
@@ -73,10 +55,6 @@ impl ValidationReport {
 }
 
 /// Checks every file in a manifest against what is on disk.
-///
-/// `read_chunk` is supplied by the caller so this stays testable without a
-/// filesystem — it is handed a path relative to the install root, an offset and
-/// a length, and returns the bytes it found.
 pub fn validate_manifest<F>(manifest: &Manifest, root: &Path, mut read_chunk: F) -> ValidationReport
 where
     F: FnMut(&Path, u64, usize) -> std::io::Result<Vec<u8>>,
@@ -87,9 +65,7 @@ where
         report.files_checked += 1;
 
         let Ok(safe) = tapline_fs::validate_path(&file.path) else {
-            // A path the manifest names that we would refuse to create is not
-            // damage to repair; it is a manifest to stop trusting. Reported so
-            // it is not silent.
+            // An unsafe manifest path is not damage to repair; report, never silent.
             report.damaged.insert(
                 file.path.clone(),
                 Damage::Unreadable("the manifest names an unsafe path".to_owned()),
@@ -112,7 +88,6 @@ where
             }
         };
 
-        // Free, and it catches a truncated download before any hashing.
         if metadata.len() != file.size {
             report.damaged.insert(
                 file.path.clone(),
@@ -138,8 +113,6 @@ where
             };
             report.bytes_checked += bytes.len() as u64;
 
-            // The manifest already says what this should hash to. No reference
-            // copy, no checksum file.
             if tapline_crypto::sha1(&bytes) != chunk.id {
                 corrupt.push(chunk.offset);
             }
@@ -161,7 +134,6 @@ mod tests {
     use tapline_ids::{DepotId, ManifestId};
     use tapline_manifest::{Chunk, FileEntry, FileFlags};
 
-    /// Builds a chunk whose id is the real SHA-1 of `content`.
     fn chunk_for(content: &[u8], offset: u64) -> Chunk {
         Chunk {
             id: tapline_crypto::sha1(content),
@@ -194,7 +166,6 @@ mod tests {
         }
     }
 
-    /// A scratch directory that removes itself.
     struct Scratch(std::path::PathBuf);
 
     impl Scratch {
@@ -219,7 +190,6 @@ mod tests {
         }
     }
 
-    /// Reads from a real file, which is what the runtime does.
     fn real_read(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
         use std::os::unix::fs::FileExt;
         let file = std::fs::File::open(path)?;
@@ -256,7 +226,6 @@ mod tests {
 
     #[test]
     fn a_truncated_file_is_caught_by_its_size_before_any_hashing() {
-        // Free, and it localises a half-finished download immediately.
         let scratch = Scratch::new("validate-short");
         std::fs::write(scratch.0.join("a.txt"), b"short").expect("write");
 
@@ -278,8 +247,6 @@ mod tests {
 
     #[test]
     fn a_corrupted_chunk_is_located_rather_than_condemning_the_file() {
-        // The point of chunk-level validation: a single bad megabyte in a 30 GB
-        // install costs one megabyte to repair.
         let scratch = Scratch::new("validate-corrupt");
         let first = b"first chunk contents!!!";
         let second = b"second chunk contents!!";
@@ -297,7 +264,6 @@ mod tests {
         )]);
         assert!(validate_manifest(&manifest, &scratch.0, real_read).is_clean());
 
-        // Damage only the second chunk.
         let mut damaged = content.clone();
         if let Some(byte) = damaged.get_mut(first.len() + 3) {
             *byte ^= 0xFF;
@@ -315,7 +281,6 @@ mod tests {
 
     #[test]
     fn an_unsafe_path_is_reported_rather_than_silently_skipped() {
-        // Not damage to repair — a manifest to stop trusting. But never silent.
         let scratch = Scratch::new("validate-unsafe");
         let manifest = manifest_with(vec![file_with("../escape", vec![chunk_for(b"x", 0)])]);
 

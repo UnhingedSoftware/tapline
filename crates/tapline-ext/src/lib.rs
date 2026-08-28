@@ -1,32 +1,4 @@
 //! The extension seam.
-//!
-//! Downloading a file is rarely the last step. A Garry's Mod addon arrives as a
-//! `.gma` that a server may want unpacked; another format will want something
-//! else. Rather than growing tapline a special case per game, an [`Extension`]
-//! is handed each file as it lands and may act on it.
-//!
-//! # What an extension is not
-//!
-//! It is not something a depot can supply. Extensions are Rust code the
-//! operator chose and compiled in, selected by name. Nothing in a manifest, a
-//! Workshop item or a CDN response can introduce one, which is the same line
-//! tapline draws by refusing to execute `installscript.vdf`: installing a game
-//! server must not be a way to run code.
-//!
-//! # Where they run
-//!
-//! On a blocking task, after the file is synced to disk and never on the task
-//! dispatching chunk fetches. That is not an implementation detail — an earlier
-//! version of tapline awaited `fsync` on the dispatch loop and lost 13.5 seconds
-//! of a 41-second install to it, because nothing new was queued while it ran.
-//! Unpacking an archive is more expensive than an `fsync`.
-//!
-//! # The contract
-//!
-//! An extension gets a file that is complete and verified: its SHA-1 matched
-//! the manifest before it was written, and it has been synced. It may read it,
-//! write next to it, and say what it produced. It may not assume anything about
-//! files it was not given, because those may still be downloading.
 
 #![forbid(unsafe_code)]
 
@@ -38,9 +10,7 @@ use tapline_ids::AppId;
 pub struct Landed<'a> {
     /// The app it belongs to.
     pub app: AppId,
-    /// The directory the install is rooted at.
-    ///
-    /// Everything an extension writes must stay inside this.
+    /// The directory the install is rooted at; nothing may escape it.
     pub root: &'a Path,
     /// The file's path relative to the root, with forward slashes.
     pub path: &'a str,
@@ -55,34 +25,19 @@ pub struct Landed<'a> {
 pub struct Produced {
     /// Paths it created, relative to the root.
     pub files: Vec<String>,
-    /// Whether the original should be deleted now that it has been unpacked.
-    ///
-    /// Off by default. Deleting the download is a decision for whoever asked
-    /// for the extension, not for the extension.
+    /// Whether the original should be deleted; off by default.
     pub remove_original: bool,
 }
 
 /// Something an extension can do to a file once it lands.
-///
-/// `Send + Sync` because extensions run on blocking tasks, concurrently with
-/// each other and with the rest of the download.
 pub trait Extension: Send + Sync {
-    /// A stable, lowercase name. This is how the extension is selected from a
-    /// command line or across the C ABI, so changing it breaks callers.
+    /// A stable, lowercase name; renaming it breaks callers.
     fn name(&self) -> &'static str;
 
-    /// Whether this extension wants this file.
-    ///
-    /// Called for every file in an install, so it should be cheap — an
-    /// extension check is on the path of a 2,329-file install.
+    /// Whether this extension wants this file; called for every file, keep it cheap.
     fn claims(&self, file: &Landed<'_>) -> bool;
 
-    /// Act on the file.
-    ///
-    /// Only called when [`Extension::claims`] returned true. Returning an error
-    /// fails the install: an extension that was asked for and could not run has
-    /// left the install in a state the caller did not ask for, and continuing
-    /// quietly would hide that.
+    /// Act on the file; an error fails the install.
     fn run(&self, file: &Landed<'_>) -> Result<Produced, ExtensionError>;
 }
 
@@ -90,10 +45,6 @@ pub trait Extension: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionError {
     /// The file was not what the extension expected.
-    ///
-    /// Carries what was found, not just "invalid": a Workshop item is
-    /// attacker-authored, and the first question about a rejected one is always
-    /// what it actually contained.
     Malformed {
         /// The extension that refused it.
         extension: &'static str,
@@ -134,27 +85,15 @@ impl From<std::io::Error> for ExtensionError {
 }
 
 /// One file inside an archive, whatever the archive's format.
-///
-/// Deliberately not GMAD's `Entry`: a sink writing files or building a ZIP does
-/// not care which container the bytes came out of, and a vocabulary that named
-/// one format would mean every future format producing that format's types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveEntry {
-    /// The path inside the archive, as the archive spells it. Untrusted: it is
-    /// chosen by whoever published the thing.
+    /// The path inside the archive; untrusted, chosen by the publisher.
     pub path: String,
     /// The entry's size once unpacked.
     pub size: u64,
     /// Where the entry's stored bytes start in the archive.
-    ///
-    /// What makes a selective read possible: knowing this and
-    /// [`ArchiveEntry::stored_size`], a caller can fetch one entry without
-    /// fetching the ones around it.
     pub offset: u64,
-    /// How many bytes to read at that offset.
-    ///
-    /// The same as [`ArchiveEntry::size`] for a container that stores its
-    /// entries whole, and smaller for one that compresses them.
+    /// How many bytes to read at that offset; smaller than `size` when compressed.
     pub stored_size: u64,
     /// What was done to those bytes.
     pub compression: Compression,
@@ -185,11 +124,6 @@ impl ArchiveEntry {
 }
 
 /// How much of an archive must be read before its index is known, and where.
-///
-/// A format answers this so a caller can fetch that much and no more. GMAD's
-/// index is at the front; a ZIP's central directory is at the back, and the
-/// same mechanism serves both — which is the whole reason this is a value
-/// rather than an assumption baked into the reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexLocation {
     /// The first `n` bytes are enough to find it.
@@ -199,21 +133,11 @@ pub enum IndexLocation {
 }
 
 /// What a format learned from its index, and what it still needs.
-///
-/// Two phases, because not every container puts everything in one place. A
-/// GMAD's index gives each entry's offset outright. A ZIP's central directory
-/// gives the offset of a *local header*, whose own length depends on fields
-/// only that header carries — so the data offset is one more read away.
-///
-/// Rather than give a decoder its own way to fetch bytes, which would mean
-/// every format reimplementing ranged reads, a plan says which ranges it wants
-/// and gets them back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexPlan {
     /// What is known so far.
     pub entries: Vec<ArchiveEntry>,
-    /// Ranges needed before the entries are usable. Empty when they already
-    /// are.
+    /// Ranges needed before the entries are usable; empty when they already are.
     pub needs: Vec<(u64, u64)>,
 }
 
@@ -235,21 +159,8 @@ impl IndexPlan {
 }
 
 /// What a decoder reports to as it reads an archive.
-///
-/// Called in order: [`index`] once, then [`begin`], [`data`] any number of
-/// times, [`end`], repeating per entry, and [`finish`] at the end.
-///
-/// [`index`]: EntrySink::index
-/// [`begin`]: EntrySink::begin
-/// [`data`]: EntrySink::data
-/// [`end`]: EntrySink::end
-/// [`finish`]: EntrySink::finish
 pub trait EntrySink {
-    /// Every entry's name and size is now known.
-    ///
-    /// The place to validate paths, because it happens before any entry's bytes
-    /// are handed over — an archive must not get half its files written before
-    /// the one escaping the root is noticed.
+    /// Every entry's name and size is now known; the place to validate paths.
     fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError>;
 
     /// An entry's bytes are about to arrive.
@@ -261,11 +172,7 @@ pub trait EntrySink {
     /// The current entry is complete.
     fn end(&mut self) -> Result<(), ExtensionError>;
 
-    /// The archive is complete; write anything held back.
-    ///
-    /// A ZIP's central directory is written here. Defaulted because most sinks
-    /// have nothing to do — one writing loose files is finished when its last
-    /// entry is.
+    /// The archive is complete; write anything held back, like a ZIP's central directory.
     fn finish(&mut self) -> Result<(), ExtensionError> {
         Ok(())
     }
@@ -307,16 +214,7 @@ impl<S: EntrySink + ?Sized> EntrySink for Box<S> {
     }
 }
 
-/// Reads an archive as its bytes arrive, driving an [`EntrySink`].
-///
-/// The seam a second format plugs into. GMAD implements it; a `tar` or a
-/// nested ZIP would be another implementation and nothing else would change —
-/// the sinks, the filter and the pipeline are all written against
-/// [`ArchiveEntry`], not against any container.
-///
-/// Bytes must arrive **in order**, from the start of the archive. Whether that
-/// is possible at all is a property of the format: it works for GMAD because
-/// the index comes first and contents follow in index order.
+/// Reads an archive as its bytes arrive, in order, driving an [`EntrySink`].
 pub trait Decoder {
     /// The format's name, as a pipeline names it.
     fn format(&self) -> &'static str;
@@ -324,18 +222,11 @@ pub trait Decoder {
     /// Feeds the next bytes of the archive.
     fn push(&mut self, bytes: &[u8]) -> Result<(), ExtensionError>;
 
-    /// Ends the archive, closing the sink.
-    ///
-    /// A stream that stopped early is an error: telling a caller the archive
-    /// was processed when the last entry is short would be false.
+    /// Ends the archive, closing the sink; stopping early is an error.
     fn finish(&mut self) -> Result<(), ExtensionError>;
 }
 
-/// Where an extension should write, given the file it was handed.
-///
-/// Beside the archive, in a directory named after it without its extension —
-/// which is what an addon manager expects to find and what unpacking
-/// `addons/foo.gma` into `addons/foo/` means.
+/// Where an extension should write: a directory beside the archive, named after it.
 #[must_use]
 pub fn unpack_dir(file: &Landed<'_>) -> PathBuf {
     let stem = file
@@ -399,7 +290,6 @@ mod tests {
 
     #[test]
     fn nothing_is_produced_by_default() {
-        // Including the original: deleting a download is the caller's decision.
         let produced = Produced::default();
         assert!(produced.files.is_empty());
         assert!(!produced.remove_original);

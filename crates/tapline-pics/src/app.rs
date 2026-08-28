@@ -3,12 +3,7 @@
 use tapline_ids::{AppId, DepotId, ManifestId};
 use tapline_vdf::{Object, Value};
 
-/// The platform an install is for.
-///
-/// A depot's `config/oslist` decides whether it belongs in the install, and
-/// getting this wrong is not subtle: installing the Windows depot of a
-/// dedicated server on Linux downloads a few hundred megabytes of `.dll` files
-/// the server cannot use.
+/// The platform an install is for, matched against a depot's `config/oslist`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Os {
     /// Linux, which is what a game-server node runs.
@@ -50,10 +45,7 @@ pub struct DepotFilter {
     pub os: Os,
     /// The branch, `public` unless a beta was asked for.
     pub branch: String,
-    /// Whether to include depots belonging to DLC.
-    ///
-    /// Off by default: a dedicated server never wants them, and they can be a
-    /// large fraction of an app's size.
+    /// Whether to include DLC depots; off by default.
     pub include_dlc: bool,
 }
 
@@ -76,13 +68,9 @@ pub struct Depot {
     pub manifest: ManifestId,
     /// Installed size in bytes, as PICS reports it.
     pub size: u64,
-    /// Download size in bytes — smaller than `size`, since content is stored
-    /// compressed.
+    /// Download size in bytes; smaller than `size`, content is stored compressed.
     pub download_size: u64,
-    /// The app that actually owns the depot.
-    ///
-    /// Usually the app being installed, but a shared runtime depot belongs to
-    /// another app, and its key must be requested against *that* app.
+    /// The app that owns the depot; a shared depot belongs to another app.
     pub owner: AppId,
 }
 
@@ -93,8 +81,7 @@ pub struct Branch {
     pub name: String,
     /// The build id, when given.
     pub build_id: Option<u64>,
-    /// Whether a password is needed. Password-protected branches carry their
-    /// manifest ids encrypted, which is a separate problem from listing them.
+    /// Whether a password is needed; such branches carry encrypted manifest ids.
     pub password_required: bool,
 }
 
@@ -105,10 +92,7 @@ pub struct AppInfo {
     root: Object,
 }
 
-/// Keys under `depots` that do not name a depot.
-///
-/// PICS puts these alongside the numeric depot ids, so a reader that takes every
-/// child as a depot ends up trying to download one called `branches`.
+/// Keys PICS puts under `depots` that do not name a depot.
 const NON_DEPOT_KEYS: &[&str] = &[
     "branches",
     "baselanguages",
@@ -119,17 +103,13 @@ const NON_DEPOT_KEYS: &[&str] = &[
 ];
 
 impl AppInfo {
-    /// Parses a PICS buffer.
-    ///
-    /// The buffer is NUL-terminated text KeyValues; the terminator is stripped
-    /// because the parser would otherwise read it as a bare token.
+    /// Parses a PICS buffer: NUL-terminated text KeyValues.
     pub fn parse(app_id: AppId, buffer: &[u8]) -> Result<Self, tapline_vdf::VdfError> {
         let trimmed = buffer.strip_suffix(&[0]).unwrap_or(buffer);
         let text = String::from_utf8_lossy(trimmed);
         let document = tapline_vdf::parse(&text)?;
 
-        // Valve wraps everything in a single "appinfo" block. Tolerating its
-        // absence costs nothing and means a caller can hand us either shape.
+        // Valve wraps everything in one "appinfo" block; tolerate either shape.
         let root = document.get_object("appinfo").cloned().unwrap_or(document);
 
         Ok(Self { app_id, root })
@@ -147,10 +127,7 @@ impl AppInfo {
         self.root.get_object("common")?.get_str("name")
     }
 
-    /// The app's type — `Game`, `Tool`, `Application`, `Config`.
-    ///
-    /// Dedicated servers are usually `Tool`, which is why filtering on `Game`
-    /// would hide exactly the apps this project exists to install.
+    /// The app's type; dedicated servers are usually `Tool`, not `Game`.
     #[must_use]
     pub fn app_type(&self) -> Option<&str> {
         self.root.get_object("common")?.get_str("type")
@@ -180,8 +157,7 @@ impl AppInfo {
                 Some(Branch {
                     name: name.to_owned(),
                     build_id: entry.get_u64("buildid"),
-                    // Valve writes "1"; anything else, including absence, means
-                    // no password.
+                    // Valve writes "1"; anything else, including absence, means no password.
                     password_required: entry.get_str("pwdrequired") == Some("1"),
                 })
             })
@@ -199,10 +175,6 @@ impl AppInfo {
     }
 
     /// The depots an install should download, in id order.
-    ///
-    /// Returns an empty list rather than an error when the branch does not
-    /// exist, so a caller can tell "no such branch" apart from "this branch has
-    /// nothing for your platform" by checking [`AppInfo::branches`].
     #[must_use]
     pub fn depots(&self, filter: &DepotFilter) -> Vec<Depot> {
         let Some(depots) = self.root.get_object("depots") else {
@@ -215,9 +187,7 @@ impl AppInfo {
                 continue;
             }
             let Ok(id) = key.parse::<u32>() else {
-                // A non-numeric key that is not a known non-depot entry is
-                // something new; skipping it is right, but silently is not, so
-                // it is left out of the install and visible in `raw()`.
+                // An unknown non-numeric key is skipped but still visible in `raw()`.
                 continue;
             };
             let Some(entry) = value.as_object() else {
@@ -228,8 +198,7 @@ impl AppInfo {
                 continue;
             }
             let Some(manifests) = entry.get_object("manifests") else {
-                // A depot with no manifests block has nothing to download —
-                // shared-install stubs look like this.
+                // No manifests block: a shared-install stub with nothing to download.
                 continue;
             };
             let Some(branch) = manifests.get_object(&filter.branch) else {
@@ -244,9 +213,7 @@ impl AppInfo {
                 manifest: ManifestId(gid),
                 size: branch.get_u64("size").unwrap_or(0),
                 download_size: branch.get_u64("download").unwrap_or(0),
-                // A depot borrowed from another app carries `depotfromapp`, and
-                // its decryption key has to be requested against that app
-                // rather than this one.
+                // `depotfromapp`: the key must be requested against the owning app.
                 owner: entry
                     .get_u64("depotfromapp")
                     .and_then(|v| u32::try_from(v).ok())
@@ -258,14 +225,12 @@ impl AppInfo {
         out
     }
 
-    /// Whether a depot belongs in this install.
     fn depot_matches(&self, entry: &Object, filter: &DepotFilter) -> bool {
         if !filter.include_dlc && entry.get("dlcappid").is_some() {
             return false;
         }
 
-        // No oslist means the depot is platform-neutral — shared content, and
-        // the majority of what an install actually needs.
+        // No oslist means platform-neutral shared content.
         if let Some(config) = entry.get_object("config")
             && let Some(oslist) = config.get_str("oslist")
             && !oslist.trim().is_empty()
@@ -284,13 +249,8 @@ impl AppInfo {
     }
 }
 
-/// Where an app's PICS document says its Workshop content lives.
 impl AppInfo {
-    /// The depot Workshop items for this app are stored in.
-    ///
-    /// Steam keeps SteamPipe UGC in a dedicated depot named by
-    /// `depots/workshopdepot`; without it, a Workshop download has no depot to
-    /// fetch a manifest from.
+    /// The depot Workshop items live in, from `depots/workshopdepot`.
     #[must_use]
     pub fn workshop_depot(&self) -> Option<DepotId> {
         let value = self.root.get_object("depots")?.get_u64("workshopdepot")?;
@@ -306,7 +266,6 @@ impl AppInfo {
     }
 }
 
-/// Convenience for reading a nested value without three `?`s at the call site.
 #[allow(dead_code, reason = "kept next to the accessors it mirrors")]
 fn nested<'a>(object: &'a Object, path: &[&str]) -> Option<&'a Value> {
     let mut current = object;
@@ -321,8 +280,7 @@ fn nested<'a>(object: &'a Object, path: &[&str]) -> Option<&'a Value> {
 mod tests {
     use super::*;
 
-    /// A real PICS response for app 232250, captured live 2026-08-26 and cut
-    /// down to the parts that decide an install.
+    /// A real PICS response for app 232250, captured live 2026-08-26.
     const TF2_DS: &str = r#"
 "appinfo"
 {
@@ -421,8 +379,6 @@ mod tests {
 
     #[test]
     fn a_nul_terminated_buffer_parses() {
-        // Steam's buffer ends with a NUL, which the parser would otherwise read
-        // as a bare token and trip over.
         let mut buffer = TF2_DS.as_bytes().to_vec();
         buffer.push(0);
         let info = AppInfo::parse(AppId(232_250), &buffer).expect("must parse");
@@ -433,16 +389,12 @@ mod tests {
     fn the_app_reads_back_the_way_pics_wrote_it() {
         let info = tf2();
         assert_eq!(info.name(), Some("Team Fortress 2 Dedicated Server"));
-        // Dedicated servers are Tools, not Games — filtering on Game would hide
-        // exactly the apps this project exists to install.
         assert_eq!(info.app_type(), Some("Tool"));
         assert_eq!(info.build_id("public"), Some(17_442_188));
     }
 
     #[test]
     fn a_linux_install_leaves_the_windows_depot_behind() {
-        // Depot 232255 is Windows-only. Taking it on Linux would download 268 MB
-        // of DLLs the server cannot run.
         let depots = tf2().depots(&DepotFilter {
             os: Os::Linux,
             branch: "public".to_owned(),
@@ -467,8 +419,6 @@ mod tests {
 
     #[test]
     fn manifest_ids_and_sizes_come_through_intact() {
-        // These are the numbers an install is pinned to; a truncation here would
-        // download a different build.
         let depots = tf2().depots(&DepotFilter::default());
         let shared = depots
             .iter()
@@ -483,9 +433,6 @@ mod tests {
 
     #[test]
     fn the_branches_key_is_not_mistaken_for_a_depot() {
-        // PICS puts `branches` and `overridescddb` alongside the numeric depot
-        // ids. A reader taking every child would try to download one called
-        // "branches".
         let depots = tf2().depots(&DepotFilter::default());
         assert!(
             depots.iter().all(|d| d.id.get() >= 232_250),
@@ -513,8 +460,6 @@ mod tests {
 
     #[test]
     fn an_unknown_branch_yields_nothing_rather_than_the_public_one() {
-        // Silently falling back to public would install a different build than
-        // the one asked for.
         let depots = tf2().depots(&DepotFilter {
             os: Os::Linux,
             branch: "no-such-branch".to_owned(),
@@ -536,8 +481,6 @@ mod tests {
 
     #[test]
     fn a_borrowed_depot_names_the_app_that_owns_it() {
-        // A shared runtime depot's key must be requested against its owning app,
-        // not the app being installed.
         let document = r#"
             "appinfo" {
                 "appid" "1"

@@ -1,29 +1,4 @@
-//! Steam's symmetric message encryption.
-//!
-//! Steam does not simply CBC-encrypt a message under the session key. It picks a
-//! per-message IV, encrypts *the IV itself* with the same key in ECB mode, and
-//! sends that in front of the CBC ciphertext:
-//!
-//! ```text
-//!   ECB(key, iv) || CBC(key, iv, plaintext)
-//!   \___________/    \____________________/
-//!      16 bytes          PKCS#7 padded
-//! ```
-//!
-//! Since Steam's own 2015-era change the IV is not random but derived, so that
-//! it doubles as a message authentication tag:
-//!
-//! ```text
-//!   random  = 3 random bytes
-//!   tag     = HMAC-SHA1(key[0..16], random || plaintext)[0..13]
-//!   iv      = tag || random
-//! ```
-//!
-//! On receipt the tag is recomputed over the decrypted plaintext and compared in
-//! constant time. That is what makes the channel authenticated rather than
-//! merely encrypted, and it is why [`decrypt_message`] refuses to hand back a
-//! plaintext whose tag does not match, even though the CBC decryption itself
-//! succeeded.
+//! Steam's symmetric message encryption: `ECB(key, iv) || CBC(key, iv, plaintext)`.
 
 use crate::{constant_time_eq, hmac_sha1};
 use aes::Aes256;
@@ -39,31 +14,19 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
-/// The AES block size, and therefore the IV length.
 const BLOCK: usize = 16;
-/// How many bytes of the IV carry the HMAC tag.
 const TAG_LEN: usize = 13;
-/// How many bytes of the IV are random.
 const NONCE_LEN: usize = BLOCK - TAG_LEN;
-/// The HMAC is keyed with the first half of the session key.
 const HMAC_KEY_LEN: usize = 16;
 
 /// What went wrong encrypting or decrypting a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CryptoError {
-    /// The ciphertext was shorter than an IV block, or not a multiple of the
-    /// block size.
+    /// The ciphertext was shorter than an IV block, or not block-aligned.
     MalformedCiphertext,
-    /// The PKCS#7 padding was not well formed.
-    ///
-    /// Reported without saying *how* it was malformed: distinguishing a bad pad
-    /// from a bad MAC is the padding-oracle bug, and the caller has no use for
-    /// the difference anyway.
+    /// Bad PKCS#7 padding; not distinguished further, to avoid a padding oracle.
     DecryptionFailed,
     /// The message decrypted but its HMAC tag did not match.
-    ///
-    /// The plaintext is discarded rather than returned. A caller that acted on
-    /// unauthenticated plaintext would be trusting whoever is on the wire.
     AuthenticationFailed,
 }
 
@@ -79,10 +42,7 @@ impl fmt::Display for CryptoError {
 
 impl std::error::Error for CryptoError {}
 
-/// The 32-byte AES key negotiated during the CM handshake.
-///
-/// Zeroed on drop, and refuses to print itself. It is the secret that protects
-/// the logon that follows, including the account password.
+/// The 32-byte AES session key; zeroed on drop, never printed.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SessionKey([u8; 32]);
 
@@ -94,9 +54,6 @@ impl SessionKey {
     }
 
     /// Generates a fresh key from the operating system's RNG.
-    ///
-    /// This is the key the client sends to Steam encrypted under Valve's public
-    /// key, so its quality is the whole security of the channel.
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0_u8; 32];
@@ -110,7 +67,7 @@ impl SessionKey {
         &self.0
     }
 
-    /// The HMAC key: the first half of the session key.
+    /// Steam keys the HMAC with the first half of the session key.
     fn hmac_key(&self) -> &[u8] {
         self.0.get(..HMAC_KEY_LEN).unwrap_or(&self.0)
     }
@@ -122,10 +79,7 @@ impl fmt::Debug for SessionKey {
     }
 }
 
-/// Encrypts one IV block in ECB mode.
-///
-/// ECB is correct here and only here: the input is exactly one block, and the
-/// weakness of ECB is that it repeats across blocks. There are no other blocks.
+/// ECB is safe here: the input is exactly one block.
 fn ecb_encrypt_block(key: &SessionKey, block: [u8; BLOCK]) -> [u8; BLOCK] {
     let cipher = Aes256::new(GenericArray::from_slice(key.as_bytes()));
     let mut block = GenericArray::from(block);
@@ -133,7 +87,6 @@ fn ecb_encrypt_block(key: &SessionKey, block: [u8; BLOCK]) -> [u8; BLOCK] {
     block.into()
 }
 
-/// Decrypts one IV block in ECB mode.
 fn ecb_decrypt_block(key: &SessionKey, block: [u8; BLOCK]) -> [u8; BLOCK] {
     let cipher = Aes256::new(GenericArray::from_slice(key.as_bytes()));
     let mut block = GenericArray::from(block);
@@ -141,7 +94,7 @@ fn ecb_decrypt_block(key: &SessionKey, block: [u8; BLOCK]) -> [u8; BLOCK] {
     block.into()
 }
 
-/// Derives the authenticating IV for a plaintext.
+/// Steam's IV doubles as a tag: `HMAC-SHA1(key[..16], nonce || plaintext)[..13] || nonce`.
 fn derive_iv(key: &SessionKey, nonce: [u8; NONCE_LEN], plaintext: &[u8]) -> [u8; BLOCK] {
     let mut hmac_input = Vec::with_capacity(NONCE_LEN + plaintext.len());
     hmac_input.extend_from_slice(&nonce);
@@ -150,9 +103,7 @@ fn derive_iv(key: &SessionKey, nonce: [u8; NONCE_LEN], plaintext: &[u8]) -> [u8;
     let tag = hmac_sha1(key.hmac_key(), &hmac_input);
 
     let mut iv = [0_u8; BLOCK];
-    // Both slices are compile-time constants within a 16-byte array, so neither
-    // `get_mut` can fail; the fallbacks keep the workspace's no-panic rule
-    // without an `expect`.
+    // Slices are in-bounds constants; the fallbacks keep the no-panic rule.
     if let (Some(tag_part), Some(tag_src)) = (iv.get_mut(..TAG_LEN), tag.get(..TAG_LEN)) {
         tag_part.copy_from_slice(tag_src);
     }
@@ -162,14 +113,7 @@ fn derive_iv(key: &SessionKey, nonce: [u8; NONCE_LEN], plaintext: &[u8]) -> [u8;
     iv
 }
 
-/// Encrypts a message for the CM channel.
-///
-/// The output is `ECB(iv) || CBC(iv, plaintext)`, with the IV derived from the
-/// plaintext so it authenticates it.
-///
-/// The error case is unreachable — the buffer is sized by the same arithmetic
-/// the padder uses — but it is returned rather than swallowed. Silently emitting
-/// an empty ciphertext would surface as an unexplained disconnect from Steam.
+/// Encrypts a message for the CM channel; the derived IV authenticates it.
 pub fn encrypt_message(key: &SessionKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut nonce = [0_u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
@@ -182,8 +126,6 @@ pub fn encrypt_message(key: &SessionKey, plaintext: &[u8]) -> Result<Vec<u8>, Cr
         GenericArray::from_slice(&iv),
     );
 
-    // PKCS#7 always adds at least one byte, so a plaintext that is already a
-    // whole number of blocks grows by a full block.
     let padded_len = plaintext.len() + BLOCK - (plaintext.len() % BLOCK);
     let mut out = vec![0_u8; BLOCK + padded_len];
 
@@ -199,9 +141,6 @@ pub fn encrypt_message(key: &SessionKey, plaintext: &[u8]) -> Result<Vec<u8>, Cr
 }
 
 /// Decrypts and authenticates a message from the CM channel.
-///
-/// Returns [`CryptoError::AuthenticationFailed`] without the plaintext when the
-/// tag does not match, even though the bytes are sitting right there.
 pub fn decrypt_message(key: &SessionKey, ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let encrypted_iv: [u8; BLOCK] = ciphertext
         .get(..BLOCK)
@@ -226,8 +165,6 @@ pub fn decrypt_message(key: &SessionKey, ciphertext: &[u8]) -> Result<Vec<u8>, C
         .map_err(|_| CryptoError::DecryptionFailed)?
         .to_vec();
 
-    // Recompute the tag over what we just decrypted and compare it with the one
-    // carried in the IV.
     let nonce: [u8; NONCE_LEN] = iv
         .get(TAG_LEN..)
         .and_then(|s| s.try_into().ok())
@@ -240,18 +177,7 @@ pub fn decrypt_message(key: &SessionKey, ciphertext: &[u8]) -> Result<Vec<u8>, C
     Ok(plaintext)
 }
 
-/// Decrypts content encrypted with a plain, non-authenticating IV.
-///
-/// Depot content — manifest filenames and the chunks themselves — uses the same
-/// `ECB(iv) || CBC(iv, plaintext)` layering as the CM channel, but the IV is
-/// random rather than derived from an HMAC. There is no tag to check, which is
-/// fine here for a reason worth stating: a chunk's integrity comes from its
-/// SHA-1 matching the id the manifest named, and the manifest came over an
-/// authenticated session. The cipher is providing confidentiality, and something
-/// else is providing integrity.
-///
-/// Using [`decrypt_message`] for this would fail every time, since there is no
-/// HMAC in the IV to match.
+/// Decrypts depot content, whose IV is random rather than HMAC-derived.
 pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let wrapped = SessionKey::from_bytes(*key);
 
@@ -270,10 +196,6 @@ pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Cry
 
     let cipher = Aes256CbcDec::new(GenericArray::from_slice(key), GenericArray::from_slice(&iv));
     let mut buf = body.to_vec();
-    // Truncated rather than copied out. The previous version ended with
-    // `.to_vec()` on the decrypted slice, which allocated and copied a second
-    // full buffer for every chunk — a megabyte of churn per chunk, on the
-    // hottest path in the program.
     let len = cipher
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|_| CryptoError::DecryptionFailed)?
@@ -282,12 +204,7 @@ pub fn decrypt_content(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Cry
     Ok(buf)
 }
 
-/// Decrypts content in the buffer it arrived in.
-///
-/// Same as [`decrypt_content`] and allocates nothing: the ciphertext is
-/// decrypted in place, the IV shifted out, and the buffer handed back. A
-/// download decrypts every chunk it fetches, so the copy that version makes is
-/// a megabyte per chunk that exists only to be freed.
+/// Like [`decrypt_content`], but decrypts in place and allocates nothing.
 pub fn decrypt_content_owned(
     key: &[u8; 32],
     mut ciphertext: Vec<u8>,
@@ -314,16 +231,12 @@ pub fn decrypt_content_owned(
         .map_err(|_| CryptoError::DecryptionFailed)?
         .len();
 
-    // Move the plaintext over the IV so the caller gets a buffer starting at
-    // byte zero, then shrink. No allocation at any point.
     ciphertext.copy_within(BLOCK..BLOCK + len, 0);
     ciphertext.truncate(len);
     Ok(ciphertext)
 }
 
-/// Encrypts content with a plain IV, mirroring [`decrypt_content`].
-///
-/// Only used to build test fixtures: tapline never uploads to Steam.
+/// Encrypts content with a plain IV; only used to build test fixtures.
 pub fn encrypt_content(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let wrapped = SessionKey::from_bytes(*key);
     let iv = crate::random_bytes::<BLOCK>();
@@ -367,9 +280,6 @@ mod tests {
 
     #[test]
     fn content_decryption_does_not_expect_an_hmac_iv() {
-        // The two schemes share their layering and differ in how the IV is
-        // built. Using the channel's decryptor on content fails every time,
-        // which is exactly the bug this separate function prevents.
         let key = [0x37; 32];
         let ciphertext = encrypt_content(&key, b"models/player/heavy.mdl").expect("encrypt");
         assert_eq!(
@@ -381,8 +291,7 @@ mod tests {
     #[test]
     fn the_wrong_depot_key_does_not_yield_a_filename() {
         let ciphertext = encrypt_content(&[0x37; 32], b"bin/srcds_linux").expect("encrypt");
-        // Padding will almost always fail; when it does not, the plaintext is
-        // still wrong. Either way it must not be the filename.
+        // Bad padding usually errors; when it does not, the plaintext must still differ.
         match decrypt_content(&[0x38; 32], &ciphertext) {
             Err(_) => {}
             Ok(plaintext) => assert_ne!(plaintext, b"bin/srcds_linux"),
@@ -413,9 +322,6 @@ mod tests {
 
     #[test]
     fn the_same_plaintext_encrypts_differently_each_time() {
-        // The IV carries three random bytes, so a repeated message must not
-        // produce a repeated ciphertext — otherwise an observer learns when the
-        // client sends the same thing twice.
         let key = test_key();
         let a = encrypt_message(&key, b"same message").expect("must encrypt");
         let b = encrypt_message(&key, b"same message").expect("must encrypt");
@@ -427,8 +333,7 @@ mod tests {
         let key = test_key();
         let mut ciphertext = encrypt_message(&key, b"transfer 10 credits").expect("must encrypt");
 
-        // Flip a bit in the payload. CBC will still "decrypt" it into something,
-        // which is exactly why the HMAC check has to be the gate.
+        // CBC still "decrypts" a flipped bit; the HMAC check is the gate.
         if let Some(byte) = ciphertext.get_mut(BLOCK + 3) {
             *byte ^= 0x01;
         }
@@ -489,8 +394,6 @@ mod tests {
 
     #[test]
     fn generated_keys_differ() {
-        // A constant "random" key would silently destroy the channel's security
-        // while every other test still passed.
         assert_ne!(
             SessionKey::generate().as_bytes(),
             SessionKey::generate().as_bytes()
@@ -499,10 +402,6 @@ mod tests {
 
     #[test]
     fn decrypting_in_place_matches_decrypting_by_reference() {
-        // The owned form is what every chunk goes through now. If it ever
-        // disagreed with the reference form, content would be silently wrong
-        // rather than rejected — the SHA-1 check would catch it, but as a
-        // mysterious integrity failure blamed on a CDN.
         let key = [7_u8; 32];
         for len in [1_usize, 15, 16, 17, 255, 1024] {
             let plaintext: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();

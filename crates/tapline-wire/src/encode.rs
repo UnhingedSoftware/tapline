@@ -1,9 +1,4 @@
-//! The encoder.
-//!
-//! Encoding is the easy direction — the values come from our own structs — so
-//! this is deliberately small. The one subtlety is nested messages: protobuf
-//! needs the length before the payload, and the length is not known until the
-//! payload is written.
+//! The encoder; the one subtlety is nested-message length prefixes.
 
 use crate::{FieldKey, Message, WireType};
 
@@ -75,11 +70,7 @@ impl Encoder {
         self.write_varint(value);
     }
 
-    /// Writes an `int32` field.
-    ///
-    /// Negative values are sign-extended to ten bytes, which is protobuf's own
-    /// encoding: it is wasteful, and it is what every other implementation
-    /// expects, so `sint32` exists for anyone who minds.
+    /// Writes an `int32` field; negatives sign-extend to ten bytes per protobuf.
     pub fn write_int32_field(&mut self, number: u32, value: i32) {
         self.write_varint_field(number, value as i64 as u64);
     }
@@ -157,13 +148,7 @@ impl Encoder {
         self.write_bytes_field(number, value.as_bytes());
     }
 
-    /// Writes a nested message field.
-    ///
-    /// The payload is written first with a one-byte length placeholder, then the
-    /// real length is spliced in. That costs a memmove for messages longer than
-    /// 127 bytes, and it avoids encoding the submessage twice — which is what
-    /// the alternative (measure, then write) amounts to for anything with its
-    /// own nested fields.
+    /// Writes a nested message via a one-byte length placeholder, spliced when outgrown.
     pub fn write_message_field(&mut self, number: u32, message: &impl Message) {
         self.write_key(FieldKey {
             number,
@@ -192,9 +177,6 @@ impl Encoder {
     }
 
     /// Writes a packed repeated `fixed32` field, omitting it when empty.
-    ///
-    /// proto3 packs by default and an empty packed field is indistinguishable
-    /// from an absent one, so writing a zero-length payload would be noise.
     pub fn write_packed_fixed32(&mut self, number: u32, values: &[u32]) {
         if values.is_empty() {
             return;
@@ -251,8 +233,6 @@ mod tests {
 
     #[test]
     fn negative_int32_uses_the_ten_byte_sign_extended_form() {
-        // This is protobuf's own encoding for a negative int32; a shorter one
-        // would not survive a round trip through any other implementation.
         let mut e = Encoder::new();
         e.write_int32_field(1, -1);
         assert_eq!(
@@ -267,8 +247,6 @@ mod tests {
         assert_eq!(d.read_varint32().map(|v| v as i32), Ok(-1));
     }
 
-    /// A message with a nested message, used to exercise the length placeholder
-    /// on both sides of the 127-byte boundary.
     #[derive(Debug, Default, PartialEq, Eq)]
     struct Inner {
         payload: Vec<u8>,
@@ -333,9 +311,7 @@ mod tests {
 
     #[test]
     fn nested_message_longer_than_the_placeholder_splices_correctly() {
-        // 200 bytes forces a two-byte length varint, so the placeholder has to
-        // grow and everything after it has to shift. Getting the splice wrong
-        // corrupts the field that follows, which is why `tail` is checked too.
+        // 200 bytes forces a two-byte length varint; a bad splice corrupts `tail`.
         let msg = Outer {
             inner: Inner {
                 payload: vec![0xAB; 200],

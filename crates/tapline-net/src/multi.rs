@@ -1,41 +1,15 @@
-//! Unpacking `CMsgMulti`, the batch message.
-//!
-//! Steam coalesces traffic aggressively: most of what arrives on a session is
-//! not the message you asked for but a `Multi` containing it alongside several
-//! others. The payload is a sequence of length-prefixed messages, and it is
-//! gzipped whenever `size_unzipped` is non-zero.
-//!
-//! ```text
-//! CMsgMulti.message_body, after decompression:
-//! +----------+-------------------+----------+-------------------+
-//! | u32 LE   | message (n bytes) | u32 LE   | message (m bytes) | ...
-//! +----------+-------------------+----------+-------------------+
-//! ```
-//!
-//! Batches nest: a `Multi` may contain a `Multi`. That is legitimate, and it is
-//! also how a hostile or broken peer would try to make us recurse forever, so
-//! the depth is bounded.
+//! Unpacking `CMsgMulti`: length-prefixed messages, gzipped when `size_unzipped` is non-zero.
 
 use crate::{NetError, frame::Frame};
 use tapline_proto::steammessages_base::CMsgMulti;
 
-/// How deeply batches may nest before we stop unwrapping.
-///
-/// Steam nests one level in practice. The limit exists for input that is not
-/// Steam.
+/// How deeply batches may nest; Steam nests one level in practice.
 pub const MAX_NESTING: u32 = 8;
 
-/// The largest decompressed batch we will accept, in bytes.
-///
-/// `size_unzipped` is a number from the network, and a decompressor told to
-/// produce 4 GB will try. Real batches are tens of kilobytes; this cap is far
-/// above anything legitimate and far below anything that hurts.
+/// The largest decompressed batch we accept; `size_unzipped` is untrusted network input.
 pub const MAX_UNZIPPED: usize = 32 * 1024 * 1024;
 
-/// Expands a frame into the messages it contains.
-///
-/// A frame that is not a batch comes back as itself, so a caller can run every
-/// received frame through this without checking first.
+/// Expands a frame into the messages it contains; a non-batch passes through.
 pub fn expand(frame: Frame) -> Result<Vec<Frame>, NetError> {
     let mut out = Vec::new();
     expand_into(frame, 0, &mut out)?;
@@ -67,8 +41,7 @@ fn expand_into(frame: Frame, depth: u32, out: &mut Vec<Frame>) -> Result<(), Net
                     claimed: size as u64,
                 });
             }
-            // The claimed size is used as a cap, not as a promise: the
-            // inflater stops there whatever the stream says it wants.
+            // The claimed size is a cap for the inflater, not a promise.
             crate::gzip::decompress(&body, size).map_err(NetError::Decompress)?
         }
     };
@@ -101,7 +74,6 @@ mod tests {
     use tapline_proto::steammessages_base::CMsgProtoBufHeader;
     use tapline_wire::Message;
 
-    /// Packs frames the way Steam packs a batch payload.
     fn pack(frames: &[Frame]) -> Vec<u8> {
         let mut payload = Vec::new();
         for frame in frames {
@@ -130,7 +102,6 @@ mod tests {
 
     #[test]
     fn a_non_batch_frame_passes_straight_through() {
-        // So a caller can pipe everything through expand() without checking.
         let frames = expand(plain(EMsg::CLIENT_LOGON_RESPONSE, b"x")).expect("must expand");
         assert_eq!(frames.len(), 1);
         assert_eq!(
@@ -202,8 +173,6 @@ mod tests {
 
     #[test]
     fn an_absurd_unzipped_size_is_refused_before_decompressing() {
-        // size_unzipped is a number from the network. A decompressor told to
-        // produce 4 GB will try.
         let frame = multi_frame(vec![0x1F, 0x8B, 0x08], Some(u32::MAX));
         assert!(matches!(expand(frame), Err(NetError::MultiTooLarge { .. })));
     }

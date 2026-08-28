@@ -1,30 +1,4 @@
 //! Garry's Mod addon archives.
-//!
-//! A Workshop addon for app 4000 arrives as a single `.gma`. A server that
-//! mounts a Workshop collection reads that directly, but anything that wants
-//! the files — a content pipeline, a fast-download host, a human — needs it
-//! unpacked. This crate reads the format, extracts it, and ships two
-//! [`Extension`]s that do so as files land.
-//!
-//! ```no_run
-//! # fn example() -> Result<(), tapline_ext::ExtensionError> {
-//! use tapline_gmad::{Extract, ToZip};
-//! // Registered with a session; see the tapline crate.
-//! let unpack = Extract::new();
-//! let zip = ToZip::new();
-//! # let _ = (unpack, zip);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # The untrusted part
-//!
-//! Every path in an addon is chosen by whoever published it, and anyone can
-//! publish a Workshop item. `lua/../../../etc/cron.d/x` is a legal string. Each
-//! one goes through `tapline-fs`'s validator before it is used, and a path that
-//! escapes fails the whole extraction rather than being skipped — a partially
-//! extracted addon that quietly dropped the interesting file is worse than one
-//! that refused.
 
 #![forbid(unsafe_code)]
 
@@ -46,31 +20,17 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use tapline_ext::{Extension, ExtensionError, Landed, Produced, unpack_dir};
 
-/// How much of an archive to read before deciding the index did not fit.
-///
-/// The header and index of a real addon are kilobytes; PAC3's are under two.
-/// Reading a bounded prefix and growing only if needed keeps a 400 MB addon
-/// from being 400 MB of memory just to learn what is in it.
 const INDEX_PROBE: usize = 1 << 16;
 
-/// The largest header this will read before giving up.
-///
-/// An index that has not terminated within this is not a large addon, it is a
-/// malformed one, and continuing to grow the buffer is how a 30-byte file
-/// becomes an out-of-memory.
+/// An index unterminated after this is malformed; growing further invites out-of-memory.
 const INDEX_LIMIT: usize = 1 << 26;
 
-/// Buffer used when streaming contents out.
 const COPY_BUFFER: usize = 1 << 20;
 
-/// How many bytes of entries to hold in memory while compressing a batch.
-///
-/// The bound that keeps a 400 MB addon from being 400 MB of resident memory.
+/// Caps resident memory while compressing a batch.
 const BATCH_BYTES: u64 = 32 << 20;
 
 /// Reads an addon's header and index from a file without reading the contents.
-///
-/// Returns the addon and the byte offset its contents begin at.
 pub fn read_index(path: &Path) -> Result<(Addon, u64), ExtensionError> {
     let mut file = std::fs::File::open(path)?;
     let mut buffer = vec![0_u8; INDEX_PROBE];
@@ -90,8 +50,7 @@ pub fn read_index(path: &Path) -> Result<(Addon, u64), ExtensionError> {
                 return Ok((addon, offset));
             }
             Err(error) => {
-                // Only "it ends too early" is worth reading further for. A wrong
-                // magic or a bad version will not improve with more bytes.
+                // Only truncation improves with more bytes; wrong magic or version never will.
                 let truncated = matches!(
                     &error,
                     ExtensionError::Malformed { reason, .. }
@@ -121,7 +80,6 @@ pub fn read_index(path: &Path) -> Result<(Addon, u64), ExtensionError> {
     }
 }
 
-/// Reads as much as it can into `buf`, returning how many bytes landed.
 fn read_upto(file: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, ExtensionError> {
     let mut total = 0;
     while total < buf.len() {
@@ -134,10 +92,7 @@ fn read_upto(file: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, Extensio
     Ok(total)
 }
 
-/// Validates every path in an addon before anything is written.
-///
-/// All of them, up front. Checking as it goes would mean a hostile addon gets
-/// half of its files written before the one that escapes is refused.
+/// Validates every path up front, before anything is written.
 fn safe_paths(addon: &Addon) -> Result<Vec<tapline_fs::SafePath>, ExtensionError> {
     addon
         .entries
@@ -151,9 +106,7 @@ fn safe_paths(addon: &Addon) -> Result<Vec<tapline_fs::SafePath>, ExtensionError
         .collect()
 }
 
-/// Extracts an addon into `dest`.
-///
-/// Returns the paths written, relative to `dest`.
+/// Extracts an addon into `dest`, returning the paths written.
 pub fn extract(archive: &Path, dest: &Path) -> Result<Vec<String>, ExtensionError> {
     let (addon, _) = read_index(archive)?;
     let safe = safe_paths(&addon)?;
@@ -186,8 +139,6 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<Vec<String>, ExtensionErro
 }
 
 /// Converts an addon to a ZIP archive at `dest`.
-///
-/// Returns the number of entries written.
 pub fn to_zip(archive: &Path, dest: &Path, compress: bool) -> Result<usize, ExtensionError> {
     let (addon, _) = read_index(archive)?;
     let safe = safe_paths(&addon)?;
@@ -199,13 +150,7 @@ pub fn to_zip(archive: &Path, dest: &Path, compress: bool) -> Result<usize, Exte
     let mut file = std::fs::File::open(archive)?;
     let mut out = zip::Writer::new(std::io::BufWriter::new(std::fs::File::create(dest)?));
 
-    // Deflate is the entire cost here: measured on a real addon it was 175 ms
-    // against 10 ms to store the same bytes. So entries are read in batches,
-    // compressed across every core, and written back in index order.
-    //
-    // Batched rather than all at once because an addon can be hundreds of
-    // megabytes, and holding all of it plus all of its compressed output is a
-    // way to turn a download into an out-of-memory.
+    // Batched so a huge addon is never fully resident; compressed across cores, written in order.
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let mut index = 0;
 
@@ -214,8 +159,7 @@ pub fn to_zip(archive: &Path, dest: &Path, compress: bool) -> Result<usize, Exte
         let mut batch_bytes = 0_u64;
 
         while let Some(entry) = addon.entries.get(index) {
-            // Always take at least one, or an entry larger than the batch
-            // budget would never be taken at all.
+            // Always take at least one, or an oversized entry would never be taken.
             if !batch.is_empty() && batch_bytes.saturating_add(entry.size) > BATCH_BYTES {
                 break;
             }
@@ -227,9 +171,7 @@ pub fn to_zip(archive: &Path, dest: &Path, compress: bool) -> Result<usize, Exte
             let mut contents = vec![0_u8; entry.size as usize];
             file.read_exact(&mut contents)?;
 
-            // The validator's spelling of the path, not the archive's, so a ZIP
-            // built from a hostile addon cannot carry `..` into whatever
-            // unpacks it next.
+            // The validator's spelling, so a hostile path cannot carry `..` onward.
             let name = safe_path.as_path().to_string_lossy().replace('\\', "/");
             batch.push((name, contents));
             batch_bytes = batch_bytes.saturating_add(entry.size);
@@ -245,19 +187,12 @@ pub fn to_zip(archive: &Path, dest: &Path, compress: bool) -> Result<usize, Exte
     Ok(addon.entries.len())
 }
 
-/// Compresses a batch across every core, returning entries in input order.
-///
-/// Dynamic scheduling through a shared counter rather than splitting the batch
-/// into equal slices: an addon's files differ in size by orders of magnitude,
-/// and a static split leaves one thread with the 4 MB model while the others
-/// finish their `.lua` files and idle.
+/// Compresses a batch across cores, returning entries in input order.
 pub(crate) fn compress_batch(
     batch: Vec<(String, Vec<u8>)>,
     compress: bool,
     threads: usize,
 ) -> Vec<zip::Prepared> {
-    // Not worth a thread: storing is a memcpy, and one entry has nothing to
-    // spread.
     if !compress || threads < 2 || batch.len() < 2 {
         return batch
             .into_iter()
@@ -273,8 +208,6 @@ pub(crate) fn compress_batch(
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                // Collected locally and merged once, so the lock is taken a
-                // handful of times rather than once per file.
                 let mut local = Vec::new();
                 loop {
                     let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -290,8 +223,7 @@ pub(crate) fn compress_batch(
         }
     });
 
-    // Back into index order: a ZIP's entries and its central directory must
-    // agree, and the order here is the order the offsets were assigned in.
+    // Back into index order: entries and central directory must agree.
     let mut collected = done.into_inner().unwrap_or_default();
     collected.sort_by_key(|(at, _)| *at);
     collected
@@ -303,7 +235,6 @@ pub(crate) fn compress_batch(
 /// Unpacks a `.gma` into a directory beside it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Extract {
-    /// Whether to delete the `.gma` afterwards.
     remove_original: bool,
 }
 
@@ -376,9 +307,6 @@ impl ToZip {
     }
 
     /// Store entries instead of deflating them.
-    ///
-    /// Much faster, and the right choice when the result is going straight to a
-    /// fast-download host that compresses on the wire anyway.
     #[must_use]
     pub const fn stored(mut self) -> Self {
         self.compress = false;
@@ -425,8 +353,7 @@ pub enum StreamTarget<'a> {
     Directory(&'a Path),
     /// Write a ZIP, deflating entries that get smaller for it.
     Zip(&'a Path),
-    /// Write a ZIP without deflating. Roughly four times faster, and the right
-    /// choice when the result goes somewhere that compresses on the wire.
+    /// Write a ZIP without deflating; roughly four times faster.
     ZipStored(&'a Path),
 }
 
@@ -435,15 +362,11 @@ pub enum StreamTarget<'a> {
 pub struct Streamed {
     /// How many entries were written.
     pub entries: usize,
-    /// Their paths, for a directory target. Empty for a ZIP, whose own index
-    /// is the list.
+    /// Their paths, for a directory target; empty for a ZIP.
     pub files: Vec<String>,
 }
 
 /// Consumes an archive as it arrives, writing it to `target`.
-///
-/// One state machine, two destinations: see [`Splitter`] for why they are the
-/// same problem. Add a third by implementing [`EntrySink`].
 pub struct StreamWriter {
     inner: Inner,
 }
@@ -455,9 +378,6 @@ enum Inner {
 
 impl StreamWriter {
     /// A writer for `target`.
-    ///
-    /// The target borrows its path only for this call; the writer owns what it
-    /// needs afterwards.
     pub fn new(target: StreamTarget<'_>) -> Result<Self, ExtensionError> {
         let inner = match target {
             StreamTarget::Directory(dest) => {
@@ -501,8 +421,7 @@ impl StreamWriter {
                 })
             }
             Inner::Zip(splitter) => {
-                // `close` writes the central directory. Without it the file is
-                // one most readers refuse.
+                // `close` writes the central directory; without it most readers refuse the file.
                 let entries = splitter.finish()?.close()?;
                 Ok(Streamed {
                     entries,
@@ -514,18 +433,12 @@ impl StreamWriter {
 }
 
 /// Where a GMAD's index lives.
-///
-/// 64 KiB covers a real addon comfortably — PAC3's header and index for 348
-/// files is under 20 KiB — and costs at most one chunk to read.
 #[must_use]
 pub const fn index_location() -> IndexLocation {
     IndexLocation::Head(64 * 1024)
 }
 
 /// Reads an index out of the bytes [`index_location`] asked for.
-///
-/// Returns the entries in the format-neutral vocabulary, with the offsets a
-/// selective read needs.
 pub fn plan(head: &[u8]) -> Result<Vec<tapline_ext::ArchiveEntry>, ExtensionError> {
     Ok(parse_index(head)?
         .entries
@@ -534,7 +447,6 @@ pub fn plan(head: &[u8]) -> Result<Vec<tapline_ext::ArchiveEntry>, ExtensionErro
         .collect())
 }
 
-/// Case-insensitive extension check.
 fn has_extension(path: &str, extension: &str) -> bool {
     Path::new(path)
         .extension()
@@ -557,7 +469,6 @@ mod tests {
         };
         let extract = Extract::new();
         assert!(extract.claims(&file("addons/x.gma")));
-        // Case matters on the Workshop, where publishers name files by hand.
         assert!(extract.claims(&file("addons/X.GMA")));
         assert!(!extract.claims(&file("addons/x.zip")));
         assert!(!extract.claims(&file("addons/x.dupe")));
@@ -568,8 +479,6 @@ mod tests {
 
     #[test]
     fn the_names_are_stable() {
-        // They are how an extension is selected from a command line and across
-        // the C ABI, so renaming one breaks callers.
         assert_eq!(Extract::new().name(), "gmad");
         assert_eq!(ToZip::new().name(), "gmad-zip");
     }

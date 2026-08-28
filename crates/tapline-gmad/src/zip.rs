@@ -1,23 +1,4 @@
-//! A minimal ZIP writer.
-//!
-//! Internal, and deliberately not a general ZIP library. It writes what this
-//! crate needs — a flat set of files, stored or deflated — and refuses
-//! everything it does not implement rather than producing an archive that only
-//! some readers accept.
-//!
-//! Notably **no ZIP64**. The 32-bit fields cap an archive at 4 GiB and 65,535
-//! entries, which no Garry's Mod addon approaches; the Workshop's own limit is
-//! far below it. Exceeding either is an error that says so. Writing the 32-bit
-//! format with truncated sizes and hoping is how an archive becomes one that
-//! `unzip` opens and Windows does not.
-//!
-//! The layout, which is the same three parts in every ZIP:
-//!
-//! ```text
-//! local header + data   per entry, in order
-//! central directory     one record per entry, repeating the metadata
-//! end of central dir    where the directory starts, and how many entries
-//! ```
+//! A minimal internal ZIP writer: flat files, stored or deflated, no ZIP64.
 
 use std::io::Write;
 use tapline_ext::ExtensionError;
@@ -60,20 +41,11 @@ pub struct Prepared {
 }
 
 /// Compresses one entry, deciding whether deflating it was worth it.
-///
-/// Pure and self-contained so it can run on any thread. Deflate is the whole
-/// cost of building a ZIP — measured on PAC3 (348 files, 8.69 MB) it was
-/// 175 ms against 10 ms to store the same bytes — so this is the function
-/// worth running many of at once. Spreading it across cores took that to
-/// 39 ms, for byte-identical output.
 #[must_use]
 pub fn prepare(name: String, body: &[u8], compress: bool) -> Prepared {
     let crc = crc32fast::hash(body);
     let deflated = compress
         .then(|| miniz_oxide::deflate::compress_to_vec(body, LEVEL))
-        // Only when it actually helped. A Garry's Mod addon is largely .vtf and
-        // .mdl, which are already compressed, and storing those keeps both the
-        // archive and the time down.
         .filter(|candidate| candidate.len() < body.len());
 
     match deflated {
@@ -94,7 +66,6 @@ pub fn prepare(name: String, body: &[u8], compress: bool) -> Prepared {
     }
 }
 
-/// One entry, remembered so the central directory can be written at the end.
 struct Record {
     name: String,
     crc: u32,
@@ -203,8 +174,6 @@ impl<W: Write> Writer<W> {
     pub fn finish(mut self) -> Result<W, ExtensionError> {
         let directory_start = self.offset;
 
-        // Taken out so the per-record write can borrow `self` mutably without
-        // fighting the iteration over `self.records`.
         let records = std::mem::take(&mut self.records);
         for record in &records {
             self.write_central_header(record)?;
@@ -226,8 +195,7 @@ impl<W: Write> Writer<W> {
         Ok(self.out)
     }
 
-    /// Writes one entry's central-directory header — the fixed 46-byte record
-    /// followed by the name. The whole ZIP central-directory layout lives here.
+    /// The fixed 46-byte central-directory record, followed by the name.
     fn write_central_header(&mut self, record: &Record) -> Result<(), ExtensionError> {
         let name_len = u16::try_from(record.name.len()).unwrap_or(u16::MAX);
 
@@ -313,12 +281,6 @@ mod tests {
 
     #[test]
     fn deflate_is_skipped_when_it_would_not_help() {
-        // Random-ish bytes do not compress, and a ZIP that stored them as
-        // "deflated but larger" is bigger for no reason.
-        // xorshift32, which produces bytes deflate cannot model. An earlier
-        // version of this test used a multiply-and-shift pattern that looked
-        // random and compressed by 40%, so it asserted the opposite of what it
-        // meant to.
         let mut state = 0x1234_5678_u32;
         let incompressible: Vec<u8> = (0..8192)
             .map(|_| {
@@ -375,9 +337,6 @@ mod tests {
 
     #[test]
     fn the_crc_is_of_the_uncompressed_bytes() {
-        // A reader checks the CRC after inflating, so it must be over the
-        // original — computing it over the deflated bytes produces an archive
-        // that fails verification everywhere.
         let body = vec![b'z'; 5000];
         let zip = build(&[("a", &body)], true);
         let crc = u32::from_le_bytes([

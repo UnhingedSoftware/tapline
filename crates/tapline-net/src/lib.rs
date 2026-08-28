@@ -1,21 +1,4 @@
-//! Steam's CM message layer.
-//!
-//! This crate speaks the protocol; it does not open the socket. Everything here
-//! runs over the [`tapline_io::Transport`] trait, which means the framing, the
-//! batch unpacking and the job correlation are all testable against recorded
-//! bytes — no account, no network, no flakiness.
-//!
-//! # The shape of a session
-//!
-//! 1. Connect a [`tapline_io::Transport`] to a CM (WebSocket; see
-//!    `tapline-rt-tokio`).
-//! 2. Send `ClientHello`.
-//! 3. Send `ClientLogon` — anonymously for dedicated-server content, which is
-//!    the common case, or with credentials.
-//! 4. Heartbeat at the interval the logon response asks for, or Steam drops the
-//!    session.
-//! 5. Send requests, correlate replies by job id, and expect most of them to
-//!    arrive wrapped in a `Multi` batch alongside unrelated traffic.
+//! Steam's CM message layer, transport-agnostic over [`tapline_io::Transport`].
 
 mod frame;
 mod gzip;
@@ -38,9 +21,6 @@ pub enum NetError {
     /// A message body did not decode.
     Wire(WireError),
     /// A message arrived without the protobuf flag.
-    ///
-    /// The struct-header format belongs to the TCP transport Steam retired, and
-    /// inventing a layout for it on a WebSocket would be guessing.
     NotProtobuf {
         /// The message type, with the flag bit cleared.
         emsg: u32,
@@ -56,19 +36,14 @@ pub enum NetError {
     Decompress(GzipError),
     /// The transport failed.
     Io(String),
-    /// Steam refused the logon, or ended the session.
-    ///
-    /// Carries Steam's own result code, because the difference between
-    /// "rate limited" and "invalid password" is the difference between waiting
-    /// and giving up.
+    /// Steam refused the logon, or ended the session; carries Steam's `EResult`.
     Steam {
         /// The `EResult` Steam sent.
         eresult: i32,
     },
     /// The peer closed the connection.
     Disconnected,
-    /// A reply arrived for a request we were not waiting on, or a request got a
-    /// reply of the wrong type.
+    /// A reply we were not waiting on, or of the wrong type.
     UnexpectedReply {
         /// What arrived.
         emsg: u32,

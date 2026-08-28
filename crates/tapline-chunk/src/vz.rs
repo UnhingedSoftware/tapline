@@ -1,21 +1,4 @@
 //! The `VZ` chunk container: LZMA.
-//!
-//! Read off real chunks fetched from `cache8-iad1.steamcontent.com` on
-//! 2026-08-26 and confirmed by decoding them back into the files the manifest
-//! named.
-//!
-//! ```text
-//!  0    1    2      3          7           12                    -10        -6      -2
-//! +----+----+----+------------+-----------+----------------------+----------+-------+----+
-//! |'V' |'Z' |'a' |  crc32     | LZMA prop |    LZMA stream       |  crc32   | size  |'zv'|
-//! +----+----+----+------------+-----------+----------------------+----------+-------+----+
-//!                  u32 LE       5 bytes                            u32 LE    u32 LE
-//! ```
-//!
-//! The CRC-32 appears in both the header and the footer and both cover the
-//! decompressed bytes. The LZMA stream is raw — properties but no length prefix,
-//! since the length lives in the footer — so the size is handed to `lzma-rs` out
-//! of band rather than by splicing a synthetic header onto the stream.
 
 use crate::ChunkError;
 
@@ -48,10 +31,6 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
 }
 
 /// Decodes into a buffer the caller owns.
-///
-/// What a download uses. Allocating a megabyte per chunk and freeing it again
-/// is what makes an allocator raise its mmap threshold and keep the heap; a
-/// reused buffer never gives it the chance.
 pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     if input.len() < HEADER_LEN + PROPS_LEN + FOOTER_LEN {
         return Err(ChunkError::Truncated);
@@ -75,8 +54,7 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
     if footer_magic != FOOTER_MAGIC {
         return Err(ChunkError::BadFooter(footer_magic.to_vec()));
     }
-    // Two copies of one number. If they differ, believing either would be a
-    // guess.
+    // Two copies of one number; if they differ, believing either is a guess.
     if header_crc != footer_crc {
         return Err(ChunkError::InconsistentChecksum {
             header: header_crc,
@@ -133,7 +111,6 @@ mod tests {
     use super::*;
     use crate::MAX_CHUNK;
 
-    /// Real chunks from depot 232257, fetched and decrypted on 2026-08-26.
     const WHITELIST: &[u8] =
         include_bytes!("../tests/fixtures/chunk_610f4c4e6d26a61f0a35ed66117a7e693cceb4b8.bin");
     const SCRIPT: &[u8] =
@@ -141,7 +118,6 @@ mod tests {
 
     #[test]
     fn a_real_chunk_decodes_into_the_file_it_came_from() {
-        // 333 bytes of tf/cfg/pure_server_whitelist.txt.
         let out = decode(WHITELIST, MAX_CHUNK).expect("a real chunk must decode");
         assert_eq!(out.len(), 333);
         assert!(
@@ -153,7 +129,6 @@ mod tests {
 
     #[test]
     fn a_larger_real_chunk_decodes_too() {
-        // 9,656 bytes of tf/cfg/unencrypted/print_instance_config.py.
         let out = decode(SCRIPT, MAX_CHUNK).expect("a real chunk must decode");
         assert_eq!(out.len(), 9_656);
         assert!(out.starts_with(b"#!/usr/bin/env python3"));
@@ -161,9 +136,6 @@ mod tests {
 
     #[test]
     fn the_decoded_bytes_match_the_containers_own_checksum() {
-        // Belt and braces: the decoder checks this itself, and so does this
-        // test, because a decoder that skipped the check would still pass the
-        // two above.
         for chunk in [WHITELIST, SCRIPT] {
             let footer_crc = crate::read_u32(chunk, chunk.len() - FOOTER_LEN).expect("a footer");
             let out = decode(chunk, MAX_CHUNK).expect("must decode");
@@ -173,9 +145,6 @@ mod tests {
 
     #[test]
     fn a_corrupted_stream_is_caught() {
-        // A flipped bit in the compressed data either fails to decode or
-        // decodes to something with the wrong CRC. Either way it must not be
-        // returned as content.
         let mut damaged = SCRIPT.to_vec();
         let middle = damaged.len() / 2;
         if let Some(byte) = damaged.get_mut(middle) {
@@ -189,8 +158,6 @@ mod tests {
 
     #[test]
     fn a_tampered_checksum_is_caught_as_an_inconsistency() {
-        // The header and footer hold the same value; changing one is the
-        // cheapest way to notice damage that a single copy would hide.
         let mut damaged = WHITELIST.to_vec();
         if let Some(byte) = damaged.get_mut(3) {
             *byte ^= 0x01;

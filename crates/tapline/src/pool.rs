@@ -1,77 +1,18 @@
 //! Sessions, managed for you.
-//!
-//! A [`Session`] is `&mut` because one CM connection carries one request at a
-//! time: it allocates a job id, writes the frame, and reads until that job's
-//! reply comes back. That is honest about what the code does, and it means a
-//! caller who wants two downloads at once needs two sessions.
-//!
-//! Which is fine — it is just not something anyone should have to think about.
-//! This hands them out and takes them back:
-//!
-//! ```no_run
-//! # async fn example() -> Result<(), tapline::InstallError> {
-//! use tapline::SessionPool;
-//!
-//! // No session in sight. One is created, used, and kept for the next caller.
-//! let mut session = SessionPool::shared().acquire().await?;
-//! let info = session.app_info(tapline::AppId(4020)).await?;
-//! # let _ = info;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Concurrent callers get different sessions and never wait on each other. They
-//! still share one chunk budget and one connection pool through [`Shared`], so
-//! spreading work across sessions does not multiply the load on Steam's CDN.
-//!
-//! # Why sessions are kept rather than reconnected
-//!
-//! Logging on costs a WebSocket, a TLS handshake and a round trip. Measured
-//! with sixteen concurrent downloads it is cheap — 16/16 in 1.9 s — but paying
-//! it per operation when the last one just finished is waste, and an idle
-//! session is a socket and a few kilobytes.
-//!
-//! # Why they do not live forever
-//!
-//! Steam drops a session that stops heartbeating and does not say why; the
-//! failure surfaces much later as an unrelated request returning
-//! "disconnected". An idle session in a pool is exactly that case, so a keeper
-//! task heartbeats what is idle and discards anything that has gone quiet for
-//! too long to trust.
-//!
-//! [`Shared`]: crate::Shared
 
 use crate::{InstallError, Session, Shared};
 use std::sync::{Arc, Mutex};
 
-/// How often the keeper heartbeats idle sessions.
-///
-/// Steam asks for roughly nine seconds. Three is comfortably inside that even
-/// if the keeper is late, and an idle heartbeat is one small frame.
+/// Steam wants a heartbeat roughly every nine seconds; three keeps comfortably inside that.
 const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// How long an unused session may sit before it is thrown away rather than
-/// trusted.
-///
-/// Not because it is certainly dead, but because a session that has been idle
-/// this long has probably missed heartbeats, and finding out costs a failed
-/// operation much later rather than a reconnect now.
+/// An idle session this old has probably missed heartbeats; reconnecting now is cheaper.
 const MAX_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// A session waiting to be used again.
 struct Idle {
     session: Session,
     since: std::time::Instant,
-    /// Which runtime built it.
-    ///
-    /// A session owns sockets and timers belonging to the runtime it was
-    /// created on. Handing it to a caller on a different one produces "A Tokio
-    /// 1.x context was found, but it is being shutdown" at the first fetch —
-    /// which says nothing about the actual mistake.
-    ///
-    /// One process usually has one runtime and this never matters. A test
-    /// binary has one per test, and the pool is process-wide, so it matters
-    /// immediately: that is how this was found.
+    /// Sessions own sockets/timers of their creating runtime; using them elsewhere fails obscurely.
     runtime: tokio::runtime::Id,
 }
 
@@ -79,9 +20,7 @@ struct Idle {
 pub struct SessionPool {
     idle: Mutex<Vec<Idle>>,
     shared: Arc<Shared>,
-    /// How many to keep. Beyond this, a returned session is dropped.
     max_idle: usize,
-    /// Whether the keeper task has been started.
     keeper: std::sync::atomic::AtomicBool,
 }
 
@@ -96,10 +35,6 @@ impl std::fmt::Debug for SessionPool {
 
 impl SessionPool {
     /// The process-wide pool.
-    ///
-    /// What everything uses unless told otherwise, so two parts of a program
-    /// that never met still share sessions, the chunk budget and the connection
-    /// pool.
     #[must_use]
     pub fn shared() -> &'static Arc<Self> {
         static POOL: std::sync::OnceLock<Arc<SessionPool>> = std::sync::OnceLock::new();
@@ -128,19 +63,12 @@ impl SessionPool {
     }
 
     /// The resources every session here shares.
-    ///
-    /// Named `budget` rather than `shared` because [`SessionPool::shared`] is
-    /// the process-wide pool, and two things called `shared` on one type is one
-    /// too many.
     #[must_use]
     pub fn budget(&self) -> &Arc<Shared> {
         &self.shared
     }
 
     /// Takes a session, connecting one if none is waiting.
-    ///
-    /// The returned guard puts it back when dropped, so a caller who does
-    /// nothing special gets pooling for free.
     pub async fn acquire(self: &Arc<Self>) -> Result<SessionGuard, InstallError> {
         self.start_keeper();
 
@@ -153,9 +81,6 @@ impl SessionPool {
         }
 
         // Signed in when this machine has a saved token, anonymous otherwise.
-        // A pooled session that stayed anonymous would mean the bindings could
-        // not reach owned content while the command line could, from the same
-        // token file.
         let session = Session::automatic_shared(None, Arc::clone(&self.shared)).await?;
         Ok(SessionGuard {
             session: Some(session),
@@ -164,27 +89,22 @@ impl SessionPool {
         })
     }
 
-    /// Pops a session usable from the current runtime and not idle too long.
     fn take_fresh(&self) -> Option<Session> {
         let here = tokio::runtime::Handle::try_current().ok()?.id();
         let mut idle = self.idle.lock().ok()?;
 
-        // Searched rather than popped: the newest session may belong to another
-        // runtime while an older one here is fine.
+        // Searched, not popped: the newest entry may belong to another runtime.
         let found = idle
             .iter()
             .rposition(|entry| entry.runtime == here && entry.since.elapsed() < MAX_IDLE)?;
         let entry = idle.remove(found);
 
-        // Anything left from a runtime that no longer exists is dead weight.
         idle.retain(|entry| entry.since.elapsed() < MAX_IDLE);
         Some(entry.session)
     }
 
-    /// Takes a session back.
     fn give_back(&self, session: Session) {
-        // Without a runtime there is nothing to record it against, and a
-        // session that cannot be attributed cannot be safely reused.
+        // No runtime to attribute it to means it cannot be safely reused.
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -201,14 +121,12 @@ impl SessionPool {
         });
     }
 
-    /// Starts the keeper, once.
     fn start_keeper(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
         if self.keeper.swap(true, Ordering::SeqCst) {
             return;
         }
-        // A weak reference: the keeper must not be the reason the pool lives
-        // forever, and a process-wide pool lives forever anyway.
+        // Weak: the keeper must not keep the pool alive.
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
@@ -221,11 +139,8 @@ impl SessionPool {
         });
     }
 
-    /// Heartbeats every idle session, discarding any that refuses.
     async fn keep_alive(&self) {
-        // Taken out entirely rather than held under the lock across an await:
-        // the lock is a std one, and a caller acquiring a session must not wait
-        // on the network.
+        // Taken out whole: a std lock must not be held across an await.
         let taken: Vec<Idle> = match self.idle.lock() {
             Ok(mut idle) => std::mem::take(&mut idle),
             Err(_) => return,
@@ -239,9 +154,7 @@ impl SessionPool {
             if entry.since.elapsed() >= MAX_IDLE {
                 continue;
             }
-            // Only the ones this runtime can touch. Heartbeating a session
-            // belonging to a shut-down runtime is the very error this is meant
-            // to avoid.
+            // Only heartbeat sessions belonging to this runtime.
             if here != Some(entry.runtime) {
                 keep.push(entry);
                 continue;
@@ -249,13 +162,9 @@ impl SessionPool {
             if entry.session.keep_alive().await.is_ok() {
                 keep.push(entry);
             }
-            // A session that would not heartbeat is one Steam has already
-            // dropped, or is about to. Letting it go costs a reconnect; keeping
-            // it costs a confusing failure in whatever picks it up next.
         }
 
         if let Ok(mut idle) = self.idle.lock() {
-            // Anything returned while the keeper was working stays.
             idle.extend(keep);
             let max = self.max_idle;
             if idle.len() > max {
@@ -265,9 +174,7 @@ impl SessionPool {
     }
 }
 
-/// A session borrowed from a pool.
-///
-/// Derefs to the session, and returns it when dropped.
+/// A session borrowed from a pool; derefs to it and returns it on drop.
 pub struct SessionGuard {
     session: Option<Session>,
     pool: Arc<SessionPool>,
@@ -276,27 +183,18 @@ pub struct SessionGuard {
 
 impl SessionGuard {
     /// Marks the session as not worth reusing.
-    ///
-    /// Call this when an operation failed in a way that suggests the connection
-    /// is gone. The session is dropped instead of pooled, so the next caller
-    /// does not inherit the problem.
     pub const fn poison(&mut self) {
         self.healthy = false;
     }
 
     /// Takes the session out, leaving the pool with nothing to reclaim.
-    ///
-    /// For a caller who wants to own it — the manual path.
     #[must_use]
     pub fn into_inner(mut self) -> Option<Session> {
         self.session.take()
     }
 }
 
-// The option is `None` only after `into_inner`, which consumes the guard, and
-// inside `Drop`. Neither can be observed through these, so the expect is
-// unreachable by construction — and an unreachable expect is better than an
-// `abort` that would take someone's server down for a bug in this file.
+// `session` is `None` only after `into_inner` or in `Drop`; the expect is unreachable.
 #[allow(clippy::expect_used)]
 impl std::ops::Deref for SessionGuard {
     type Target = Session;
@@ -337,8 +235,6 @@ mod tests {
 
     #[test]
     fn the_shared_pool_is_one_pool() {
-        // Two parts of a program that never met must land on the same sessions,
-        // the same chunk budget and the same connection pool.
         assert!(Arc::ptr_eq(SessionPool::shared(), SessionPool::shared()));
     }
 

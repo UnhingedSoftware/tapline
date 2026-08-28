@@ -11,9 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# No socket here. This crate speaks the protocol over the Transport trait and
-# never constructs one, which is what lets the whole message layer be tested
-# against recorded bytes.
 [dependencies]
 crc32fast = { workspace = true }
 miniz_oxide = { workspace = true }

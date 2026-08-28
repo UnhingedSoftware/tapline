@@ -1,8 +1,4 @@
-//! The decoder.
-//!
-//! Everything here assumes the input is hostile: it arrived on a socket from a
-//! host we do not control, and for Workshop content it was authored by an
-//! arbitrary member of the public.
+//! The decoder; every byte here is hostile network or Workshop input.
 
 use crate::{FieldKey, MAX_DEPTH, WireType};
 use std::fmt;
@@ -19,10 +15,6 @@ pub enum WireError {
     /// Field number zero, which is not a legal field number.
     InvalidFieldNumber,
     /// A length prefix claimed more bytes than the message contains.
-    ///
-    /// Kept distinct from [`WireError::Truncated`] because it is the signature
-    /// of a hostile message rather than a short read: a truncated stream is
-    /// retryable, a lying length prefix is not.
     LengthOutOfBounds {
         /// What the prefix claimed.
         claimed: u64,
@@ -61,10 +53,7 @@ impl fmt::Display for WireError {
 
 impl std::error::Error for WireError {}
 
-/// A cursor over a protobuf message.
-///
-/// Borrows its input, so decoding a `bytes` field or a nested message hands back
-/// a slice of the original buffer rather than a copy.
+/// A cursor over a protobuf message that borrows its input.
 #[derive(Debug)]
 pub struct Decoder<'a> {
     input: &'a [u8],
@@ -87,8 +76,7 @@ impl<'a> Decoder<'a> {
     #[inline]
     #[must_use]
     pub const fn remaining(&self) -> usize {
-        // `pos` never passes `input.len()`: every advance is bounds-checked
-        // first, so this cannot wrap.
+        // `pos` never passes `input.len()`, so this cannot wrap.
         self.input.len() - self.pos
     }
 
@@ -99,14 +87,12 @@ impl<'a> Decoder<'a> {
         self.remaining() == 0
     }
 
-    /// Reads one byte.
     fn read_byte(&mut self) -> Result<u8, WireError> {
         let byte = *self.input.get(self.pos).ok_or(WireError::Truncated)?;
         self.pos += 1;
         Ok(byte)
     }
 
-    /// Takes `len` bytes as a borrowed slice.
     fn take(&mut self, len: usize) -> Result<&'a [u8], WireError> {
         let end = self.pos.checked_add(len).ok_or(WireError::Truncated)?;
         let slice = self.input.get(self.pos..end).ok_or(WireError::Truncated)?;
@@ -114,12 +100,7 @@ impl<'a> Decoder<'a> {
         Ok(slice)
     }
 
-    /// Reads a base-128 varint.
-    ///
-    /// Ten bytes is the maximum for a 64-bit value; the tenth may only carry the
-    /// single remaining bit. Rejecting longer encodings matters because a
-    /// decoder that accepted them would disagree with the sender about the
-    /// value, which is the classic protobuf parser-differential.
+    /// Reads a base-128 varint; over-wide encodings are a parser differential, so rejected.
     pub fn read_varint(&mut self) -> Result<u64, WireError> {
         let mut value: u64 = 0;
         for shift in 0..10_u32 {
@@ -138,10 +119,7 @@ impl<'a> Decoder<'a> {
         Err(WireError::VarintOverflow)
     }
 
-    /// Reads a varint narrowed to 32 bits.
-    ///
-    /// Protobuf sign-extends negative `int32` values to ten bytes, so the high
-    /// bits are discarded rather than treated as an error.
+    /// Reads a varint narrowed to 32 bits; sign-extended high bits are discarded.
     pub fn read_varint32(&mut self) -> Result<u32, WireError> {
         Ok(self.read_varint()? as u32)
     }
@@ -183,13 +161,7 @@ impl<'a> Decoder<'a> {
         Ok(f64::from_bits(self.read_fixed64()?))
     }
 
-    /// Reads a repeated numeric field that may or may not be packed.
-    ///
-    /// proto2 does not pack by default, but protobuf requires every decoder to
-    /// accept both forms for the same field — a sender is free to change its
-    /// mind, and Steam's own encoders are not consistent. `wire_type` is what
-    /// the field key actually carried, so a length-delimited key means packed
-    /// and anything else means a single value.
+    /// Reads a repeated numeric field; decoders must accept packed and unpacked.
     pub fn read_maybe_packed<T>(
         &mut self,
         wire_type: WireType,
@@ -208,11 +180,7 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Reads a length-delimited field's payload.
-    ///
-    /// The length is checked against what is actually left before anything is
-    /// allocated or sliced, so a prefix claiming 4 GB inside a 100-byte message
-    /// is an error rather than a reservation.
+    /// Reads a length-delimited payload; the length is checked before any allocation.
     pub fn read_bytes(&mut self) -> Result<&'a [u8], WireError> {
         let claimed = self.read_varint()?;
         let available = self.remaining();
@@ -229,9 +197,7 @@ impl<'a> Decoder<'a> {
         std::str::from_utf8(self.read_bytes()?).map_err(|_| WireError::InvalidUtf8)
     }
 
-    /// Reads the next field header.
-    ///
-    /// Returns `None` at the end of the message.
+    /// Reads the next field header; `None` at the end of the message.
     pub fn read_key(&mut self) -> Result<Option<FieldKey>, WireError> {
         if self.is_empty() {
             return Ok(None);
@@ -245,11 +211,7 @@ impl<'a> Decoder<'a> {
         Ok(Some(FieldKey { number, wire_type }))
     }
 
-    /// Runs `f` over a nested length-delimited message.
-    ///
-    /// The nested decoder cannot see past its own field, and the depth counter
-    /// travels with it, so a message that is nothing but nested headers hits
-    /// [`WireError::DepthLimitExceeded`] rather than the stack guard page.
+    /// Runs `f` over a nested message; the depth counter travels with it.
     pub fn read_nested<T>(
         &mut self,
         f: impl FnOnce(&mut Decoder<'_>) -> Result<T, WireError>,
@@ -266,7 +228,6 @@ impl<'a> Decoder<'a> {
         f(&mut nested)
     }
 
-    /// Reads a packed repeated field of fixed-width elements.
     fn read_packed_fixed<T, const N: usize>(
         &mut self,
         out: &mut Vec<T>,
@@ -276,8 +237,7 @@ impl<'a> Decoder<'a> {
         if payload.len() % N != 0 {
             return Err(WireError::PackedLengthMismatch);
         }
-        // The element count is derived from bytes already in hand, so this
-        // reservation is bounded by the input.
+        // Reservation bounded by bytes already in hand.
         out.reserve(payload.len() / N);
         for chunk in payload.chunks_exact(N) {
             let bytes: [u8; N] = chunk.try_into().map_err(|_| WireError::Truncated)?;
@@ -296,11 +256,7 @@ impl<'a> Decoder<'a> {
         self.read_packed_fixed::<u64, 8>(out, u64::from_le_bytes)
     }
 
-    /// Reads a packed repeated varint field.
-    ///
-    /// No reservation is made up front: varints are one to ten bytes, so the
-    /// element count cannot be derived from the byte length, and guessing high
-    /// would let a small message ask for a large allocation.
+    /// Reads a packed repeated varint field, with no up-front reservation.
     pub fn read_packed_varint(&mut self, out: &mut Vec<u64>) -> Result<(), WireError> {
         let payload = self.read_bytes()?;
         let mut nested = Decoder::new(payload);
@@ -310,10 +266,7 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Skips a field whose number the caller does not recognise.
-    ///
-    /// Unknown fields are normal — Steam adds them and older clients keep
-    /// working — so this is a routine path, not an error path.
+    /// Skips an unrecognised field; unknown fields are normal, not an error.
     pub fn skip_field(&mut self, wire_type: WireType) -> Result<(), WireError> {
         match wire_type {
             WireType::Varint => {
@@ -356,9 +309,6 @@ mod tests {
 
     #[test]
     fn over_wide_varints_are_rejected_not_truncated() {
-        // A decoder that accepted an 11-byte varint, or a 10th byte carrying
-        // more than one bit, would read a different value than the sender
-        // wrote. That disagreement is a parser differential, so it is an error.
         let eleven = [0x80; 11];
         assert_eq!(
             Decoder::new(&eleven).read_varint(),
@@ -395,8 +345,7 @@ mod tests {
 
     #[test]
     fn field_number_zero_is_rejected() {
-        // Key 0x00 is field 0, wire type 0 — not a legal field number, and a
-        // common shape for fuzzer-generated garbage.
+        // Key 0x00 is field 0, wire type 0.
         assert_eq!(
             Decoder::new(&[0x00]).read_key(),
             Err(WireError::InvalidFieldNumber)
@@ -405,13 +354,9 @@ mod tests {
 
     #[test]
     fn nesting_is_bounded() {
-        // Build MAX_DEPTH + 2 nested single-field messages and confirm we stop
-        // rather than recursing to the stack guard page.
         let mut buf = vec![0x08, 0x01]; // innermost: field 1 varint 1
         for _ in 0..(MAX_DEPTH + 2) {
-            // Built with the encoder rather than a hand-written length byte:
-            // past 127 bytes the length needs a real varint, and a raw byte
-            // would have its high bit read as a continuation marker.
+            // Past 127 bytes the length needs a real varint, so use the encoder.
             let mut outer = crate::Encoder::new();
             outer.write_bytes_field(1, &buf);
             buf = outer.into_vec();
@@ -449,7 +394,6 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_skipped_not_fatal() {
-        // Steam adds fields; an older build must keep parsing past them.
         let bytes = [
             0x08, 0x2A, // field 1, varint 42
             0x15, 0x01, 0x00, 0x00, 0x00, // field 2, fixed32

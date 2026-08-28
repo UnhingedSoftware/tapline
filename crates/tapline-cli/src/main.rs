@@ -1,19 +1,10 @@
 //! The `tapline` binary.
-//!
-//! Speaks steamcmd's command line so existing scripts drop in unchanged, and a
-//! native one for anything new:
-//!
-//! ```sh
-//! tapline +login anonymous +force_install_dir /srv/tf2 +app_update 232250 validate +quit
-//! tapline app plan 232250 --dir /srv/tf2 --json
-//! ```
 
 mod args;
 mod run;
 
 use std::process::ExitCode;
 
-/// What to print when asked.
 const HELP: &str = "\
 tapline — install Steam apps and Workshop content
 
@@ -104,37 +95,11 @@ Options:
   --version   version
 ";
 
-/// How many threads may run blocking work at once.
-///
-/// Two things use this pool, and only one of them waits on a disk: `fsync` on a
-/// finished file, and the decrypt-decompress-hash of every chunk. The second is
-/// CPU-bound and it is the whole download, so starving this pool throttles the
-/// link rather than the disk.
-///
-/// Measured on a 1.5 GB install at 48 chunks in flight, wire throughput:
-///
-/// | pool | wall | wire |
-/// |---|---|---|
-/// | 4 | 11.5 s | 1.02 Gb/s |
-/// | 8 | 9.3 s | 1.26 Gb/s |
-/// | **16** | **8.4 s** | **1.40 Gb/s** |
-/// | 32 | 8.3 s | 1.41 Gb/s |
-/// | 64 | 8.5 s | 1.38 Gb/s |
-///
-/// 16 is where it stops paying: 32 matches it and costs ~9 MB more, and tokio's
-/// default of 512 would spawn a thread per blocked task with nothing to show
-/// for it.
-///
-/// This was 4, from a measurement that said 4 was cheaper on both memory and
-/// time. That measurement was taken while `--concurrency` was silently capped
-/// at 8 by the process-wide budget, where four decode threads genuinely were
-/// enough. It is the same trap that produced two wrong concurrency tables: a
-/// number tuned under a constraint that no longer applies.
+/// Measured knee: chunk decode throughput stops improving past 16 threads.
 const BLOCKING_THREADS: usize = 16;
 
 fn main() -> ExitCode {
-    // First statement, before the runtime or anything worth keeping: this
-    // replaces the process. Roughly halves peak memory; see `tapline::tuning`.
+    // Must be the first statement, before the runtime; see `tapline::tuning`.
     tapline::retune();
 
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -158,8 +123,6 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         other => {
-            // The runtime is created here rather than by a macro on main, so
-            // --help and --version cost nothing.
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .max_blocking_threads(BLOCKING_THREADS)

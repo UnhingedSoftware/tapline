@@ -1,29 +1,4 @@
-//! The SteamPipe CDN.
-//!
-//! Two jobs: keep a pool of hosts worth talking to, and turn a chunk id into
-//! verified plaintext.
-//!
-//! # The chunk pipeline
-//!
-//! ```text
-//! GET /depot/{id}/chunk/{sha1}   →  AES-256 decrypt  →  VZ decode  →  SHA-1 check
-//!                                   (depot key)         (LZMA)        (== chunk id)
-//! ```
-//!
-//! That last step is the one that matters, and it is why
-//! [`fetch_chunk`] returns bytes only when it passes. A chunk's id *is* the
-//! SHA-1 of its plaintext, so a chunk that hashes to something else is not the
-//! chunk the manifest named — whatever served it, and however well-formed the
-//! container was. This is not a defence against an exotic attack: hosting
-//! fleets deliberately put a caching proxy in this path, and a proxy that
-//! returns the wrong object is an ordinary operational failure.
-//!
-//! # Rate limits
-//!
-//! Steam rate-limits per host, and a download that hammers one is a download
-//! that gets an account or an IP throttled. The pool exists to spread requests
-//! and to stop asking a host that has started refusing — being fast must never
-//! look like abuse, since a locked account is worse than a slow download.
+//! The SteamPipe CDN: host pool, chunk fetch, decrypt, decode, verify.
 
 mod pool;
 
@@ -51,10 +26,6 @@ pub enum CdnError {
     /// The container did not decode.
     Container(String),
     /// The plaintext did not hash to the id the manifest named.
-    ///
-    /// The single most important error in this crate. It means the bytes on the
-    /// wire were not the bytes that were asked for, and the only safe response
-    /// is to discard them and try a different host.
     IntegrityFailure {
         /// The id the manifest named.
         expected: String,
@@ -64,9 +35,6 @@ pub enum CdnError {
         host: String,
     },
     /// The response length disagreed with the manifest.
-    ///
-    /// Caught before decryption, so a host that streams an unbounded body is cut
-    /// off rather than followed.
     WrongLength {
         /// What the manifest said.
         expected: u32,
@@ -102,15 +70,7 @@ impl fmt::Display for CdnError {
 
 impl std::error::Error for CdnError {}
 
-/// Fetches one chunk and returns its verified plaintext.
-///
-/// The `Result` is the contract: bytes come back only when they hash to the id
-/// the manifest named.
-///
-/// Convenient, and does the decode inline. A downloader running many of these
-/// at once should use [`fetch_chunk_bytes`] and schedule [`decode_chunk`] as
-/// blocking work instead — decrypting, decompressing and hashing a megabyte is
-/// CPU, and doing it on an async worker stalls every task sharing that thread.
+/// Fetches one chunk, returning bytes only when they hash to the manifest's id.
 pub async fn fetch_chunk<F: Fetch>(
     fetcher: &F,
     host: &str,
@@ -123,9 +83,6 @@ pub async fn fetch_chunk<F: Fetch>(
 }
 
 /// Fetches a chunk's stored bytes, without decoding them.
-///
-/// The IO half. Still checks the length against the manifest, so an over-long
-/// response is cut off rather than followed.
 pub async fn fetch_chunk_bytes<F: Fetch>(
     fetcher: &F,
     host: &str,
@@ -135,8 +92,7 @@ pub async fn fetch_chunk_bytes<F: Fetch>(
     let id = chunk.id_hex();
     let url = format!("https://{host}/depot/{depot}/chunk/{id}");
 
-    // The manifest says how large the stored chunk is, so an over-long response
-    // is refused as it arrives rather than after it has all been read.
+    // An over-long response is cut off as it arrives, not after.
     let limit = u64::from(chunk.compressed_size).max(1) + 4096;
     let response = fetcher
         .get(Request::get(url), limit)
@@ -160,9 +116,6 @@ pub async fn fetch_chunk_bytes<F: Fetch>(
 }
 
 /// Decrypts, decompresses and verifies a chunk's stored bytes.
-///
-/// Split out from the fetch so it can be tested against captured chunks with no
-/// network at all.
 pub fn decode_chunk(
     stored: &[u8],
     chunk: &Chunk,
@@ -173,11 +126,6 @@ pub fn decode_chunk(
 }
 
 /// Decodes a chunk, reusing the buffer it arrived in.
-///
-/// What a download uses. The reference form copies the ciphertext so it can
-/// decrypt it, and a download decrypts every chunk it fetches — that copy is a
-/// megabyte per chunk allocated only to be freed, which is what makes an
-/// allocator grow its heap and keep it.
 pub fn decode_chunk_owned(
     stored: Vec<u8>,
     chunk: &Chunk,
@@ -190,12 +138,6 @@ pub fn decode_chunk_owned(
 }
 
 /// Decodes a chunk into a buffer the caller owns, reusing the fetched one.
-///
-/// Both allocations a chunk would otherwise make are gone: the ciphertext is
-/// decrypted in the buffer it arrived in, and the plaintext goes into one the
-/// caller keeps. A download then holds one buffer per chunk in flight rather
-/// than churning two per chunk — which is what stopped the peak from being
-/// whatever the allocator felt like retaining.
 pub fn decode_chunk_into(
     stored: Vec<u8>,
     chunk: &Chunk,
@@ -220,8 +162,7 @@ pub fn decode_chunk_into(
         });
     }
 
-    // The manifest's own size, checked too — a chunk that verifies but is the
-    // wrong length would corrupt the file it lands in.
+    // A chunk that verifies but is the wrong length would corrupt its file.
     if plaintext.len() != chunk.uncompressed_size as usize {
         return Err(CdnError::WrongLength {
             expected: chunk.uncompressed_size,
@@ -258,8 +199,7 @@ pub async fn fetch_manifest<F: Fetch>(
     let manifest = Manifest::parse(&response.body, depot_key)
         .map_err(|e| CdnError::Container(e.to_string()))?;
 
-    // A cache serving the wrong manifest would otherwise produce a confidently
-    // wrong install: right depot, wrong build, every chunk id unfamiliar.
+    // A cache serving the wrong manifest would produce a confidently wrong install.
     if manifest.id.get() != manifest_id {
         return Err(CdnError::Container(format!(
             "asked for manifest {manifest_id}, received {}",
@@ -273,16 +213,6 @@ pub async fn fetch_manifest<F: Fetch>(
 mod tests {
     use super::*;
 
-    /// A real `VZ` container from depot 232257, captured 2026-08-26 — the same
-    /// bytes Steam served, after decryption.
-    ///
-    /// The *encrypted* form is rebuilt here under a test key rather than
-    /// committed. Steam's own depot key would work and is granted to any
-    /// anonymous session, but shipping one in a repository is precisely the
-    /// `keys.txt` habit this project lists as a non-goal, and the pipeline is
-    /// no less exercised for the key being ours: decrypt, decompress and
-    /// hash-check all run over content Steam really produced, and the SHA-1 the
-    /// check compares against is the real chunk id.
     const CONTAINER: &[u8] =
         include_bytes!("../tests/fixtures/chunk_610f4c4e6d26a61f0a35ed66117a7e693cceb4b8.bin");
 
@@ -292,10 +222,8 @@ mod tests {
         0x69, 0x3c, 0xce, 0xb4, 0xb8,
     ];
 
-    /// A key of our own, standing in for the one Steam grants.
     const TEST_KEY: [u8; 32] = [0x5A; 32];
 
-    /// The container encrypted the way the CDN stores it.
     fn stored() -> Vec<u8> {
         tapline_crypto::encrypt_content(&TEST_KEY, CONTAINER).expect("must encrypt")
     }
@@ -312,8 +240,6 @@ mod tests {
 
     #[test]
     fn the_whole_pipeline_produces_the_file_it_should() {
-        // Encrypted bytes in, verified plaintext out — decrypt, decompress and
-        // hash-check, against a chunk Steam actually served.
         let plaintext = decode_chunk(&stored(), &real_chunk(), &TEST_KEY, "test")
             .expect("a real chunk must decode");
 
@@ -324,9 +250,6 @@ mod tests {
 
     #[test]
     fn a_chunk_that_hashes_wrong_is_refused_even_though_it_decoded() {
-        // The container is intact and decrypts fine; only the id disagrees.
-        // This is exactly the shape of a cache serving the wrong object, and
-        // the bytes must not be returned.
         let mut wrong = real_chunk();
         wrong.id = [0xAA; 20];
 
@@ -344,8 +267,6 @@ mod tests {
 
     #[test]
     fn a_tampered_chunk_never_reaches_the_caller() {
-        // Flip a bit anywhere in the stored bytes. Decryption, decompression or
-        // the hash check must catch it — but never silence.
         let encrypted = stored();
         for position in [0_usize, 16, 40, encrypted.len() - 1] {
             let mut damaged = stored();
@@ -369,8 +290,6 @@ mod tests {
 
     #[test]
     fn a_chunk_of_the_wrong_length_is_refused() {
-        // Verifies, but is not the length the manifest promised — it would
-        // corrupt the file it lands in.
         let mut wrong = real_chunk();
         wrong.uncompressed_size = 999;
 

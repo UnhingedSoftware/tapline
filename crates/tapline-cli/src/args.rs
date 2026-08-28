@@ -1,244 +1,119 @@
-//! Parsing both command lines.
-//!
-//! steamcmd's grammar is a sequence of `+command arg arg` groups, evaluated in
-//! order, where later commands depend on earlier ones having run:
-//!
-//! ```text
-//! tapline +login anonymous +force_install_dir /srv/tf2 +app_update 232250 validate +quit
-//! ```
-//!
-//! Every host tool that drives steamcmd emits something of this shape, which is
-//! why it is supported verbatim rather than approximated. A tool that had to
-//! change its command line would not be a drop-in replacement.
-//!
-//! The native grammar is the ordinary subcommand kind, for anything new.
-//!
-//! # Why this is hand-written
-//!
-//! `clap` parses one grammar well and this is two, one of which is
-//! order-dependent and uses `+` as a command sigil. Expressing that as a clap
-//! configuration is more code than parsing it directly, and less clear about
-//! what steamcmd actually accepts.
+//! Parsing both command lines: steamcmd's `+command` grammar and the native one.
 
 use std::path::PathBuf;
 use tapline_ids::{AppId, PublishedFileId};
 
-/// One step of a steamcmd-style command line, in the order it was given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// `+login <account|anonymous>`
     Login {
-        /// The account name, or `None` for anonymous.
         account: Option<String>,
     },
-    /// `+force_install_dir <path>`
     InstallDir(PathBuf),
-    /// `+app_update <appid> [validate]`
     AppUpdate {
-        /// Which app.
         app: AppId,
-        /// Whether `validate` followed.
         validate: bool,
-        /// A `-beta <branch>` argument, when given.
         branch: Option<String>,
     },
-    /// `+app_info_print <appid>`
     AppInfo(AppId),
-    /// `+workshop_download_item <appid> <publishedfileid>`
     WorkshopDownload {
-        /// The app the item belongs to.
         app: AppId,
-        /// The item.
         item: PublishedFileId,
     },
-    /// `+quit`
     Quit,
 }
 
-/// What the CLI was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// steamcmd's grammar: a sequence of steps.
     Script(Vec<Step>),
-    /// `tapline app plan <appid> --dir <path>`
     Plan {
-        /// Which app.
         app: AppId,
-        /// Where it would go.
         dir: PathBuf,
-        /// The branch.
         branch: String,
-        /// Emit newline-delimited JSON instead of text.
         json: bool,
     },
-    /// `tapline app download <appid> --dir <path>`
     Download {
-        /// Which app.
         app: AppId,
-        /// Where to install it.
         dir: PathBuf,
-        /// The branch.
         branch: String,
-        /// Verify every chunk on disk rather than trusting the install record.
         validate: bool,
-        /// How many chunks to fetch at once, or `None` for the default.
         concurrency: Option<usize>,
-        /// Emit newline-delimited JSON.
         json: bool,
     },
-    /// `tapline app info <appid>`
     Info {
-        /// Which app.
         app: AppId,
-        /// Emit JSON.
         json: bool,
     },
-    /// `tapline workshop search <appid> [--text ...] [--tag ...]`
     WorkshopSearch {
-        /// What to search for.
         filters: SearchFilters,
-        /// Emit JSON.
         json: bool,
     },
-    /// `tapline workshop subscribe <appid> <itemid>`
     WorkshopSubscribe {
-        /// The app the item belongs to.
         app: AppId,
-        /// The item.
         item: PublishedFileId,
-        /// Also subscribe to whatever the item requires.
         with_dependencies: bool,
-        /// Remove the subscription instead of adding it.
         remove: bool,
-        /// Emit JSON.
         json: bool,
     },
-    /// `tapline workshop info <itemid>...`
     WorkshopInfo {
-        /// The items to describe.
         items: Vec<PublishedFileId>,
-        /// Emit JSON.
         json: bool,
     },
-    /// `tapline workshop download <appid> <itemid> --dir <path>`
     WorkshopDownload {
-        /// Write the item's files straight into `--dir`, with no
-        /// `steamapps/workshop/content/...` path built underneath it.
         flat: bool,
-        /// Extensions to run on each file, by name.
         extensions: Vec<String>,
-        /// Where to stream the archive, if streaming: "dir", "zip" or
-        /// "zip-stored". `None` downloads the archive normally.
         stream: Option<String>,
-        /// Globs selecting entries from the archive. Empty takes everything.
-        ///
-        /// Any selection turns the download into a pipeline, which fetches only
-        /// the chunks the selected entries live in.
         only: Vec<String>,
-        /// Exact paths to take. Missing one is an error, unlike a glob.
         pick: Vec<String>,
-        /// The format to read the download as. `None` means `gma`.
         decode: Option<String>,
-        /// The app.
         app: AppId,
-        /// The item.
         item: PublishedFileId,
-        /// Where to put it.
         dir: PathBuf,
-        /// Emit JSON.
         json: bool,
     },
-    /// `tapline login --qr`
     Login {
-        /// Use the QR flow.
         qr: bool,
-        /// The account name, for a password login.
         account: Option<String>,
-        /// Read the password from standard input rather than prompting.
         password_stdin: bool,
-        /// The password, given directly.
-        ///
-        /// Worth knowing what it costs: an argument is in the shell history and
-        /// readable from every `ps` listing on the machine for as long as the
-        /// process runs. `--password-stdin` avoids both.
         password: Option<String>,
     },
-    /// `tapline logout [--account NAME | --all]`
     Logout {
-        /// Which account to forget. `None` with `all` false forgets the one
-        /// most recently used, if that can be told; otherwise it is an error.
         account: Option<String>,
-        /// Forget every saved login.
         all: bool,
     },
-    /// `tapline whoami`
     WhoAmI,
-    /// `tapline --help`
     Help,
-    /// `tapline --version`
     Version,
 }
 
-/// What `workshop search` searches for.
-///
-/// One value rather than a parameter each: Steam's own Workshop sidebar offers
-/// a dozen filters, and carrying them separately means every one of them
-/// widens a call signature that is already long enough to get an argument
-/// order wrong in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchFilters {
-    /// Which app's Workshop.
     pub app: AppId,
-    /// Free text to match.
     pub text: Option<String>,
-    /// Where to match it: all, title or description.
     pub search_in: Option<String>,
-    /// Tags an item must carry.
     pub tags: Vec<String>,
-    /// Groups of tags, of which an item must carry one from each.
     pub tag_groups: Vec<Vec<String>>,
-    /// Tags that exclude an item.
     pub exclude_tags: Vec<String>,
-    /// Content labels that exclude an item, by name.
     pub exclude_content: Vec<String>,
-    /// Require every tag rather than any.
     pub all_tags: bool,
-    /// How to order results.
     pub sort: Option<String>,
-    /// How many days a trend ranking covers.
     pub days: Option<u32>,
-    /// The earliest publication date to accept.
     pub created_since: Option<Moment>,
-    /// The latest publication date to accept.
     pub created_until: Option<Moment>,
-    /// The earliest update date to accept.
     pub updated_since: Option<Moment>,
-    /// The latest update date to accept.
     pub updated_until: Option<Moment>,
-    /// How many to return.
     pub limit: Option<u32>,
-    /// Where to resume from.
     pub cursor: Option<String>,
-    /// Which page to jump to, 1-based.
     pub page: Option<u32>,
-    /// Report how many match, without fetching any.
     pub count: bool,
 }
 
-/// A point in time on the command line.
-///
-/// Kept unresolved so parsing needs no clock: `30d` means thirty days before
-/// whenever the search runs, and a test can say what "now" is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Moment {
-    /// A Unix timestamp, as given.
     At(u32),
-    /// This many seconds before now.
     Ago(u32),
 }
 
 impl Moment {
-    /// Resolves against a given moment, saturating rather than wrapping.
     #[must_use]
     pub const fn resolve(self, now: u32) -> u32 {
         match self {
@@ -248,10 +123,8 @@ impl Moment {
     }
 }
 
-/// What went wrong reading the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArgError {
-    /// What to tell the user.
     pub message: String,
 }
 
@@ -263,7 +136,6 @@ impl ArgError {
     }
 }
 
-/// Parses a command line.
 pub fn parse(args: &[String]) -> Result<Command, ArgError> {
     let first = args.first().map(String::as_str);
 
@@ -271,13 +143,11 @@ pub fn parse(args: &[String]) -> Result<Command, ArgError> {
         None => Ok(Command::Help),
         Some("--help" | "-h" | "help") => Ok(Command::Help),
         Some("--version" | "-V") => Ok(Command::Version),
-        // A leading `+` means steamcmd's grammar, and nothing else does.
         Some(arg) if arg.starts_with('+') => parse_script(args).map(Command::Script),
         Some(_) => parse_native(args),
     }
 }
 
-/// Parses steamcmd's `+command` sequence.
 fn parse_script(args: &[String]) -> Result<Vec<Step>, ArgError> {
     let mut steps = Vec::new();
     let mut index = 0;
@@ -292,7 +162,6 @@ fn parse_script(args: &[String]) -> Result<Vec<Step>, ArgError> {
             )));
         };
 
-        // Everything up to the next `+` belongs to this command.
         let mut operands = Vec::new();
         while let Some(next) = args.get(index) {
             if next.starts_with('+') {
@@ -307,14 +176,11 @@ fn parse_script(args: &[String]) -> Result<Vec<Step>, ArgError> {
     Ok(steps)
 }
 
-/// Builds one step from its command and operands.
 fn step_from(command: &str, operands: &[String]) -> Result<Step, ArgError> {
     match command {
         "login" => {
             let account = operands.first().map(String::as_str);
             match account {
-                // steamcmd spells anonymous logon exactly this way, and every
-                // dedicated-server script in existence uses it.
                 Some("anonymous") | None => Ok(Step::Login { account: None }),
                 Some(name) => Ok(Step::Login {
                     account: Some(name.to_owned()),
@@ -341,9 +207,7 @@ fn step_from(command: &str, operands: &[String]) -> Result<Step, ArgError> {
                 match operand.as_str() {
                     "validate" => validate = true,
                     "-beta" => branch = rest.next().cloned(),
-                    // steamcmd ignores what it does not recognise here, and a
-                    // drop-in replacement that failed instead would break
-                    // scripts that pass extra flags.
+                    // steamcmd ignores unrecognised operands; a drop-in must too.
                     _ => {}
                 }
             }
@@ -388,7 +252,6 @@ fn step_from(command: &str, operands: &[String]) -> Result<Step, ArgError> {
     }
 }
 
-/// Reads `--name value` and `--flag` options out of a list.
 struct Options {
     values: Vec<(String, Option<String>)>,
 }
@@ -404,7 +267,6 @@ impl Options {
             let Some(name) = token.strip_prefix("--") else {
                 continue;
             };
-            // `--name=value` and `--name value` both work; scripts use both.
             if let Some((name, value)) = name.split_once('=') {
                 values.push((name.to_owned(), Some(value.to_owned())));
                 continue;
@@ -431,11 +293,6 @@ impl Options {
         self.values.iter().any(|(key, _)| key == name)
     }
 
-    /// Every value given for a repeatable option, in the order written.
-    ///
-    /// `--only a --only b` is two selections, not the second overriding the
-    /// first, because a filter list is a union and dropping one silently would
-    /// quietly change what gets downloaded.
     fn all_values(&self, name: &str) -> Vec<String> {
         self.values
             .iter()
@@ -445,12 +302,6 @@ impl Options {
     }
 }
 
-/// Parses the native subcommand grammar.
-/// Reads a `--since`/`--until` value: a Unix timestamp, or an age like `30d`.
-///
-/// Ages exist because that is how the filter is used — the last week, the last
-/// month — and making every caller compute a timestamp invites the off-by-one
-/// nobody notices until the results are subtly short.
 fn moment(raw: Option<&str>, flag: &str) -> Result<Option<Moment>, ArgError> {
     let Some(raw) = raw else { return Ok(None) };
     let bad = || {
@@ -464,7 +315,6 @@ fn moment(raw: Option<&str>, flag: &str) -> Result<Option<Moment>, ArgError> {
         "h" => 3_600,
         "d" => 86_400,
         "w" => 604_800,
-        // No unit: a timestamp.
         _ => {
             return raw.parse().map(Moment::At).map(Some).map_err(|_| bad());
         }
@@ -473,12 +323,6 @@ fn moment(raw: Option<&str>, flag: &str) -> Result<Option<Moment>, ArgError> {
     Ok(Some(Moment::Ago(count.saturating_mul(seconds))))
 }
 
-/// Reads `--tag-group "Scene,Video"` into one group per flag.
-///
-/// Comma-separated because a group is a set and repeating the flag already
-/// means "another group": `--tag-group A --tag-group B` has to stay two groups
-/// rather than collapsing into one. No Workshop tag observed carries a comma;
-/// one that did could not be written this way.
 fn tag_groups(raw: &[String]) -> Result<Vec<Vec<String>>, ArgError> {
     raw.iter()
         .map(|group| {
@@ -489,8 +333,6 @@ fn tag_groups(raw: &[String]) -> Result<Vec<Vec<String>>, ArgError> {
                 .map(str::to_owned)
                 .collect();
             if tags.is_empty() {
-                // Sending it would filter on nothing and return a page that
-                // looks like the search simply found little.
                 return Err(ArgError::new(format!(
                     "--tag-group {group:?} names no tags; give one or more, \
                      like --tag-group Scene,Video"
@@ -501,17 +343,14 @@ fn tag_groups(raw: &[String]) -> Result<Vec<Vec<String>>, ArgError> {
         .collect()
 }
 
-/// The install directory, defaulting to the current one.
 fn option_dir(options: &Options) -> PathBuf {
     PathBuf::from(options.value("dir").unwrap_or("."))
 }
 
-/// The branch to install, `public` unless one is named.
 fn option_branch(options: &Options) -> String {
     options.value("branch").unwrap_or("public").to_owned()
 }
 
-/// The app id at `positional[2]`, or a message saying one is required.
 fn app_id_at(positional: &[&str], index: usize) -> Result<AppId, ArgError> {
     let raw = positional
         .get(index)
@@ -521,7 +360,6 @@ fn app_id_at(positional: &[&str], index: usize) -> Result<AppId, ArgError> {
     })?))
 }
 
-/// The item id at `positional[3]`, or a message saying one is required.
 fn item_id_at(positional: &[&str], index: usize) -> Result<PublishedFileId, ArgError> {
     let raw = positional
         .get(index)
@@ -531,11 +369,6 @@ fn item_id_at(positional: &[&str], index: usize) -> Result<PublishedFileId, ArgE
     })?))
 }
 
-/// An optional positive `u32` option, refused rather than silently dropped when
-/// it is not a number.
-///
-/// The six count-ish flags of `workshop search` all want this, and inlining it
-/// six times was most of what made the parser dense.
 fn optional_count(options: &Options, key: &str, noun: &str) -> Result<Option<u32>, ArgError> {
     match options.value(key) {
         None => Ok(None),
@@ -546,13 +379,8 @@ fn optional_count(options: &Options, key: &str, noun: &str) -> Result<Option<u32
     }
 }
 
-/// The chunk concurrency, refused rather than silently defaulted on a typo:
-/// quietly using another value turns a mistake into a mystery about why the
-/// download is slow.
 fn option_concurrency(options: &Options) -> Result<Option<usize>, ArgError> {
     match options.value("concurrency") {
-        // `--concurrency` on its own asked for something and would otherwise get
-        // the default silently.
         None if options.flag("concurrency") => Err(ArgError::new(
             "--concurrency needs a number, like --concurrency 32",
         )),
@@ -566,10 +394,6 @@ fn option_concurrency(options: &Options) -> Result<Option<usize>, ArgError> {
     }
 }
 
-/// Where a streaming download writes: `dir`, `zip`, `zip-stored`, or nowhere.
-///
-/// An unrecognised target is refused rather than quietly downloading normally,
-/// which would look like the flag did nothing.
 fn stream_target(options: &Options) -> Result<Option<String>, ArgError> {
     if !options.flag("stream") {
         return Ok(None);
@@ -584,7 +408,6 @@ fn stream_target(options: &Options) -> Result<Option<String>, ArgError> {
     }
 }
 
-/// Parses the `app` subcommands.
 fn parse_app(
     subcommand: &str,
     options: &Options,
@@ -612,7 +435,6 @@ fn parse_app(
     }
 }
 
-/// Parses `workshop search` into its filter set.
 fn parse_workshop_search(
     options: &Options,
     positional: &[&str],
@@ -639,7 +461,6 @@ fn parse_workshop_search(
     })
 }
 
-/// Parses `workshop download`, with its extension-vs-filter check.
 fn parse_workshop_download(
     options: &Options,
     positional: &[&str],
@@ -647,9 +468,6 @@ fn parse_workshop_download(
 ) -> Result<Command, ArgError> {
     let only = options.all_values("only");
     let pick = options.all_values("pick");
-    // Refused rather than ignored: an extension acts on the downloaded archive,
-    // and a filtered pipeline never writes one. Silently dropping the flag would
-    // look like the extension had run.
     if (!only.is_empty() || !pick.is_empty()) && options.flag("extensions") {
         return Err(ArgError::new(
             "--extensions acts on a downloaded archive, and --only/--pick \
@@ -679,7 +497,6 @@ fn parse_workshop_download(
     })
 }
 
-/// Parses the `workshop` subcommands.
 fn parse_workshop(
     subcommand: &str,
     options: &Options,
@@ -718,12 +535,9 @@ fn parse_workshop(
     }
 }
 
-/// Parses `login`, resolving its three ways to give a password.
 fn parse_login(options: &Options, positional: &[&str]) -> Result<Command, ArgError> {
     let password_stdin = options.flag("password-stdin");
     let password = options.value("password").map(str::to_owned);
-    // `--username` and `--account` name the same thing; steamcmd says one and
-    // this said the other, so take either.
     let account = options
         .value("username")
         .or_else(|| options.value("account"))
@@ -741,8 +555,6 @@ fn parse_login(options: &Options, positional: &[&str]) -> Result<Command, ArgErr
         ));
     }
     Ok(Command::Login {
-        // A password login is the point of either flag, so it wins over the QR
-        // default.
         qr: !password_stdin
             && password.is_none()
             && (options.flag("qr") || positional.get(1).is_none()),
@@ -761,8 +573,6 @@ fn parse_native(args: &[String]) -> Result<Command, ArgError> {
         .filter(|arg| !arg.starts_with("--"))
         .collect();
 
-    // Dispatch to a per-command parser. Each one owns its own validation, so
-    // this stays a routing table rather than a place validation accumulates.
     match (positional.first().copied(), positional.get(1).copied()) {
         (Some("app"), Some(sub)) => parse_app(sub, &options, &positional, json),
         (Some("workshop"), Some(sub)) => parse_workshop(sub, &options, &positional, json),
@@ -790,8 +600,6 @@ mod tests {
 
     #[test]
     fn the_command_line_every_dedicated_server_script_uses_parses() {
-        // This exact shape appears in LinuxGSM, wings eggs and a thousand
-        // hand-written scripts. If it did not parse, none of them could switch.
         let command = parse(&args(
             "+login anonymous +force_install_dir /srv/tf2 +app_update 232250 validate +quit",
         ))
@@ -859,8 +667,6 @@ mod tests {
 
     #[test]
     fn unrecognised_operands_are_ignored_the_way_steamcmd_ignores_them() {
-        // A replacement that failed on an extra flag would break scripts that
-        // pass one, and steamcmd does not fail on them either.
         let command =
             parse(&args("+app_update 232250 validate -someflag extra")).expect("must parse");
         assert_eq!(
@@ -875,8 +681,6 @@ mod tests {
 
     #[test]
     fn an_unsupported_steamcmd_command_says_which_one() {
-        // Rather than ignoring it: a script asking for something we do not do
-        // should be told, not quietly given a different result.
         let error =
             parse(&args("+login anonymous +set_steam_guard_code 12345")).expect_err("must refuse");
         assert!(
@@ -916,7 +720,6 @@ mod tests {
 
     #[test]
     fn both_option_spellings_work() {
-        // Scripts use both, and supporting one is a papercut nobody needs.
         let equals = parse(&args("app plan 232250 --dir=/srv/tf2")).expect("must parse");
         let spaced = parse(&args("app plan 232250 --dir /srv/tf2")).expect("must parse");
         assert_eq!(equals, spaced);
@@ -964,7 +767,6 @@ mod tests {
 
     #[test]
     fn a_password_without_an_account_is_refused() {
-        // Otherwise it takes a secret and has nothing to do with it.
         for line in ["login --password-stdin", "login --password hunter2"] {
             let error = parse(&args(line)).expect_err("must refuse");
             assert!(
@@ -1015,7 +817,6 @@ mod tests {
 
     #[test]
     fn two_ways_of_giving_the_password_at_once_are_refused() {
-        // They can disagree, and picking one silently is worse than asking.
         let error = parse(&args(
             "login --username someone --password hunter2 --password-stdin",
         ))
@@ -1045,8 +846,6 @@ mod tests {
 
     #[test]
     fn tag_groups_stay_separate_groups() {
-        // Repeating the flag means another group; the two must not merge into
-        // one, which would turn "and" into "or".
         let parsed = parse(&args(
             "workshop search 431960 --tag-group Scene,Video --tag-group Anime",
         ))
@@ -1075,9 +874,6 @@ mod tests {
 
     #[test]
     fn a_search_cursor_survives_its_own_punctuation() {
-        // Steam's cursors are base64 and carry `+`, `/` and `=`. A cursor
-        // mangled in parsing silently returns the first page again, which
-        // reads as "paging is broken" rather than "the flag was eaten".
         let parsed = parse(&args(
             "workshop search 4000 --cursor AoMITpIrrFfJsRd4xNDoAw==",
         ))
@@ -1092,7 +888,6 @@ mod tests {
 
     #[test]
     fn subscribing_and_unsubscribing_are_one_command() {
-        // Same two ids, same shape; only the direction differs.
         for (line, remove) in [
             ("workshop subscribe 4000 104691717", false),
             ("workshop unsubscribe 4000 104691717", true),
@@ -1136,7 +931,6 @@ mod tests {
 
     #[test]
     fn workshop_info_without_an_id_is_refused() {
-        // Rather than describing nothing and exiting zero.
         let error = parse(&args("workshop info")).expect_err("must refuse");
         assert!(error.message.contains("item id"), "{}", error.message);
     }
@@ -1151,8 +945,6 @@ mod tests {
 
     #[test]
     fn a_repeatable_option_keeps_every_value() {
-        // `--only a --only b` is a union. Keeping only the last would silently
-        // change what gets downloaded.
         let parsed = parse(&args(
             "workshop download 4000 1 --dir /x --only lua/** --only *.txt",
         ))
@@ -1182,8 +974,6 @@ mod tests {
 
     #[test]
     fn a_download_with_no_selection_selects_nothing() {
-        // The absence has to be empty rather than "everything", because it is
-        // what decides between a plain download and a pipeline.
         let parsed = parse(&args("workshop download 4000 1 --dir /x")).expect("parse");
         match parsed {
             Command::WorkshopDownload {
@@ -1198,8 +988,6 @@ mod tests {
 
     #[test]
     fn a_selection_and_an_extension_together_are_refused() {
-        // An extension acts on the downloaded archive and a filtered pipeline
-        // never writes one, so accepting both would look like it had run.
         let error = parse(&args(
             "workshop download 4000 1 --dir /x --only lua/** --extensions gmad",
         ))
@@ -1219,8 +1007,6 @@ mod tests {
 
     #[test]
     fn an_unusable_concurrency_is_refused_rather_than_ignored() {
-        // Falling back to the default here would turn a typo into a mystery
-        // about why the download is slower than the flag asked for.
         for bad in ["abc", "0", "-4", ""] {
             let parsed = parse(&args(&format!(
                 "app download 232250 --dir /srv/tf2 --concurrency {bad}"

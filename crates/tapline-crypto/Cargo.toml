@@ -11,9 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# The one leaf with external dependencies, and deliberately so: hand-rolled
-# block ciphers and padding are how a project ships a timing side channel. Every
-# line here is RustCrypto, pure Rust, no C.
+# All RustCrypto, pure Rust; hand-rolled ciphers would ship timing side channels.
 [dependencies]
 aes = { workspace = true }
 cbc = { workspace = true }

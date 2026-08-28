@@ -1,36 +1,4 @@
 //! Finding Workshop items, rather than being told their ids.
-//!
-//! tapline could always download an item once you knew its number. Getting that
-//! number meant a browser, which is a poor fit for a tool whose whole point is
-//! not shelling out to something else. `PublishedFile.QueryFiles` is the same
-//! search the Workshop website runs, and it is reachable over the CM session
-//! already open — no WebAPI key, and **no login**: an anonymous session queries
-//! Garry's Mod's 1,982,745 items happily, checked on 2026-08-27.
-//!
-//! ```no_run
-//! # async fn example() -> Result<(), tapline::InstallError> {
-//! use tapline::{AppId, BrowseQuery, BrowseSort, Session};
-//!
-//! let mut session = Session::anonymous().await?;
-//! let page = session
-//!     .browse_workshop(&BrowseQuery {
-//!         app: AppId(4000),
-//!         text: Some("stargate".to_owned()),
-//!         sort: BrowseSort::TextMatch,
-//!         ..BrowseQuery::default()
-//!     })
-//!     .await?;
-//!
-//! for found in &page.items {
-//!     println!("{} {}", found.item.id, found.item.title);
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! A result carries a [`WorkshopItem`], which is the same value
-//! [`Session::workshop_details`] returns, so anything found here can be handed
-//! straight to a download with no second lookup.
 
 use crate::{InstallError, WorkshopItem};
 use tapline_ids::AppId;
@@ -41,10 +9,6 @@ use tapline_proto::steammessages_publishedfile_steamclient::{
 };
 
 /// How Steam should order the results.
-///
-/// The numbers are Valve's `EPublishedFileQueryType`, which is sparse — 2 and
-/// several others do not exist — so this enum names the ones worth offering
-/// rather than mirroring the whole thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BrowseSort {
     /// Highest rated. Valve's default, and a reasonable one.
@@ -59,10 +23,6 @@ pub enum BrowseSort {
     /// Most subscribed, all time.
     Subscribed,
     /// Best match for the search text.
-    ///
-    /// Only meaningful with [`BrowseQuery::text`]; Steam returns an
-    /// unpredictable order without it, which is why [`BrowseQuery::validate`]
-    /// refuses the combination rather than letting it look like it worked.
     TextMatch,
 }
 
@@ -99,12 +59,6 @@ impl BrowseSort {
 }
 
 /// Content Steam labels, so a search can leave it out.
-///
-/// Steam's own content preferences, and a better filter than excluding a tag
-/// by name: the label is Valve's, applied per item, where a tag is whatever
-/// the author happened to tick. Excluding
-/// [`ContentDescriptor::NudityOrSexual`] drops 309,952 of Wallpaper Engine's
-/// 3,182,822 items; the `Mature` tag is not the same set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentDescriptor {
     /// Nudity or sexual content.
@@ -150,11 +104,6 @@ impl ContentDescriptor {
 }
 
 /// Where [`BrowseQuery::text`] is matched.
-///
-/// Steam searches titles and descriptions together by default, which finds
-/// items that merely mention a word. Narrowing to titles is what someone
-/// looking for a thing by name means: of Wallpaper Engine's 15,361 matches for
-/// "miku", 13,901 carry it in the title and 4,132 in the description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextTarget {
     /// Titles and descriptions, which is Steam's default.
@@ -170,8 +119,7 @@ impl TextTarget {
     /// Valve's `EQueryFilesSearchTextTarget`, or `None` for its default.
     const fn target(self) -> Option<i32> {
         match self {
-            // Measured: sending 0 returns exactly what sending nothing does,
-            // so the default stays off the wire.
+            // Sending 0 equals sending nothing; keep the default off the wire.
             Self::Everything => None,
             Self::Title => Some(1),
             Self::Description => Some(2),
@@ -194,9 +142,6 @@ impl TextTarget {
 }
 
 /// A window of time, in Unix seconds.
-///
-/// Either end may be open: a search for everything published since a date has
-/// no end, and one for everything before a date has no start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TimeRange {
     /// The earliest moment to accept, inclusive.
@@ -206,7 +151,6 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
-    /// Whether the window can contain anything at all.
     const fn is_backwards(self) -> bool {
         match (self.start, self.end) {
             (Some(start), Some(end)) => start > end,
@@ -214,7 +158,6 @@ impl TimeRange {
         }
     }
 
-    /// The wire form.
     const fn to_wire(self) -> DateRange {
         DateRange {
             timestamp_start: self.start,
@@ -223,17 +166,10 @@ impl TimeRange {
     }
 }
 
-/// The cursor that starts a search.
-///
-/// Steam's paging is a cursor, not an offset, and the first page is the literal
-/// `"*"` rather than an empty string.
+/// The cursor that starts a search: Steam wants a literal `"*"`, not an empty string.
 pub const FIRST_PAGE: &str = "*";
 
 /// The most items Steam will return in one page.
-///
-/// Asking for more is not an error and not honoured either — it silently
-/// returns fewer, which is the kind of thing that turns into a bug report about
-/// missing results.
 pub const MAX_PER_PAGE: u32 = 100;
 
 /// What to search for.
@@ -248,62 +184,26 @@ pub struct BrowseQuery {
     /// Tags an item must carry.
     pub required_tags: Vec<String>,
     /// Groups of tags, of which an item must carry at least one from each.
-    ///
-    /// This is what Steam's own sidebar does. Ticking Scene and Video under
-    /// Type and Anime under Genre means *(Scene or Video) and Anime*, which
-    /// [`BrowseQuery::required_tags`] cannot express:
-    /// [`BrowseQuery::match_all_tags`] is a single switch over the whole set,
-    /// so it is every tag or any tag and nothing in between.
-    ///
-    /// Groups combine with `required_tags` rather than replacing it — a tag
-    /// that must always be present is simpler as a required tag than as a
-    /// group of one.
     pub tag_groups: Vec<Vec<String>>,
     /// Tags that exclude an item.
     pub excluded_tags: Vec<String>,
     /// Content labels that exclude an item.
     pub excluded_descriptors: Vec<ContentDescriptor>,
     /// Whether an item must carry *every* required tag rather than any of them.
-    ///
-    /// Applies to [`BrowseQuery::required_tags`] only. Groups are always
-    /// any-within-group and all-across-groups.
     pub match_all_tags: bool,
     /// How to order results.
     pub sort: BrowseSort,
     /// When an item must have been first published.
-    ///
-    /// Filters hard rather than reordering: of Wallpaper Engine's 3,182,822
-    /// items, 45,523 were published in the last thirty days.
     pub created: Option<TimeRange>,
     /// When an item must have been revised.
-    ///
-    /// Not a superset of [`BrowseQuery::created`], which is the intuition to
-    /// resist: measured on the same day, 1,610 Wallpaper Engine items were
-    /// published within a day and only 242 fell in the updated window, so
-    /// Steam counts a revision here rather than every item's last-touched
-    /// stamp.
     pub updated: Option<TimeRange>,
     /// How many days of activity [`BrowseSort::Trend`] ranks over.
-    ///
-    /// The period beside Steam's "Most Popular": a day, a week, three months.
-    /// `None` leaves Steam its own default. It means nothing to the other
-    /// sorts, which is why [`BrowseQuery::validate`] refuses the combination
-    /// rather than sending a number that quietly does nothing.
     pub trend_days: Option<u32>,
     /// How many to return, capped at [`MAX_PER_PAGE`].
     pub per_page: u32,
     /// Where to resume from. `None` starts at the beginning.
     pub cursor: Option<String>,
     /// Which page to jump straight to, 1-based.
-    ///
-    /// Steam offers both ways of paging and they are not the same tool. A
-    /// cursor walks forward exactly and cannot go back or skip; a page number
-    /// jumps anywhere, which is what numbered pagination needs. Measured on
-    /// Wallpaper Engine's 3.1M items: pages 1/2, 10/11, 20/21 and 30/31 share
-    /// no items, and page 1000 — fifty thousand items deep — still answers.
-    ///
-    /// Set with [`BrowseQuery::cursor`] it is refused, since the two disagree
-    /// about where the page starts and only one of them can win.
     pub page: Option<u32>,
 }
 
@@ -331,11 +231,6 @@ impl Default for BrowseQuery {
 
 impl BrowseQuery {
     /// Checks the query is one Steam can answer usefully.
-    ///
-    /// Only refuses what would silently return nonsense. An app id of zero
-    /// searches every app's Workshop at once and returns an unusable mixture;
-    /// sorting by text match with no text returns an arbitrary order that looks
-    /// like a ranking.
     pub fn validate(&self) -> Result<(), BrowseError> {
         if self.app.get() == 0 {
             return Err(BrowseError::NoApp);
@@ -363,11 +258,6 @@ impl BrowseQuery {
         Ok(())
     }
 
-    /// Builds the wire request.
-    ///
-    /// Separate from the sending so the mapping can be tested without a
-    /// network, which is where the mistakes are: a tag in the wrong field
-    /// returns plausible results for the wrong query.
     pub(crate) fn to_request(&self) -> CPublishedFile_QueryFiles_Request {
         CPublishedFile_QueryFiles_Request {
             query_type: Some(self.sort.query_type()),
@@ -392,22 +282,19 @@ impl BrowseQuery {
             match_all_tags: Some(self.match_all_tags),
             numperpage: Some(self.per_page.clamp(1, MAX_PER_PAGE)),
             page: self.page,
-            // A cursor and a page number in the same request contradict each
-            // other; validate refuses that, so here one excludes the other.
+            // validate refuses cursor+page; here a page excludes the cursor.
             cursor: if self.page.is_some() {
                 None
             } else {
                 Some(self.cursor.clone().unwrap_or_else(|| FIRST_PAGE.to_owned()))
             },
-            // Without these the reply carries ids and little else, and every
-            // caller would need a second round trip to show a search result.
+            // Without these the reply carries ids and little else.
             return_tags: Some(true),
             return_short_description: Some(true),
             return_previews: Some(true),
             return_vote_data: Some(true),
             return_details: Some(true),
-            // Descriptions are BBCode otherwise, which nothing downstream
-            // renders and every consumer would have to strip itself.
+            // Otherwise descriptions arrive as BBCode.
             strip_description_bbcode: Some(true),
             ..CPublishedFile_QueryFiles_Request::default()
         }
@@ -415,9 +302,6 @@ impl BrowseQuery {
 }
 
 /// One image, video or linked preview attached to an item.
-///
-/// An item usually has several: Steam's own page shows a strip of them, and
-/// the first is the thumbnail everything else settles for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
     /// Where the image lives, when it is an image.
@@ -425,18 +309,13 @@ pub struct Preview {
     /// The YouTube id, when it is a video.
     pub youtube_id: Option<String>,
     /// Valve's `preview_type`, kept raw.
-    ///
-    /// The values are not in the published schema and guessing at them would
-    /// be worse than passing them on: 0 is the ordinary image on every item
-    /// measured, and anything else is worth looking at before trusting.
     pub kind: u32,
     /// Where it sits in the strip.
     pub order: u32,
 }
 
 /// One search result.
-// No `Eq`: the score is a float, and a rating is not something to compare for
-// exact equality anyway.
+// No `Eq`: the score is a float.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowseResult {
     /// The item, in the same shape a download takes.
@@ -448,19 +327,10 @@ pub struct BrowseResult {
     /// Where its preview image lives, when it has one.
     pub preview_url: Option<String>,
     /// Every preview, in Steam's own order.
-    ///
-    /// [`BrowseResult::preview_url`] is the first image and what a tile wants;
-    /// this is the rest, including videos, for a detail pane.
     pub previews: Vec<Preview>,
     /// Who published it, as a SteamID64.
-    ///
-    /// The number rather than a name: Steam does not return one here, and it
-    /// is enough to link to the profile.
     pub creator: Option<u64>,
     /// When it was first published, as a Unix timestamp.
-    ///
-    /// [`WorkshopItem::updated`] carries the other half. An item published in
-    /// 2016 and revised last week reads very differently from a new one.
     pub created: u32,
     /// Current subscribers.
     pub subscriptions: u64,
@@ -486,11 +356,6 @@ pub struct BrowsePage {
     /// The cursor for the next page, or `None` at the end.
     pub next_cursor: Option<String>,
     /// Items Steam returned that could not be described, and why.
-    ///
-    /// Reported rather than dropped: a search that quietly returns nineteen of
-    /// twenty results is worse than one that says which it could not read. A
-    /// deleted or hidden item is the usual cause and is not a failure of the
-    /// search.
     pub skipped: Vec<(u64, String)>,
 }
 
@@ -571,9 +436,6 @@ impl From<BrowseError> for InstallError {
     }
 }
 
-/// Turns one reply item into a result, given the app's workshop depot.
-///
-/// Split out so the mapping is testable without a network.
 pub(crate) fn describe(
     details: &tapline_proto::steammessages_publishedfile_steamclient::PublishedFileDetails,
     workshop_depot: Option<tapline_ids::DepotId>,
@@ -589,8 +451,6 @@ pub(crate) fn describe(
             .tags
             .iter()
             .map(|tag| {
-                // The display name is what a person recognises; the raw tag is
-                // what a filter matches. Prefer the former and fall back.
                 tag.display_name
                     .clone()
                     .filter(|name| !name.is_empty())
@@ -654,8 +514,6 @@ mod tests {
 
     #[test]
     fn the_first_page_asks_for_the_cursor_steam_expects() {
-        // An empty string is not the first page; Steam wants a literal star,
-        // and sending "" returns nothing at all.
         let request = BrowseQuery {
             app: AppId(4000),
             ..BrowseQuery::default()
@@ -666,8 +524,6 @@ mod tests {
 
     #[test]
     fn a_page_number_replaces_the_cursor_rather_than_joining_it() {
-        // Steam takes both fields and would answer something for a request
-        // carrying each; which one it honours is not worth finding out.
         let request = BrowseQuery {
             app: AppId(431_960),
             page: Some(7),
@@ -702,9 +558,6 @@ mod tests {
 
     #[test]
     fn tags_go_in_their_own_fields() {
-        // Required and excluded tags in the wrong field returns plausible
-        // results for the opposite query, which no test of "did it return
-        // something" would catch.
         let request = BrowseQuery {
             app: AppId(4000),
             required_tags: vec!["Fun".to_owned()],
@@ -720,9 +573,6 @@ mod tests {
 
     #[test]
     fn tag_groups_are_their_own_field_and_not_flattened() {
-        // Flattening (Scene or Video) and Anime into three required tags asks
-        // for either all three or any of the three. Both return a plausible
-        // page of the wrong query.
         let request = BrowseQuery {
             app: AppId(431_960),
             tag_groups: vec![
@@ -747,8 +597,6 @@ mod tests {
 
     #[test]
     fn required_tags_and_groups_travel_together() {
-        // A tag that must always be present is simpler flat than as a group of
-        // one, so both fields have to survive the same request.
         let request = BrowseQuery {
             app: AppId(431_960),
             required_tags: vec!["Wallpaper".to_owned()],
@@ -762,9 +610,6 @@ mod tests {
 
     #[test]
     fn narrowing_the_text_target_travels_and_the_default_does_not() {
-        // Sending 0 was measured to return exactly what sending nothing does,
-        // so the default stays off the wire rather than pinning a behaviour
-        // Steam owns.
         let default = BrowseQuery {
             app: AppId(431_960),
             text: Some("miku".to_owned()),
@@ -795,9 +640,6 @@ mod tests {
 
     #[test]
     fn each_date_window_travels_in_its_own_field() {
-        // Created and updated are different questions — an item published in
-        // 2016 and updated last week belongs to one and not the other — and
-        // the wrong field answers the wrong one plausibly.
         let request = BrowseQuery {
             app: AppId(431_960),
             created: Some(TimeRange {
@@ -835,8 +677,6 @@ mod tests {
 
     #[test]
     fn an_open_ended_window_is_not_backwards() {
-        // Only one end given is the common case — "since last month" — and
-        // refusing it would make the filter unusable.
         let query = BrowseQuery {
             app: AppId(431_960),
             updated: Some(TimeRange {
@@ -850,8 +690,6 @@ mod tests {
 
     #[test]
     fn excluded_descriptors_travel_as_valves_ids() {
-        // The ids are Valve's and sparse-looking; sending the wrong one
-        // excludes the wrong content, which no count would reveal.
         let request = BrowseQuery {
             app: AppId(431_960),
             excluded_descriptors: vec![
@@ -894,10 +732,6 @@ mod tests {
 
     #[test]
     fn a_trend_window_on_another_sort_is_refused() {
-        // Measured against Wallpaper Engine on 2026-08-27: `--sort vote --days 7`
-        // returns the same three items as `--sort vote`, and `--sort recent
-        // --days 90` the same as `--sort recent`. Steam takes the number and
-        // ignores it, which looks like the period having no effect.
         let query = BrowseQuery {
             app: AppId(431_960),
             sort: BrowseSort::Vote,
@@ -912,8 +746,6 @@ mod tests {
 
     #[test]
     fn an_empty_tag_group_is_refused() {
-        // Steam answers it with something; whatever that is, it is not the
-        // filter anyone meant.
         let query = BrowseQuery {
             app: AppId(431_960),
             tag_groups: vec![Vec::new()],
@@ -924,8 +756,6 @@ mod tests {
 
     #[test]
     fn the_page_size_is_clamped_rather_than_sent_as_asked() {
-        // Steam silently returns fewer than requested past its own limit, which
-        // reads downstream as missing results.
         let big = BrowseQuery {
             app: AppId(4000),
             per_page: 5_000,
@@ -945,8 +775,7 @@ mod tests {
 
     #[test]
     fn every_sort_maps_to_a_query_type_valve_defines() {
-        // Valve's enum is sparse — 2 is not a query type — so a plausible
-        // guess produces an empty result rather than an error.
+        // Valve's enum is sparse: 2 is not a query type.
         const DEFINED: [u32; 6] = [0, 1, 3, 9, 12, 21];
         for name in BrowseSort::NAMES {
             let sort = BrowseSort::parse(name).expect("a listed name must parse");
@@ -973,8 +802,6 @@ mod tests {
 
     #[test]
     fn sorting_by_relevance_without_text_is_refused() {
-        // It "works" and returns an arbitrary order, which is the worst kind of
-        // wrong: it looks like a ranking.
         let query = BrowseQuery {
             app: AppId(4000),
             sort: BrowseSort::TextMatch,
@@ -997,7 +824,6 @@ mod tests {
 
     #[test]
     fn a_refused_item_is_reported_rather_than_failing_the_page() {
-        // One deleted item in twenty must not lose the other nineteen.
         let (id, why) = describe(&details(7, 9), None).expect_err("must be skipped");
         assert_eq!(id, 7);
         assert!(!why.is_empty(), "a skipped item must say why");
@@ -1046,7 +872,6 @@ mod tests {
 
     #[test]
     fn a_creator_of_zero_is_nobody() {
-        // Valve's own placeholder, and an id of zero links nowhere.
         let mut raw = details(1, 1);
         raw.creator = Some(0);
         assert_eq!(

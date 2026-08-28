@@ -11,7 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# No IO. A manifest arrives as bytes and is parsed here.
 [dependencies]
 crc32fast = { workspace = true }
 miniz_oxide = { workspace = true }

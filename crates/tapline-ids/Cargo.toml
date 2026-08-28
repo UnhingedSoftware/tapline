@@ -11,8 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# A leaf: no dependencies at all, internal or external. It compiles the instant
-# the build starts, which is the point of the wide DAG.
 [dependencies]
 
 [lints]

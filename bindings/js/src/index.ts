@@ -1,32 +1,4 @@
-/**
- * tapline — install Steam apps and Workshop content from Deno, Bun or Node.
- *
- * ```ts
- * import { install } from "tapline";
- *
- * // Await it.
- * const report = await install({ app: 4020, dir: "/srv/gmod" });
- *
- * // Or watch it.
- * await install({
- *   app: 4020,
- *   dir: "/srv/gmod",
- *   onProgress: (p) => console.log(`${p.percent.toFixed(1)}%`),
- * });
- *
- * // Or iterate it.
- * for await (const event of install({ app: 4020, dir: "/srv/gmod" })) {
- *   if (event.kind === "fileCompleted") console.log(event.path);
- * }
- *
- * // Or stop it.
- * const job = install({ app: 4020, dir: "/srv/gmod" });
- * setTimeout(() => job.cancel(), 5_000);
- * ```
- *
- * The same object is awaitable, iterable and cancellable, so none of those is a
- * different function to learn.
- */
+/** tapline — install Steam apps and Workshop content from Deno, Bun or Node. */
 
 import { type Ffi, load } from "./ffi.ts";
 import type {
@@ -47,12 +19,10 @@ import type {
 
 export * from "./types.ts";
 
-/** How long a single wait for an event blocks before looping. */
 const POLL_TIMEOUT_MS = 250;
 
 let cached: Promise<Ffi> | undefined;
 
-/** Opens the shared library, once per process. */
 function library(): Promise<Ffi> {
   cached ??= load();
   return cached;
@@ -63,18 +33,7 @@ export async function version(): Promise<string> {
   return (await library()).version();
 }
 
-/**
- * Sets how many chunks may be in flight across *all* downloads in this process.
- *
- * Downloads share one budget rather than taking one each. Two installs at 64
- * chunks each is measurably slower than two splitting 64, because throughput
- * turns over past 64 — and sharing also lets one download use connections the
- * other already warmed.
- *
- * Must be called before the first job starts; after that the budget is fixed,
- * because moving it underneath running downloads is not something a caller can
- * reason about. Throws if it is already in use.
- */
+/** Sets the process-wide chunk budget; must be called before the first job. */
 export async function setTotalConcurrency(chunks: number): Promise<void> {
   const code = (await library()).setTotalConcurrency(chunks);
   if (code !== 0) {
@@ -106,14 +65,7 @@ function osCode(os: TargetOs | undefined): number {
   }
 }
 
-/**
- * A running job.
- *
- * Awaitable for the result, async-iterable for the events, and cancellable at
- * any point. Iterating and awaiting the same job both work — the events are
- * buffered for the iterator either way, so attaching one late does not lose
- * what already happened.
- */
+/** A running job: awaitable, async-iterable, and cancellable. */
 export class Job<T> implements PromiseLike<T>, AsyncIterable<TaplineEvent> {
   #ffi: Ffi | undefined;
   #pointer: bigint | undefined;
@@ -129,13 +81,7 @@ export class Job<T> implements PromiseLike<T>, AsyncIterable<TaplineEvent> {
     onEvent?: (event: TaplineEvent) => void,
   ) {
     this.#result = this.#run(start, finish, onEvent);
-    // A job starts working the moment it is constructed, so a caller who only
-    // wants the events — or who cancels one and walks away — would otherwise
-    // leave a rejected promise nobody handled. In Node that is a process-level
-    // crash by default, in someone else's server, for a job they deliberately
-    // stopped. Marking it handled here does not hide anything: `then`,
-    // `callback` and the iterator all still receive the failure, because
-    // attaching a handler to a promise does not consume its rejection.
+    // Mark handled: an unawaited or cancelled job must not crash the process.
     this.#result.catch(() => {});
   }
 
@@ -175,9 +121,7 @@ export class Job<T> implements PromiseLike<T>, AsyncIterable<TaplineEvent> {
         collected.push(event);
         this.#buffered.push(event);
         this.#wake();
-        // A throwing listener must not strand the job or leak the library
-        // handle, so it surfaces as the job's failure rather than an unhandled
-        // rejection somewhere else.
+        // A throwing listener surfaces as the job's failure.
         onEvent?.(event);
 
         if (event.kind === "error") {
@@ -203,12 +147,7 @@ export class Job<T> implements PromiseLike<T>, AsyncIterable<TaplineEvent> {
     for (const wake of waiters) wake();
   }
 
-  /**
-   * Stops the job.
-   *
-   * Whatever is already on disk stays there, and a later install resumes from
-   * it rather than starting over.
-   */
+  /** Stops the job; whatever is already on disk stays there. */
   cancel(): void {
     this.#cancelled = true;
     if (this.#ffi && this.#pointer !== undefined) {
@@ -240,10 +179,7 @@ export class Job<T> implements PromiseLike<T>, AsyncIterable<TaplineEvent> {
   }
 
   async *[Symbol.asyncIterator](): AsyncIterator<TaplineEvent> {
-    // Swallowed here on purpose: a caller iterating events sees the `error`
-    // event go past and can act on it, and the same failure is still delivered
-    // to anyone awaiting the job. Rethrowing here as well would produce an
-    // unhandled rejection for the awaiter that never got there.
+    // Swallowed on purpose: the failure still reaches anyone awaiting the job.
     this.#result.catch(() => {});
     for (;;) {
       while (this.#buffered.length > 0) {
@@ -267,8 +203,7 @@ function progressBridge(
       onProgress({
         bytesDone: event.bytesDone,
         bytesTotal: event.bytesTotal,
-        // Guarded: a depot of zero bytes is legal and would otherwise produce
-        // NaN in someone's progress bar.
+        // A zero-byte depot is legal and would otherwise produce NaN.
         percent:
           event.bytesTotal === 0
             ? 100
@@ -314,12 +249,7 @@ export function install(options: InstallOptions): Job<InstallReport> {
   );
 }
 
-/**
- * Works out what an install would cost, without fetching any content.
- *
- * Worth calling before committing disk: an update that looks like 20 GB is
- * often 200 MB of changed chunks, and this answers that without downloading.
- */
+/** Works out what an install would cost, without fetching any content. */
 export function plan(options: PlanOptions): Job<PlanReport> {
   return new Job<PlanReport>(
     (ffi) =>
@@ -337,28 +267,7 @@ export function plan(options: PlanOptions): Job<PlanReport> {
   );
 }
 
-/**
- * Runs many installs, at most `maxConcurrent` at a time.
- *
- * Which number to pick is a real trade-off, not a tuning detail, because the
- * chunk budget is shared. Three concurrent Valheim installs measured against
- * three sequential ones:
- *
- * | | first ready | all ready |
- * |---|---|---|
- * | all three at once | 18.0 s | **18.7 s** |
- * | one at a time | **9.5 s** | 27.2 s |
- *
- * Running them together finishes the batch sooner. Running them one at a time
- * gets the first server online in less than half the time. A provisioning tool
- * usually wants the second; a nightly sync wants the first.
- *
- * Defaults to all at once, which is the throughput-optimal choice and what
- * `Promise.all` over `install` would already do.
- *
- * Results come back in the order the specs were given, not the order they
- * finished.
- */
+/** Runs many installs, at most `maxConcurrent` at a time. */
 export function installAll(
   specs: InstallOptions[],
   options: {
@@ -371,12 +280,7 @@ export function installAll(
   return new Batch(specs, options.maxConcurrent ?? specs.length, options.onEach);
 }
 
-/**
- * A set of installs running under a concurrency limit.
- *
- * Awaitable for all the reports, and cancellable — which cancels the ones
- * running and never starts the ones still queued.
- */
+/** A set of installs running under a concurrency limit. */
 export class Batch implements PromiseLike<InstallReport[]> {
   #jobs: Job<InstallReport>[] = [];
   #cancelled = false;
@@ -485,8 +389,7 @@ export function downloadWorkshopItem(
         BigInt(options.item),
         options.dir,
         options.concurrency ?? 0,
-        // Streaming writes into the directory given; there is no archive to
-        // build a steamcmd path around.
+        // Streaming implies the flat layout.
         streaming || options.layout === "flat" ? 1 : 0,
         options.extensions?.length ? options.extensions.join(",") : null,
         streamMode,
@@ -504,13 +407,11 @@ export function downloadWorkshopItem(
 }
 
 
-/** A pipeline destination. One only — see {@link Decoded.dir}. */
 type Sink =
   | { readonly directive: "dir"; readonly path: string }
   | { readonly directive: "zip"; readonly path: string }
   | { readonly directive: "zip-stored"; readonly path: string };
 
-/** What a chain has accumulated. Immutable; every step returns a new one. */
 interface Spec {
   readonly app: number;
   readonly item: bigint;
@@ -522,7 +423,6 @@ interface Spec {
   readonly onProgress?: WorkshopOptions["onProgress"];
 }
 
-/** Renders a spec as the text form the C ABI takes. */
 function toText(spec: Spec, sink: Sink): string {
   const lines = [`decode ${spec.format}`];
   for (const filter of spec.filters) lines.push(`only ${filter}`);
@@ -531,10 +431,6 @@ function toText(spec: Spec, sink: Sink): string {
   return `${lines.join("\n")}\n`;
 }
 
-/**
- * A Workshop item that has been given a format, and can now be narrowed and
- * pointed somewhere.
- */
 class Decoded {
   readonly #spec: Spec;
 
@@ -542,13 +438,7 @@ class Decoded {
     this.#spec = spec;
   }
 
-  /**
-   * Takes only entries matching a glob. Repeatable; the matches are a union.
-   *
-   * Selecting makes the download itself selective — the chunks holding the
-   * entries you did not ask for are never fetched, rather than fetched and
-   * discarded. A pattern matching nothing is a legitimate answer.
-   */
+  /** Takes only entries matching a glob; repeatable, a union. */
   only(pattern: string): Decoded {
     return new Decoded({
       ...this.#spec,
@@ -556,13 +446,7 @@ class Decoded {
     });
   }
 
-  /**
-   * Takes one exact path, whatever the globs say.
-   *
-   * Unlike {@link Decoded.only}, a path that is not in the archive is an error:
-   * you are asserting something about the archive, and running anyway would
-   * produce an empty result that looks like success.
-   */
+  /** Takes one exact path; missing it is an error, unlike a glob. */
   pick(path: string): Decoded {
     return new Decoded({ ...this.#spec, picks: [...this.#spec.picks, path] });
   }
@@ -611,7 +495,6 @@ class Decoded {
   }
 }
 
-/** A Workshop item, before it has been given a meaning. */
 class Source {
   readonly #spec: Spec;
 
@@ -640,24 +523,7 @@ class Source {
   }
 }
 
-/**
- * Starts a pipeline over one Workshop item.
- *
- * The chain mirrors the Rust one and compiles to the same text form, which is
- * what actually crosses the C ABI:
- *
- * ```ts
- * const report = await workshop(4000, 104691717)
- *   .gma()
- *   .only("lua/**")
- *   .zip("/srv/out.zip");
- * ```
- *
- * A stream has one direction, so there is one destination and it ends the
- * chain. Writing the same download to two places would mean buffering for
- * whichever sink is behind, which is a different operation with different
- * costs — not a flag.
- */
+/** Starts a pipeline over one Workshop item. */
 export function workshop(app: number, item: number | bigint): Source {
   return new Source({
     app,
@@ -671,63 +537,23 @@ export function workshop(app: number, item: number | bigint): Source {
 
 /** What to search an app's Workshop for. */
 export interface SearchOptions {
-  /** Which app's Workshop. */
   app: number;
-  /** Free text to match. */
   text?: string;
-  /**
-   * Where {@link SearchOptions.text} is matched. Steam searches titles and
-   * descriptions together by default, which finds items that merely mention a
-   * word: of 15,361 Wallpaper Engine matches for "miku", 13,901 carry it in
-   * the title and 4,132 in the description.
-   */
+  /** Where `text` is matched; Steam searches title and description by default. */
   searchIn?: "all" | "title" | "description";
-  /** Tags an item must carry. */
   tags?: string[];
-  /**
-   * Groups of tags, of which an item must carry at least one from each.
-   *
-   * Steam's own sidebar: `[["Scene", "Video"], ["Anime"]]` means *(Scene or
-   * Video) and Anime*. {@link SearchOptions.tags} cannot express that —
-   * {@link SearchOptions.allTags} is one switch over the whole list, so it is
-   * every tag or any tag and nothing between.
-   */
+  /** Steam's sidebar groups: one tag required from each group. */
   tagGroups?: string[][];
-  /** Tags that exclude an item. */
   excludeTags?: string[];
-  /**
-   * Steam's own content labels to leave out: `nudity`, `violence`,
-   * `adult-only`, `gratuitous`, `mature`.
-   *
-   * A truer filter than excluding a tag by name — the label is Valve's,
-   * applied per item, where a tag is whatever the author ticked. Excluding
-   * `nudity` drops 309,952 of Wallpaper Engine's 3,182,822 items.
-   */
+  /** Steam's own content labels to leave out. */
   excludeContent?: ("nudity" | "violence" | "adult-only" | "gratuitous" | "mature")[];
   /** Require every tag rather than any of them. Applies to `tags` only. */
   allTags?: boolean;
-  /**
-   * How to order results: `vote`, `recent`, `updated`, `trend`, `subscribed`
-   * or `text`. `text` needs {@link SearchOptions.text} — without it Steam
-   * returns an arbitrary order that looks like a ranking, so it is refused.
-   */
+  /** How to order results; `"text"` needs `text` to be set. */
   sort?: "vote" | "recent" | "updated" | "trend" | "subscribed" | "text";
-  /**
-   * How many days of activity a `trend` ranking covers — the period beside
-   * Steam's "Most Popular". Steam's own window is a single day.
-   *
-   * It applies to no other sort: Steam takes the number and ignores it, so
-   * passing one with another sort is refused rather than quietly doing
-   * nothing.
-   */
+  /** Days a `trend` ranking covers; refused with any other sort. */
   days?: number;
-  /**
-   * Only items first published within this window.
-   *
-   * Unix seconds, either end optional. Filters hard rather than reordering:
-   * of Wallpaper Engine's 3,182,822 items, 6,267 were updated in the last
-   * thirty days.
-   */
+  /** Only items first published within this window. Unix seconds. */
   created?: { since?: number; until?: number };
   /** Only items last updated within this window. Unix seconds. */
   updated?: { since?: number; until?: number };
@@ -735,13 +561,7 @@ export interface SearchOptions {
   limit?: number;
   /** {@link SearchPage.nextCursor} from a previous page. */
   cursor?: string;
-  /**
-   * Jump straight to a numbered page, 1-based.
-   *
-   * The other way of paging: a cursor walks forward exactly and cannot go
-   * back, a page number goes anywhere, which is what numbered pagination
-   * needs. Giving both is refused.
-   */
+  /** Jump straight to a numbered page, 1-based; cannot be combined with `cursor`. */
   page?: number;
   onEvent?: (event: TaplineEvent) => void;
 }
@@ -749,34 +569,13 @@ export interface SearchOptions {
 /** A page of search results. */
 export interface SearchPage {
   items: Omit<ResultEvent, "kind">[];
-  /** How many the whole search matched, usually far more than one page. */
   total: number;
-  /** Items Steam returned that could not be described. */
   skipped: number;
   /** Pass to {@link SearchOptions.cursor} for the next page, or null at the end. */
   nextCursor: string | null;
 }
 
-/**
- * Searches an app's Workshop.
- *
- * Works on an anonymous session — no key, no login:
- *
- * ```ts
- * const page = await searchWorkshop({ app: 4000, text: "stargate", sort: "text" });
- * for (const found of page.items) console.log(found.item, found.title);
- * ```
- *
- * Each result carries everything {@link downloadWorkshopItem} needs, so a
- * search feeds a download with no second lookup:
- *
- * ```ts
- * await downloadWorkshopItem({ app: 4000, item: page.items[0].item, dir });
- * ```
- *
- * Paging is a cursor rather than a page number, because offsets repeat items
- * past about a thousand results. Walk it until `nextCursor` is null.
- */
+/** Searches an app's Workshop; page with `cursor` until `nextCursor` is null. */
 export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
   return new Job<SearchPage>(
     (ffi) =>
@@ -811,8 +610,7 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
         items,
         total: summary.total,
         skipped: summary.skipped,
-        // Empty is "no next page"; null says that plainly rather than making
-        // every caller check for "".
+        // Empty means no next page; null says that plainly.
         nextCursor: summary.nextCursor === "" ? null : summary.nextCursor,
       };
     },
@@ -820,16 +618,7 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
   );
 }
 
-/**
- * Counts what a search would match, fetching none of it.
- *
- * What a filter list wants: the number beside each option costs one round trip
- * rather than a page of results thrown away.
- *
- * ```ts
- * const scenes = await countWorkshop({ app: 431960, tags: ["Scene"] });
- * ```
- */
+/** Counts what a search would match, fetching none of it. */
 export function countWorkshop(options: SearchOptions): Job<number> {
   return new Job<number>(
     (ffi) =>
@@ -862,29 +651,13 @@ export function countWorkshop(options: SearchOptions): Job<number> {
 
 /** How a QR login reports itself. */
 export interface QrLoginOptions {
-  /**
-   * Called with the URL to render as a QR code — once at the start, and again
-   * every time Steam rotates it. QR codes expire, so redraw on each call and
-   * the displayed code is always scannable. Render the URL however you like;
-   * tapline gives the string, not an image.
-   */
+  /** Called with the QR URL, again each time Steam rotates it. */
   onCode: (url: string) => void;
   /** How long to wait for approval, in seconds. Defaults to 300. */
   timeoutSeconds?: number;
 }
 
-/**
- * Signs in with a QR code, handling the refresh.
- *
- * ```ts
- * const { account } = await qrLogin({ onCode: (url) => showQrSomewhere(url) });
- * // token is saved; install()/plan() now sign in on their own.
- * ```
- *
- * The returned job resolves once the phone approves it. On the way it calls
- * `onCode` for each code Steam issues, so a display that redraws on each call
- * never shows an expired one.
- */
+/** Signs in with a QR code, handling the refresh; the token is saved. */
 export function qrLogin(options: QrLoginOptions): Job<{ account: string }> {
   const onEvent = (event: TaplineEvent) => {
     if (event.kind === "qr") options.onCode(event.url);

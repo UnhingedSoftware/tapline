@@ -11,9 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# No socket. The PICS exchange runs over a tapline-net Session, which runs over
-# the Transport trait, so the resolution logic is testable against a captured
-# response.
 [dependencies]
 tapline-ids = { workspace = true }
 tapline-io = { workspace = true }

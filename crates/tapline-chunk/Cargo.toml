@@ -11,7 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# A leaf apart from its decoder. No IO, no async.
 [dependencies]
 crc32fast = { workspace = true }
 lzma-rs = { workspace = true }

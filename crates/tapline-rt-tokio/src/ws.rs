@@ -1,64 +1,21 @@
 //! A WebSocket client, per RFC 6455, scoped to what Steam's CMs need.
-//!
-//! ```text
-//!  0               1               2               3
-//!  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-//! +-+-+-+-+-------+-+-------------+-------------------------------+
-//! |F|R|R|R| op    |M| payload len |    extended length (16 or 64)  |
-//! |I|S|S|S| code  |A|    (7)      |                               |
-//! |N|V|V|V|       |S|             |                               |
-//! +-+-+-+-+-------+-+-------------+-------------------------------+
-//! |               masking key (client frames only, 4 bytes)       |
-//! +---------------------------------------------------------------+
-//! |                          payload                              |
-//! +---------------------------------------------------------------+
-//! ```
-//!
-//! What is implemented and why:
-//!
-//! * **Client frames are always masked.** RFC 6455 requires it and Steam's
-//!   servers close the connection on an unmasked client frame. The key comes
-//!   from the OS RNG, not a counter — the requirement exists to stop cache
-//!   poisoning through intermediaries, and a predictable key defeats it.
-//! * **Server frames must not be masked**, and one that is gets the connection
-//!   closed. That is the RFC's rule and following it costs nothing.
-//! * **Fragmentation is handled.** Steam sends large messages — a PICS response
-//!   is hundreds of kilobytes — and there is no promise they arrive in one frame.
-//! * **Ping is answered with Pong** carrying the same payload, since a CM that
-//!   pings and gets nothing back hangs up.
-//!
-//! Text frames are rejected rather than lossily converted: everything Steam
-//! sends on this socket is a binary protocol message, so a text frame means we
-//! misunderstood something.
 
 use crate::tls::TlsStream;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// The largest message we will assemble, in bytes.
-///
-/// A frame header can claim a 64-bit length. Real Steam messages are at most a
-/// few megabytes; this bound is far above that and far below anything that
-/// would exhaust memory on a small node.
+/// The largest message we will assemble; frame lengths are untrusted 64-bit claims.
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
-/// Frame opcodes.
 mod opcode {
-    /// A continuation of the previous frame.
     pub const CONTINUATION: u8 = 0x0;
-    /// A UTF-8 text message. Steam never sends one.
     pub const TEXT: u8 = 0x1;
-    /// A binary message, which is every Steam protocol message.
     pub const BINARY: u8 = 0x2;
-    /// The peer is closing.
     pub const CLOSE: u8 = 0x8;
-    /// Answer with `PONG`.
     pub const PING: u8 = 0x9;
-    /// An answer to our `PING`, or an unsolicited keepalive.
     pub const PONG: u8 = 0xA;
 }
 
-/// One parsed frame.
 struct RawFrame {
     fin: bool,
     opcode: u8,
@@ -73,7 +30,6 @@ pub struct WebSocket {
 }
 
 impl WebSocket {
-    /// Wraps an already-upgraded TLS stream.
     pub(crate) const fn new(stream: TlsStream) -> Self {
         Self {
             stream,
@@ -89,8 +45,7 @@ impl WebSocket {
         self.write_frame(opcode::BINARY, payload).await
     }
 
-    /// Receives the next binary message, answering pings and reassembling
-    /// fragments along the way.
+    /// Receives the next binary message, answering pings and reassembling fragments.
     pub async fn recv_binary(&mut self) -> io::Result<Vec<u8>> {
         let mut assembled: Vec<u8> = Vec::new();
         let mut assembling = false;
@@ -106,8 +61,7 @@ impl WebSocket {
                 opcode::PONG => {}
                 opcode::CLOSE => {
                     self.closed = true;
-                    // Echo the close so the peer sees a clean shutdown rather
-                    // than a reset.
+                    // Echo the close so the peer sees a clean shutdown.
                     let _ = self.write_frame(opcode::CLOSE, &[]).await;
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
                 }
@@ -184,14 +138,12 @@ impl WebSocket {
             }
         }
 
-        // A predictable mask defeats the anti-cache-poisoning reason the mask
-        // exists, so this comes from the OS RNG rather than a counter.
+        // A predictable mask defeats the anti-cache-poisoning purpose; use the OS RNG.
         let mask = tapline_crypto::random_bytes::<4>();
         header.extend_from_slice(&mask);
 
         let mut masked = payload.to_vec();
         for (index, byte) in masked.iter_mut().enumerate() {
-            // `index % 4` is always in range for a 4-byte array.
             if let Some(key) = mask.get(index % 4) {
                 *byte ^= *key;
             }
@@ -202,7 +154,6 @@ impl WebSocket {
         self.stream.flush().await
     }
 
-    /// Reads one frame.
     async fn read_frame(&mut self) -> io::Result<RawFrame> {
         let mut first = [0_u8; 2];
         self.stream.read_exact(&mut first).await?;
@@ -215,8 +166,7 @@ impl WebSocket {
         let masked = byte1 & 0x80 != 0;
         let short_len = byte1 & 0x7F;
 
-        // RFC 6455: a server must not mask. Accepting one anyway would mean
-        // accepting a frame from something that is not following the protocol.
+        // RFC 6455: a server must not mask.
         if masked {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -240,8 +190,7 @@ impl WebSocket {
             other => usize::from(other),
         };
 
-        // The length is a number from the network, and this is where it would
-        // otherwise become an allocation.
+        // The claimed length is untrusted; cap it before allocating.
         if length > MAX_MESSAGE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -264,8 +213,6 @@ impl WebSocket {
 mod tests {
     use super::*;
 
-    /// Builds a client frame the way [`WebSocket::write_frame`] does, so the
-    /// length encoding can be checked without a socket.
     fn encode_header(opcode: u8, len: usize) -> Vec<u8> {
         let mut header = vec![0x80 | opcode];
         match len {
@@ -284,8 +231,7 @@ mod tests {
 
     #[test]
     fn length_encoding_switches_at_the_right_boundaries() {
-        // 125/126 and 65535/65536 are where the wire format changes shape, and
-        // getting either wrong desynchronises the stream for good.
+        // 125/126 and 65535/65536 are where the wire format changes shape.
         assert_eq!(encode_header(opcode::BINARY, 0).len(), 2);
         assert_eq!(encode_header(opcode::BINARY, 125).len(), 2);
         assert_eq!(encode_header(opcode::BINARY, 126).len(), 4);
@@ -327,8 +273,6 @@ mod tests {
 
     #[test]
     fn masks_differ_between_frames() {
-        // A counter would satisfy "is masked" while defeating the reason the
-        // mask exists.
         assert_ne!(
             tapline_crypto::random_bytes::<4>(),
             tapline_crypto::random_bytes::<4>()

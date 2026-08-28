@@ -13,13 +13,8 @@ pub enum PathError {
     /// A `..` component, anywhere in the path.
     ParentTraversal,
     /// A drive letter, UNC share or other filesystem prefix.
-    ///
-    /// Windows-shaped, and worth rejecting even on Linux: a manifest is not
-    /// platform-specific, and a path that is dangerous on one target should not
-    /// be silently accepted on another.
     Prefix,
-    /// A NUL byte, which truncates the path at the syscall boundary so that
-    /// what was checked is not what gets opened.
+    /// A NUL byte, which truncates the path at the syscall boundary.
     InteriorNul,
     /// A symlink whose target resolves outside the install root.
     SymlinkEscapes {
@@ -51,10 +46,6 @@ impl fmt::Display for PathError {
 impl std::error::Error for PathError {}
 
 /// A manifest path that has been checked and is safe to join onto a root.
-///
-/// The only way to build one is [`validate_path`], so a function taking a
-/// `SafePath` cannot be handed an unchecked one by accident. That is the point:
-/// the check is not something a caller can forget to do.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SafePath(PathBuf);
 
@@ -84,20 +75,13 @@ impl fmt::Display for SafePath {
     }
 }
 
-/// Checks a path from a manifest.
-///
-/// Rejects on any doubt. This is a pure function of the path text — it never
-/// touches the filesystem, because a question answered against the disk can have
-/// a different answer a moment later, and the gap between the check and the open
-/// is exactly where that matters.
+/// Checks a path from a manifest; a pure function that rejects on any doubt.
 pub fn validate_path(raw: &str) -> Result<SafePath, PathError> {
     if raw.contains('\0') {
         return Err(PathError::InteriorNul);
     }
 
-    // Manifests use backslashes even for Linux depots, so both separators are
-    // treated as separators — otherwise `..\..\etc` would look like one long
-    // filename and sail through the `..` check.
+    // Both separators are separators, or `..\..\etc` would pass as one long filename.
     let normalised = raw.replace('\\', "/");
     if normalised.is_empty() {
         return Err(PathError::Empty);
@@ -124,11 +108,6 @@ pub fn validate_path(raw: &str) -> Result<SafePath, PathError> {
 }
 
 /// Checks a symlink's target, resolved against the link's own directory.
-///
-/// A symlink is the indirect form of a traversal: the link itself sits happily
-/// inside the root while its target does not, and a later write through the link
-/// lands wherever the target points. Both a relative target that climbs out and
-/// an absolute one are refused.
 pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathError> {
     if target.contains('\0') {
         return Err(PathError::InteriorNul);
@@ -146,10 +125,7 @@ pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathEr
         });
     }
 
-    // Walk the link's directory plus the target, tracking depth. Depth going
-    // negative at any point means the path left the root, whatever it does
-    // afterwards — `../../a/b/c` is an escape even though it ends up three
-    // levels deep again.
+    // Depth going negative at any point means the path left the root.
     let mut depth: i64 = link
         .as_path()
         .parent()
@@ -181,7 +157,6 @@ pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathEr
     Ok(target_path.to_path_buf())
 }
 
-/// Whether a component names a real path segment.
 fn is_normal(component: &Component<'_>) -> bool {
     matches!(component, Component::Normal(_))
 }
@@ -192,7 +167,6 @@ mod tests {
 
     #[test]
     fn ordinary_depot_paths_are_accepted() {
-        // What a real manifest actually contains.
         for path in [
             "tf/cfg/pure_server_whitelist.txt",
             "bin/linux64/srcds_linux",
@@ -206,8 +180,6 @@ mod tests {
 
     #[test]
     fn windows_separators_are_treated_as_separators() {
-        // Valve writes backslashes even in Linux depots. Treating them as part
-        // of a filename would let `..\..\etc\passwd` through as one long name.
         let path = validate_path("bin\\linux64\\srcds").expect("must accept");
         assert_eq!(path.as_str(), "bin/linux64/srcds");
 
@@ -228,8 +200,6 @@ mod tests {
 
     #[test]
     fn parent_traversal_is_refused_wherever_it_appears() {
-        // Not just a leading `../`. A `..` in the middle normalises out of the
-        // root just as effectively.
         for path in [
             "../escape",
             "../../../../etc/passwd",
@@ -247,8 +217,6 @@ mod tests {
 
     #[test]
     fn empty_and_dot_only_paths_are_refused() {
-        // These resolve to the install root itself, turning a file write into a
-        // clobber of the directory.
         assert_eq!(validate_path(""), Err(PathError::Empty));
         assert_eq!(validate_path("."), Err(PathError::Empty));
         assert_eq!(validate_path("./"), Err(PathError::Empty));
@@ -257,8 +225,6 @@ mod tests {
 
     #[test]
     fn a_nul_byte_is_refused() {
-        // A NUL truncates the path at the syscall boundary, so what was checked
-        // is not what gets opened.
         assert_eq!(
             validate_path("safe.txt\0/../../etc/passwd"),
             Err(PathError::InteriorNul)
@@ -267,8 +233,6 @@ mod tests {
 
     #[test]
     fn a_name_that_merely_contains_dots_is_fine() {
-        // `..` is only dangerous as a whole component. Refusing every path with
-        // two dots in it would reject real filenames.
         validate_path("libstdc++.so.6").expect("must accept");
         validate_path("weird..name.txt").expect("must accept");
         validate_path("a/..b/c").expect("must accept");
@@ -279,14 +243,11 @@ mod tests {
         let link = validate_path("bin/linux64/libsteam.so").expect("valid link path");
         validate_symlink(&link, "../libsteam_api.so").expect("must accept");
         validate_symlink(&link, "libsteam_api.so").expect("must accept");
-        // Down and back up again, never leaving the root.
         validate_symlink(&link, "../../bin/other.so").expect("must accept");
     }
 
     #[test]
     fn a_symlink_climbing_out_of_the_root_is_refused() {
-        // The link sits happily inside the root; its target does not, and a
-        // write through it lands wherever the target points.
         let link = validate_path("bin/evil").expect("valid link path");
         assert!(matches!(
             validate_symlink(&link, "../../../../etc/passwd"),
@@ -296,8 +257,6 @@ mod tests {
 
     #[test]
     fn a_symlink_that_escapes_and_returns_is_still_refused() {
-        // `../../a/b` ends up inside a directory again, but it left the root on
-        // the way — and the intermediate path is what an attacker controls.
         let link = validate_path("a/link").expect("valid link path");
         assert!(matches!(
             validate_symlink(&link, "../../elsewhere/b"),
@@ -331,7 +290,6 @@ mod tests {
 
     #[test]
     fn every_accepted_path_resolves_under_its_root() {
-        // The property the whole module exists for, stated once directly.
         let root = Path::new("/srv/install");
         for candidate in [
             "a",

@@ -1,27 +1,4 @@
 //! Delivering a file's bytes in order, while still fetching them in parallel.
-//!
-//! Some formats can be consumed as they arrive. A Garry's Mod addon is one:
-//! GMAD puts its header and index first and then every file's contents back to
-//! back in index order, so a consumer that has read the index can write each
-//! file the moment its bytes land — and the archive itself never has to touch
-//! the disk at all.
-//!
-//! The obstacle is that tapline fetches chunks in parallel, which is where its
-//! throughput comes from, and they arrive in whatever order the CDN serves
-//! them. This reorders them without giving that up.
-//!
-//! # The window
-//!
-//! Chunks are fetched in offset order, at most [`Window::size`] of them in
-//! flight. A chunk that arrives early waits in a buffer; the one the consumer
-//! is waiting for is delivered the moment it lands, and the slot it frees is
-//! spent on the next chunk. Because tasks are only ever started in order and
-//! only ever `size` at a time, the buffer holds at most `size` chunks — so peak
-//! memory is bounded by the window, not by the file.
-//!
-//! That bound is the reason the window is not simply the download concurrency:
-//! at 64 chunks of 1 MiB, an unlucky arrival order costs 64 MiB of buffer for a
-//! file that is being streamed precisely to avoid holding it.
 
 use crate::install::InstallError;
 
@@ -34,10 +11,7 @@ pub struct Window {
 
 impl Default for Window {
     fn default() -> Self {
-        // Sixteen 1 MiB chunks is 16 MiB of worst-case buffer, and enough
-        // parallelism to keep a link busy on a single file. A streamed download
-        // is one file by definition, so this is not the whole download's
-        // concurrency — several streamed items still share the process budget.
+        // 16 MiB worst-case buffer; streamed items still share the process budget.
         Self { size: 16 }
     }
 }
@@ -53,13 +27,8 @@ impl Window {
 }
 
 /// Reorders chunks that arrive out of order into a single ordered stream.
-///
-/// Separate from the fetching so it can be tested without a network: the
-/// ordering is the part with the bug in it, not the HTTP.
 pub struct Reorderer {
-    /// The next chunk index the consumer is waiting for.
     next: usize,
-    /// Chunks that arrived early, by index.
     pending: std::collections::BTreeMap<usize, Vec<u8>>,
 }
 
@@ -80,13 +49,9 @@ impl Reorderer {
     }
 
     /// Accepts a chunk and returns everything now deliverable, in order.
-    ///
-    /// Usually empty or a single chunk. It returns several when a chunk that
-    /// several others were queued behind finally arrives.
     pub fn accept(&mut self, index: usize, bytes: Vec<u8>) -> Vec<Vec<u8>> {
         if index < self.next {
-            // Already delivered. Cannot happen with in-order dispatch, and
-            // dropping it is better than delivering the same bytes twice.
+            // Already delivered; drop rather than deliver the same bytes twice.
             return Vec::new();
         }
         self.pending.insert(index, bytes);
@@ -128,17 +93,10 @@ pub struct StreamReport {
     /// Chunks fetched.
     pub chunks: u64,
     /// The largest number of chunks held back at once.
-    ///
-    /// Reported because it is the memory this cost, and the only way to know
-    /// whether the window is the right size is to see how much of it was used.
     pub peak_buffered: usize,
 }
 
 /// What a streamed download feeds its bytes to.
-///
-/// A plain callback rather than a trait, so `tapline` does not need to know
-/// about any particular format. `tapline-gmad`'s streaming extractor is one
-/// implementation; writing to a file is another.
 pub type Consumer<'a> = &'a mut (dyn FnMut(&[u8]) -> Result<(), InstallError> + Send);
 
 #[cfg(test)]
@@ -161,7 +119,6 @@ mod tests {
         assert!(reorderer.accept(1, vec![2]).is_empty());
         assert_eq!(reorderer.buffered(), 2);
 
-        // Chunk 0 releases all three, in order.
         assert_eq!(
             reorderer.accept(0, vec![1]),
             vec![vec![1], vec![2], vec![3]]
@@ -172,8 +129,6 @@ mod tests {
 
     #[test]
     fn every_arrival_order_produces_the_same_stream() {
-        // The property the whole type exists for. Ten chunks, every rotation of
-        // the arrival order, must produce 0..10 in order.
         for start in 0..10 {
             let mut reorderer = Reorderer::new();
             let mut out = Vec::new();

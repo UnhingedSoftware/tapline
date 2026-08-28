@@ -1,21 +1,4 @@
-//! One Steam message, as it appears inside a WebSocket frame.
-//!
-//! ```text
-//!  0        4                 8                        8 + header_len
-//! +--------+-----------------+------------------------+---------------+
-//! | emsg   | header_len      | CMsgProtoBufHeader     |     body      |
-//! | u32 LE | u32 LE          | protobuf               |   protobuf    |
-//! +--------+-----------------+------------------------+---------------+
-//!    ^
-//!    +-- high bit (0x8000_0000) set means "protobuf message"
-//! ```
-//!
-//! Every message tapline sends or receives has that high bit set. The
-//! alternative — a packed C struct header — belongs to the old TCP transport,
-//! which Steam no longer offers (measured: the CM directory returns only
-//! `websockets` and `netfilter`, no TCP). A non-protobuf message arriving on a
-//! WebSocket is therefore something we do not understand, and is reported as
-//! such rather than guessed at.
+//! One Steam message: `emsg u32 LE | header_len u32 LE | CMsgProtoBufHeader | body`.
 
 use crate::NetError;
 use tapline_proto::steammessages_base::CMsgProtoBufHeader;
@@ -24,8 +7,7 @@ use tapline_wire::Message;
 /// The bit that marks a message as protobuf-framed.
 pub const PROTOBUF_FLAG: u32 = 0x8000_0000;
 
-/// The sentinel Valve uses for "no job", and the schema default for both job-id
-/// fields on [`CMsgProtoBufHeader`].
+/// Valve's "no job" sentinel, the schema default for both job-id fields.
 pub const NO_JOB: u64 = u64::MAX;
 
 /// A message's type, with the protobuf flag stripped.
@@ -74,10 +56,6 @@ impl EMsg {
 }
 
 /// A decoded message: its type, its header, and its body still encoded.
-///
-/// The body is left as bytes because the header names the type — a caller that
-/// knows which message it asked for decodes it, and a caller routing by job id
-/// does not need to.
 #[derive(Debug, Clone)]
 pub struct Frame {
     /// What kind of message this is.
@@ -95,11 +73,7 @@ impl Frame {
         Self { emsg, header, body }
     }
 
-    /// The job id this frame is a reply to, if any.
-    ///
-    /// Returns `None` for the [`NO_JOB`] sentinel rather than handing back
-    /// `u64::MAX`, so a caller cannot accidentally match an unsolicited message
-    /// against a pending request keyed on that value.
+    /// The job id this frame replies to; the [`NO_JOB`] sentinel becomes `None`.
     #[must_use]
     pub fn reply_to(&self) -> Option<u64> {
         match self.header.jobid_target {
@@ -131,8 +105,6 @@ impl Frame {
 
         if raw_emsg & PROTOBUF_FLAG == 0 {
             // The struct-header format belongs to the retired TCP transport.
-            // Guessing at its layout on a connection that should never carry it
-            // would be inventing a protocol.
             return Err(NetError::NotProtobuf {
                 emsg: raw_emsg & !PROTOBUF_FLAG,
             });
@@ -155,7 +127,6 @@ impl Frame {
     }
 }
 
-/// Reads a little-endian `u32` at `offset`, if it is fully present.
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     let slice = bytes.get(offset..end)?;
@@ -221,8 +192,6 @@ mod tests {
 
     #[test]
     fn the_no_job_sentinel_is_not_a_job_id() {
-        // u64::MAX is the schema default for both job-id fields. Treating it as
-        // a real id would let an unsolicited message satisfy a pending request.
         assert_eq!(
             Frame::new(EMsg::MULTI, header_with(Some(NO_JOB)), vec![]).reply_to(),
             None
@@ -239,7 +208,6 @@ mod tests {
 
     #[test]
     fn a_non_protobuf_message_is_refused_rather_than_guessed_at() {
-        // The struct-header format belongs to the TCP transport Steam retired.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&EMsg::CLIENT_LOGON.value().to_le_bytes()); // no flag
         bytes.extend_from_slice(&[0; 16]);
@@ -252,15 +220,7 @@ mod tests {
 
     #[test]
     fn a_frame_cut_inside_its_header_is_an_error() {
-        // The shape a half-delivered frame has. None of these may panic, and
-        // any cut that lands inside the fixed prefix or the header must fail.
-        //
-        // A cut at exactly the end of the header is NOT an error, and cannot be
-        // made one: that is a well-formed frame whose body happens to be empty,
-        // and protobuf carries no length for the body to contradict. What
-        // guarantees a whole message is the WebSocket layer beneath this —
-        // a partial frame never reaches here, because the frame length is part
-        // of the WebSocket framing rather than something we infer.
+        // A cut at the header's end is a valid frame with an empty body.
         let header = CMsgProtoBufHeader {
             client_sessionid: Some(1),
             ..CMsgProtoBufHeader::default()
@@ -276,7 +236,6 @@ mod tests {
             );
         }
 
-        // From the end of the header onwards it parses, with a shorter body.
         for cut in header_end..=full.len() {
             let prefix = full.get(..cut).expect("in range");
             let decoded = Frame::decode(prefix).expect("a complete header must parse");

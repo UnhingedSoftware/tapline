@@ -1,9 +1,4 @@
-//! TLS, and the HTTP upgrade that turns a TLS stream into a WebSocket.
-//!
-//! Certificate verification is on and there is no switch to turn it off. The
-//! CDN directory reports `"https_support":"mandatory"` for every host it
-//! returns, and the CM endpoints answer only on TLS, so this is the one path
-//! everything else runs over.
+//! TLS and the WebSocket upgrade; certificate verification cannot be disabled.
 
 use crate::ws::WebSocket;
 use rustls::pki_types::ServerName;
@@ -19,16 +14,10 @@ pub type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 /// The path Steam's CMs serve the WebSocket on.
 const CM_PATH: &str = "/cmsocket/";
 
-/// The constant RFC 6455 mixes into the key to prove the server understood the
-/// upgrade rather than merely echoing a header.
+/// The RFC 6455 GUID mixed into the key.
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/// Builds a TLS client configuration.
-///
-/// Roots come from `webpki-roots`, compiled in, rather than from the host's
-/// trust store: a game-server node may have an empty or stale one, and a
-/// download that silently fails to verify would be worse than one that fails to
-/// start.
+/// Roots come from `webpki-roots`, not the host's possibly-stale trust store.
 fn client_config() -> Arc<rustls::ClientConfig> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
@@ -43,8 +32,7 @@ fn client_config() -> Arc<rustls::ClientConfig> {
 /// Opens a TLS connection to `host:port`.
 pub async fn connect_tls(host: &str, port: u16) -> io::Result<TlsStream> {
     let tcp = TcpStream::connect((host, port)).await?;
-    // Steam's messages are small and latency-sensitive; Nagle would add up to
-    // 40 ms to a request that is one small write.
+    // Nagle would add up to 40 ms to one small write.
     tcp.set_nodelay(true)?;
 
     let server_name = ServerName::try_from(host.to_owned())
@@ -56,15 +44,12 @@ pub async fn connect_tls(host: &str, port: u16) -> io::Result<TlsStream> {
 }
 
 /// Connects to a CM and performs the WebSocket upgrade.
-///
-/// `endpoint` is `host:port` as the CM directory gives it.
 pub async fn connect_cm(endpoint: &str) -> io::Result<WebSocket> {
     let (host, port) = split_endpoint(endpoint)?;
     let stream = connect_tls(host, port).await?;
     upgrade(stream, host, port).await
 }
 
-/// Splits `host:port`, defaulting to 443.
 fn split_endpoint(endpoint: &str) -> io::Result<(&str, u16)> {
     match endpoint.rsplit_once(':') {
         Some((host, port)) => {
@@ -124,9 +109,7 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
         }
     }
 
-    // The accept header proves the peer implemented the handshake rather than
-    // reflecting our headers back. Skipping the check would mean upgrading
-    // against anything that answered 101.
+    // The accept value proves the peer implemented the handshake, not echoed it.
     let expected = base64_encode(&tapline_crypto::sha1(
         format!("{key}{WEBSOCKET_GUID}").as_bytes(),
     ));
@@ -146,9 +129,7 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
         }
     }
 
-    // BufReader may have buffered bytes past the header block. Steam does not
-    // send frames before the handshake completes, so an empty buffer is the
-    // expected state; anything else means we would silently drop a frame.
+    // Buffered bytes past the headers would be a silently dropped frame.
     if !reader.buffer().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -159,10 +140,7 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
     Ok(WebSocket::new(reader.into_inner()))
 }
 
-/// Standard base64, which the WebSocket handshake needs in both directions.
-///
-/// Twenty lines rather than a dependency: this is the only place in the
-/// workspace that needs it, and the alphabet has not changed since 1987.
+/// Standard base64, needed by the handshake in both directions.
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -208,8 +186,7 @@ mod tests {
 
     #[test]
     fn the_handshake_accept_value_matches_the_rfc_example() {
-        // RFC 6455 section 1.3 works this exact case, which is the only way to
-        // know our key derivation agrees with every server's.
+        // RFC 6455 section 1.3 works this exact case.
         let key = "dGhlIHNhbXBsZSBub25jZQ==";
         let accept = base64_encode(&tapline_crypto::sha1(
             format!("{key}{WEBSOCKET_GUID}").as_bytes(),

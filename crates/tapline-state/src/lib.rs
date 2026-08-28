@@ -1,20 +1,4 @@
-//! The install record: `steamapps/appmanifest_<appid>.acf`.
-//!
-//! This file is why tapline can take over an install steamcmd made, and why an
-//! install tapline makes is one the Steam client, steamcmd, LinuxGSM and every
-//! host panel already understand. It records which depots are installed at which
-//! manifest ids — which is exactly what a delta update diffs against.
-//!
-//! # Round-tripping is the point
-//!
-//! Reading and rewriting one of these must change only the fields that changed.
-//! Fields tapline does not model are preserved verbatim rather than dropped,
-//! because Valve adds them and an install that lost `ScheduledAutoUpdate` on
-//! every update would be quietly degrading a file other tools read.
-//!
-//! Verified against `appmanifest_896660.acf` exactly as steamcmd wrote it while
-//! installing Valheim Dedicated Server on 2026-08-26: parse, rewrite, and the
-//! bytes are identical.
+//! The install record, `steamapps/appmanifest_<appid>.acf`, round-tripped byte for byte.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -48,10 +32,7 @@ pub enum StateError {
     Malformed(VdfError),
     /// The document had no `AppState` block.
     NotAnAppManifest,
-    /// The file names a different app than the one asked for.
-    ///
-    /// A mismatch here means the install directory holds someone else's app, and
-    /// writing over it would be worse than failing.
+    /// The file names a different app; writing over it would be worse than failing.
     WrongApp {
         /// What was expected.
         expected: AppId,
@@ -92,11 +73,7 @@ impl From<std::io::Error> for StateError {
     }
 }
 
-/// An app's install record.
-///
-/// Holds the whole document, so fields tapline does not model survive a
-/// rewrite. The typed accessors read and write through to it rather than
-/// shadowing it, which is what keeps the two from drifting apart.
+/// An app's install record; holds the whole document so unmodelled fields survive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppState {
     document: Object,
@@ -122,10 +99,7 @@ impl AppState {
         Ok(state)
     }
 
-    /// Reads an app's record from an install root, if there is one.
-    ///
-    /// A missing file is `Ok(None)` rather than an error: a fresh install has no
-    /// record yet, and that is not a failure.
+    /// Reads an app's record; a missing file is `Ok(None)`, not an error.
     pub fn read(root: &Path, app: AppId) -> Result<Option<Self>, StateError> {
         let path = Self::path_for(root, app);
         match std::fs::read_to_string(&path) {
@@ -138,8 +112,7 @@ impl AppState {
     /// Builds a fresh record for an app.
     pub fn new(app: AppId, name: &str, install_dir: &str) -> Self {
         let mut state = Object::new();
-        // Written in the order Valve writes them, so a diff against a
-        // steamcmd-made file shows only values.
+        // Written in Valve's order, so a diff against a steamcmd file shows only values.
         state.set_str("appid", app.to_string());
         state.set_str("Universe", "1");
         state.set_str("name", name);
@@ -160,12 +133,7 @@ impl AppState {
         Self { document }
     }
 
-    /// Writes the record, creating `steamapps/` if needed.
-    ///
-    /// Written to a temporary file and renamed, so a crash midway leaves the
-    /// previous record intact rather than a half-written one. A truncated
-    /// appmanifest is worse than a stale one: the Steam client treats it as a
-    /// broken install.
+    /// Writes via temp file and rename, so a crash cannot truncate the record.
     pub fn write(&self, root: &Path, app: AppId) -> Result<(), StateError> {
         let path = Self::path_for(root, app);
         if let Some(parent) = path.parent() {
@@ -178,12 +146,10 @@ impl AppState {
         Ok(())
     }
 
-    /// The `AppState` block.
     fn state(&self) -> Option<&Object> {
         self.document.get_object("AppState")
     }
 
-    /// The `AppState` block, for modification.
     fn state_mut(&mut self) -> Object {
         self.document
             .get_object("AppState")
@@ -191,7 +157,6 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Replaces the `AppState` block.
     fn put_state(&mut self, state: Object) {
         self.document.set("AppState", Value::Object(state));
     }
@@ -257,9 +222,6 @@ impl AppState {
     }
 
     /// The manifest a depot is installed at, if it is.
-    ///
-    /// This is the question a delta update asks: same id means nothing to do,
-    /// a different id means diff the two manifests, absent means fetch it all.
     #[must_use]
     pub fn installed_manifest(&self, depot: DepotId) -> Option<ManifestId> {
         self.installed_depots().get(&depot).map(|d| d.manifest)
@@ -286,9 +248,6 @@ impl AppState {
     }
 
     /// Removes a depot from the record.
-    ///
-    /// Used when an app stops shipping one: leaving it listed would make the
-    /// next update think content is present that is not.
     pub fn remove_depot(&mut self, depot: DepotId) {
         let mut state = self.state_mut();
         let Some(existing) = state.get_object("InstalledDepots") else {
@@ -344,9 +303,7 @@ mod tests {
 
     #[test]
     fn steamcmds_own_record_round_trips_byte_for_byte() {
-        // The gate. tapline shares this file with the Steam client and every
-        // panel that greps it; a reformatted rewrite is a spurious diff for all
-        // of them.
+        // The gate: a reformatted rewrite is a spurious diff for every tool.
         assert_eq!(valheim().to_string(), REAL);
     }
 
@@ -374,8 +331,6 @@ mod tests {
 
     #[test]
     fn a_record_for_a_different_app_is_refused() {
-        // The install directory holds someone else's app; writing over it would
-        // be worse than failing.
         assert_eq!(
             AppState::parse(REAL, AppId(232_250)),
             Err(StateError::WrongApp {
@@ -397,17 +352,14 @@ mod tests {
         let written = state.to_string();
         // The other depot is untouched.
         assert!(written.contains("\"6403079453713498174\""));
-        // The updated one carries its new values.
         assert!(written.contains("\"1111111111111111111\""));
         assert!(written.contains("\"2000000000\""));
-        // And nothing else moved: same line count, same field order.
+        // Nothing else moved: same line count, same field order.
         assert_eq!(written.lines().count(), REAL.lines().count());
     }
 
     #[test]
     fn fields_this_crate_does_not_model_survive_a_rewrite() {
-        // Valve adds fields. An install that lost ScheduledAutoUpdate on every
-        // update would be quietly degrading a file other tools read.
         let mut state = valheim();
         state.mark_installed(22_000_000, 1_756_871_901, 1_787_752_999);
 
@@ -444,8 +396,6 @@ mod tests {
 
     #[test]
     fn removing_a_depot_takes_it_out_of_the_record() {
-        // An app that stops shipping a depot must not leave it listed, or the
-        // next update believes content is present that is not.
         let mut state = valheim();
         state.remove_depot(DepotId(1006));
 
@@ -458,7 +408,6 @@ mod tests {
 
     #[test]
     fn a_missing_record_is_not_an_error() {
-        // A fresh install has none, and that is not a failure.
         let root = std::path::Path::new("/nonexistent/install/root");
         assert_eq!(AppState::read(root, AppId(1)), Ok(None));
     }

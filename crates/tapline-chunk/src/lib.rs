@@ -1,50 +1,4 @@
 //! Steam's chunk containers.
-//!
-//! Every byte of depot content arrives wrapped in one of two containers, and
-//! which one is decided per chunk rather than per depot:
-//!
-//! * **`VZ`** — LZMA, footer magic `zv`.
-//! * **`VSZ`** — zstd, footer magic `zsv`.
-//! * **ZIP** — `PK\x03\x04`, one deflated entry named `z`, no Steam footer.
-//!
-//! Both were read off real chunks rather than from a description, and both
-//! carry the CRC-32 of their decompressed bytes twice, in the header and again
-//! in the footer.
-//!
-//! # A measurement that was right and a conclusion that was wrong
-//!
-//! An earlier probe fetched three chunks from Team Fortress 2's smallest depot,
-//! saw `VZ` all three times, and concluded that nothing serves the zstd
-//! container — so the zstd decoder was left unwritten and an unrecognised magic
-//! was made to name itself in the error.
-//!
-//! A full Valheim install then failed with `expected a VZ container, found
-//! magic "VS"`. Sampling that depot properly gives **32 `VSZ` to every 8 `VZ`**:
-//! zstd is the majority, and the original sample was three chunks of one small
-//! depot, which is not the same thing as a depot.
-//!
-//! The measurement was sound and the inference from it was not. What made the
-//! difference in the end was the error naming the bytes it found instead of
-//! saying "malformed chunk" — five seconds to diagnose instead of an afternoon.
-//! That is the argument for reporting unknown input rather than skipping it,
-//! stated by example.
-//!
-//! # And then it happened again
-//!
-//! Installing Garry's Mod Dedicated Server failed outright on `PK\x03\x04`: a
-//! third container, plain ZIP. The probe that had found `VSZ` sampled depot
-//! 1006 — which contains no ZIP chunks at all — and stopped there. A census
-//! across every GMod depot afterwards:
-//!
-//! | depot | ZIP | VSZ | VZ  |
-//! |-------|-----|-----|-----|
-//! | 1006  |   0 |  32 |   8 |
-//! | 4021  |  14 |  36 |  30 |
-//! | 4023  |  18 |  53 |  49 |
-//!
-//! Twice now, a sample of one depot has given a confident wrong answer about a
-//! whole app. All three containers coexist within a single depot, so the choice
-//! is per chunk and the dispatch below cannot be hoisted out of the loop.
 
 mod vsz;
 mod vz;
@@ -52,11 +6,7 @@ mod zip;
 
 use std::fmt;
 
-/// The largest chunk we will decompress.
-///
-/// Steam's chunks are 1 MiB uncompressed. The cap is set well above that so a
-/// change in Valve's chunker does not break downloads, and far below anything
-/// that would trouble a small node.
+/// The largest chunk we will decompress; Steam's are 1 MiB uncompressed.
 pub const MAX_CHUNK: usize = 16 * 1024 * 1024;
 
 /// What went wrong decoding a chunk container.
@@ -64,10 +14,7 @@ pub const MAX_CHUNK: usize = 16 * 1024 * 1024;
 pub enum ChunkError {
     /// Too short to be a container.
     Truncated,
-    /// A container magic this build does not know.
-    ///
-    /// Carries the bytes found. This is the error that turned a mystery into a
-    /// five-second diagnosis when `VSZ` first appeared.
+    /// A container magic this build does not know; carries the bytes found.
     UnknownContainer(Vec<u8>),
     /// A container version this build does not know.
     UnsupportedVersion(u8),
@@ -146,10 +93,7 @@ impl fmt::Display for ChunkError {
 
 impl std::error::Error for ChunkError {}
 
-/// Decodes a chunk, whichever container it uses.
-///
-/// The input is the *decrypted* container: chunks arrive AES-encrypted and are
-/// decrypted with the depot key before reaching here.
+/// Decodes a decrypted chunk, whichever container it uses.
 pub fn decode(input: &[u8]) -> Result<Vec<u8>, ChunkError> {
     decode_with_limit(input, MAX_CHUNK)
 }
@@ -161,17 +105,9 @@ pub fn decode_with_limit(input: &[u8], max_output: usize) -> Result<Vec<u8>, Chu
     Ok(out)
 }
 
-/// Decodes into a buffer the caller owns.
-///
-/// The form a download uses: a chunk's plaintext is a megabyte, and allocating
-/// one per chunk only to free it is what drives an allocator to grow its heap
-/// and hold on to it. Reusing a buffer keeps peak memory at the number of
-/// chunks in flight rather than at whatever the allocator decided to retain.
+/// Decodes into a buffer the caller owns, for reuse across chunks.
 pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
-    // VSZ is checked first: its magic is three bytes and VZ's is two, so
-    // checking VZ first would match the "VZ" inside... nothing, in fact — the
-    // two magics differ at byte 1 — but ordering by specificity keeps that true
-    // if a third container ever appears.
+    // Ordered by magic specificity: VSZ's three bytes before VZ's two.
     if vsz::matches(input) {
         return vsz::decode_into(input, max_output, out);
     }
@@ -179,8 +115,6 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
         return vz::decode_into(input, max_output, out);
     }
     if zip::matches(input) {
-        // The rarest container by far, and miniz_oxide has no decode-into-a-Vec
-        // form, so this one still allocates and copies.
         let decoded = zip::decode(input, max_output)?;
         out.clear();
         out.extend_from_slice(&decoded);
@@ -192,7 +126,6 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
     ))
 }
 
-/// Reads a little-endian `u32`, shared by both containers.
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     Some(u32::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
@@ -210,8 +143,6 @@ mod tests {
 
     #[test]
     fn both_containers_decode_through_the_same_entry_point() {
-        // A caller does not know which container a chunk uses until it arrives,
-        // so dispatch has to happen here rather than at the call site.
         let lzma = decode(VZ_CHUNK).expect("the VZ chunk must decode");
         assert_eq!(lzma.len(), 333);
         assert!(lzma.starts_with(b"whitelist"));
@@ -222,8 +153,6 @@ mod tests {
 
     #[test]
     fn an_unknown_container_names_the_bytes_it_found() {
-        // The property that turned a mystery into a five-second diagnosis when
-        // VSZ first appeared in a real install.
         let error = decode(b"XYZQand then some").expect_err("must refuse");
         let rendered = error.to_string();
         assert!(
@@ -243,9 +172,7 @@ mod tests {
 
     #[test]
     fn a_low_limit_refuses_a_chunk_rather_than_allocating() {
-        // A limit below what the chunk decodes to. The fixture is 61 bytes, so
-        // the limit has to be smaller than that rather than a round number
-        // chosen when the fixture was a megabyte.
+        // The limit must be below the fixture's 61 decoded bytes.
         assert!(matches!(
             decode_with_limit(VSZ_CHUNK, 8),
             Err(ChunkError::TooLarge { .. })

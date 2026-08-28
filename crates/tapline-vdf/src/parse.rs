@@ -1,10 +1,4 @@
-//! The KeyValues text parser.
-//!
-//! Written against what Steam actually emits and what steamcmd actually
-//! accepts, which is a smaller language than KeyValues in full: no `#include`,
-//! no `#base`, no macro expansion. Those appear in game content files, never in
-//! the install state we share with the client, and a parser that silently
-//! ignored an `#include` would be reporting a file's contents incorrectly.
+//! The KeyValues text parser: no `#include`, no `#base`, no macros.
 
 use crate::{MAX_DEPTH, Object, Value};
 use std::fmt;
@@ -12,8 +6,7 @@ use std::fmt;
 /// What went wrong reading a KeyValues file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VdfError {
-    /// The file ended inside a quoted string, a block, or between a key and its
-    /// value.
+    /// The file ended inside a string, a block, or before a value.
     UnexpectedEnd,
     /// A closing brace with no matching opening brace.
     UnmatchedBrace {
@@ -31,9 +24,6 @@ pub enum VdfError {
         offset: usize,
     },
     /// A directive this parser does not implement, such as `#include`.
-    ///
-    /// Rejected rather than skipped: skipping one would mean reporting the
-    /// file's contents as something other than what it says.
     UnsupportedDirective {
         /// The directive as written.
         directive: String,
@@ -60,14 +50,10 @@ impl fmt::Display for VdfError {
 
 impl std::error::Error for VdfError {}
 
-/// One lexical item.
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
-    /// A quoted or bare string.
     Str(String),
-    /// `{`
     Open,
-    /// `}`
     Close,
 }
 
@@ -88,11 +74,7 @@ impl<'a> Lexer<'a> {
         self.input.get(self.pos).copied()
     }
 
-    /// Skips whitespace, `//` line comments, and `[$CONDITION]` platform tags.
-    ///
-    /// Conditionals are dropped rather than evaluated. They gate content for
-    /// other platforms in Valve's own files; nothing tapline reads uses them,
-    /// and a wrong evaluation would silently change what a file says.
+    /// Skips whitespace, `//` comments, and `[$CONDITION]` tags (dropped, not evaluated).
     fn skip_trivia(&mut self) {
         loop {
             match self.peek() {
@@ -118,14 +100,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Reads a quoted string, resolving the escapes Valve's writer emits.
-    ///
-    /// Bytes are accumulated and decoded as UTF-8 at the end, rather than
-    /// converted one at a time. Per-byte conversion would map each byte to its
-    /// Latin-1 code point and split every multi-byte character in two, which
-    /// silently corrupts app names, Workshop titles and any install directory
-    /// with an accent in it — and only on the second write, since the first
-    /// parse of a bare token got it right.
+    /// Decoded as UTF-8 at the end: per-byte conversion would split multi-byte characters.
     fn read_quoted(&mut self) -> Result<String, VdfError> {
         self.pos += 1; // opening quote
         let mut out: Vec<u8> = Vec::new();
@@ -141,9 +116,7 @@ impl<'a> Lexer<'a> {
                         b'n' => b'\n',
                         b't' => b'\t',
                         b'r' => b'\r',
-                        // Anything else stands for itself, including `\` and
-                        // `"`. Valve's reader does the same, which matters for
-                        // Windows paths written without doubling.
+                        // Anything else stands for itself, matching Valve's reader.
                         other => other,
                     });
                 }
@@ -152,7 +125,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Reads a bare token: everything up to whitespace, a brace, or a quote.
     fn read_bare(&mut self) -> String {
         let start = self.pos;
         while let Some(b) = self.peek() {
@@ -161,8 +133,7 @@ impl<'a> Lexer<'a> {
             }
             self.pos += 1;
         }
-        // The slice is between two positions this loop produced, so it is in
-        // bounds; the fallback keeps the no-panic rule without an `expect`.
+        // In bounds by construction; the fallback keeps the no-panic rule.
         self.input
             .get(start..self.pos)
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
@@ -192,17 +163,14 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// Parses a KeyValues document.
-///
-/// The result holds the document's top-level pairs. An ACF file has exactly one
-/// — `"AppState" { ... }` — but nothing here requires that.
+/// Parses a KeyValues document into its top-level pairs.
 pub fn parse(input: &str) -> Result<Object, VdfError> {
     let mut lexer = Lexer::new(input);
     let object = parse_object(&mut lexer, 0, true)?;
     Ok(object)
 }
 
-/// Parses pairs until the matching `}` (or end of input, at the top level).
+/// Parses pairs until the matching `}`, or end of input at the top level.
 fn parse_object(lexer: &mut Lexer<'_>, depth: u32, top_level: bool) -> Result<Object, VdfError> {
     let mut object = Object::new();
 
@@ -262,7 +230,6 @@ mod tests {
 
     #[test]
     fn key_lookup_ignores_case() {
-        // Different Steam versions have written both spellings of this field.
         let obj = parse("\"a\" { \"AppID\" \"7\" }").expect("must parse");
         let a = obj.get_object("A").expect("must find a");
         assert_eq!(a.get_str("appid"), Some("7"));
@@ -270,7 +237,6 @@ mod tests {
 
     #[test]
     fn duplicate_keys_are_all_kept() {
-        // KeyValues is a list, not a map, and Valve does emit repeats.
         let obj = parse("\"k\" \"1\" \"k\" \"2\"").expect("must parse");
         assert_eq!(obj.len(), 2);
         assert_eq!(obj.get_str("k"), Some("1"));
@@ -293,16 +259,13 @@ mod tests {
 
     #[test]
     fn bare_tokens_are_accepted() {
-        // Valve's reader accepts unquoted keys and values; some hand-edited
-        // server configs in the wild use them.
+        // Some hand-edited server configs in the wild use bare tokens.
         let obj = parse("key value").expect("must parse");
         assert_eq!(obj.get_str("key"), Some("value"));
     }
 
     #[test]
     fn missing_and_non_numeric_fields_report_none_not_zero() {
-        // A missing size and a size of zero mean different things to a
-        // downloader, so they must not collapse into the same value.
         let obj = parse("\"size\" \"not a number\"").expect("must parse");
         assert_eq!(obj.get_u64("size"), None);
         assert_eq!(obj.get_u64("absent"), None);
@@ -325,8 +288,6 @@ mod tests {
 
     #[test]
     fn unsupported_directives_are_refused_rather_than_ignored() {
-        // Skipping an #include would mean reporting the file as saying
-        // something other than what it says.
         assert!(matches!(
             parse("#include \"other.vdf\"\n\"k\" \"v\""),
             Err(VdfError::UnsupportedDirective { .. })
@@ -347,11 +308,7 @@ mod tests {
 
     #[test]
     fn non_ascii_values_survive_being_quoted() {
-        // Found by the fuzzer: reading a quoted string byte by byte mapped each
-        // byte to its Latin-1 code point, so every multi-byte character split in
-        // two. It only showed up on the *second* pass, because the first parse
-        // read the value as a bare token and got it right — which is exactly how
-        // an app name would rot one rewrite at a time.
+        // Fuzzer find: per-byte Latin-1 decoding split multi-byte characters on rewrite.
         let obj = parse("//+\no\n\u{310}").expect("must parse");
         let round_tripped = parse(&obj.to_string()).expect("must reparse");
         assert_eq!(obj, round_tripped);

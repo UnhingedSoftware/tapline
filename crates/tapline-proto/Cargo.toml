@@ -11,8 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# No build script and no protobuf library. The generated Rust is committed, which
-# is the whole reason a consumer of this workspace never sees prost or protoc.
+# The generated Rust is committed; no build script, no protoc, no prost.
 [dependencies]
 tapline-wire = { workspace = true }
 

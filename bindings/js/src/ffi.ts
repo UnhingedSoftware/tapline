@@ -1,20 +1,4 @@
-/**
- * Loading the shared library, in whichever runtime we happen to be.
- *
- * The three runtimes disagree about everything except that they can call a C
- * function, so this module is the only place that knows which one we are in.
- * Everything above it sees one `Ffi` object.
- *
- * The important difference is how `tapline_job_next` is called. It blocks until
- * an event arrives or its timeout elapses:
- *
- * - Deno marks it `nonblocking`, which runs it on a thread pool and returns a
- *   real promise. No polling, no latency.
- * - Node's koffi has `.async()`, same idea.
- * - Bun's FFI is synchronous only, so it is called with a zero timeout and
- *   polled. That costs a wake-up every few milliseconds during a download and
- *   nothing at all when idle.
- */
+/** Loading the shared library, in whichever runtime we happen to be. */
 
 /** How the library is reached, regardless of runtime. */
 export interface Ffi {
@@ -45,7 +29,6 @@ export interface Ffi {
     extensions: string | null,
     stream: number,
   ): bigint;
-  /** Searches an app's Workshop. */
   search(
     app: number,
     text: string | null,
@@ -66,9 +49,7 @@ export interface Ffi {
     page: number,
     countOnly: number,
   ): bigint;
-  /** Signs in with a QR code, emitting the code and its refreshes. */
   qrLogin(timeoutSecs: number): bigint;
-  /** Runs a pipeline given in its text form. */
   pipeline(
     app: number,
     item: bigint,
@@ -84,9 +65,7 @@ export interface Ffi {
   lastError(): string;
   /** Sets the process-wide chunk budget. Must precede the first job. */
   setTotalConcurrency(chunks: number): number;
-  /** The process-wide chunk budget. */
   totalConcurrency(): number;
-  /** How much of it is free right now. */
   availableConcurrency(): number;
   /** True when `next` genuinely suspends rather than polling. */
   readonly nativeAsync: boolean;
@@ -99,18 +78,11 @@ export const DONE = 2;
 export const BUFFER_TOO_SMALL = -1;
 export const BAD_ARGUMENT = -2;
 
-/** Most events are well under this; the buffer grows if one is not. */
-/// How long to wait between polls on a synchronous FFI.
-///
-/// Bun's FFI and Node's built-in one are both synchronous, so a blocking call
-/// would hold the only thread that can resolve the promise. Zero timeout plus a
-/// yield is the honest translation: it never blocks, and costs one wake-up per
-/// tick. Deno's is nonblocking and does not need this.
+// Poll interval for the synchronous FFIs, which cannot block.
 const POLL_MS = 4;
 
 const INITIAL_BUFFER = 4096;
 
-/** NUL-terminated UTF-8, which is what a `const char *` means. */
 function cstring(value: string): Uint8Array {
   const bytes = new TextEncoder().encode(value);
   const out = new Uint8Array(bytes.length + 1);
@@ -118,7 +90,6 @@ function cstring(value: string): Uint8Array {
   return out;
 }
 
-/** An environment variable, in whichever runtime this is. */
 function getEnv(key: string): string | undefined {
   // deno-lint-ignore no-explicit-any
   const g = globalThis as any;
@@ -127,7 +98,6 @@ function getEnv(key: string): string | undefined {
   return undefined;
 }
 
-/** The platform, spelled the way Node spells it. */
 function getPlatform(): string {
   // deno-lint-ignore no-explicit-any
   const g = globalThis as any;
@@ -138,7 +108,6 @@ function getPlatform(): string {
   return g.process?.platform ?? "linux";
 }
 
-/** The library's filename on this platform. */
 function libraryName(): string {
   const platform = getPlatform();
   if (platform === "darwin") return "libtapline_ffi.dylib";
@@ -146,13 +115,7 @@ function libraryName(): string {
   return "libtapline_ffi.so";
 }
 
-/**
- * Everywhere the shared library might be, best first.
- *
- * Returning candidates rather than one path is deliberate: "library not found"
- * with no indication of where it was looked for is the least useful error a
- * binding can produce, and it is the first thing every user of one hits.
- */
+/** Everywhere the shared library might be, best first. */
 export function libraryCandidates(): string[] {
   const name = libraryName();
   const candidates: string[] = [];
@@ -162,15 +125,11 @@ export function libraryCandidates(): string[] {
 
   const here = moduleDirectory();
   if (here) {
-    // Beside the package, where a prebuilt or locally built copy would sit.
     candidates.push(`${here}/../${name}`);
-    // And the workspace target directory, which is where it is while working
-    // on tapline itself — the single most common source of this error.
     candidates.push(`${here}/../../../target/release/${name}`);
     candidates.push(`${here}/../../../target/debug/${name}`);
   }
 
-  // Last: let the platform loader search its own paths.
   candidates.push(name);
   return candidates;
 }
@@ -184,7 +143,6 @@ export async function resolveLibraryPath(): Promise<string> {
   return candidates[candidates.length - 1] ?? libraryName();
 }
 
-/** This module's directory, for finding the library relative to it. */
 function moduleDirectory(): string | undefined {
   const url = import.meta.url;
   if (!url.startsWith("file:")) return undefined;
@@ -193,7 +151,6 @@ function moduleDirectory(): string | undefined {
   return cut === -1 ? undefined : path.slice(0, cut);
 }
 
-/** Whether a path exists. `node:fs` is the one API all three runtimes share. */
 async function fileExists(path: string): Promise<boolean> {
   try {
     const fs = await import("node:fs");
@@ -237,7 +194,6 @@ export async function load(path?: string): Promise<Ffi> {
   }
 }
 
-/** Reads a job pointer written through an out-parameter. */
 function readJobPointer(
   out: BigUint64Array,
   code: number,
@@ -245,9 +201,6 @@ function readJobPointer(
   lastError?: () => string,
 ): bigint {
   if (code !== OK) {
-    // The library already recorded why. Reporting only the number turns
-    // "unknown extension \"bogus\"" into "code -2", which tells nobody
-    // anything.
     const detail = lastError?.() ?? "";
     throw new Error(detail ? `${what}: ${detail}` : `${what} failed (code ${code})`);
   }
@@ -293,8 +246,6 @@ async function loadDeno(path: string): Promise<Ffi> {
     tapline_job_next: {
       parameters: ["pointer", "u32", "buffer", "usize", "buffer"],
       result: "i32",
-      // The whole reason this design uses a queue instead of callbacks: Deno
-      // turns a blocking C call into a promise for free, on its own threads.
       nonblocking: true,
     },
     tapline_job_cancel: { parameters: ["pointer"], result: "void" },
@@ -518,10 +469,7 @@ async function loadBun(path: string): Promise<Ffi> {
   });
 
 
-  // Bun wants pointers as numbers and rejects a BigInt outright — the out
-  // parameter hands one back as a BigUint64Array element, so it is converted
-  // here rather than in the shared code. Exact: Linux user-space addresses are
-  // below 2^47, well inside what a double represents without loss.
+  // Bun wants number pointers; addresses stay below 2^47, so Number is exact.
   const asBunPointer = (job: bigint) => Number(job);
 
   const lastError = (): string => {
@@ -658,13 +606,11 @@ async function loadBun(path: string): Promise<Ffi> {
 // --- Node ------------------------------------------------------------------
 
 async function loadNode(path: string): Promise<Ffi> {
-  // Node 26.1 has an FFI of its own. It needs --experimental-ffi, so it is not
-  // always there even on a new enough Node, and koffi remains the fallback.
+  // Node's own FFI needs --experimental-ffi; koffi is the fallback.
   try {
     return await loadNodeBuiltin(path);
   } catch (cause) {
     if (cause instanceof Error && cause.message.includes("tapline")) throw cause;
-    // Anything else — no node:ffi, no flag — means try koffi.
   }
 
   let koffi: typeof import("koffi");
@@ -855,13 +801,7 @@ async function loadNode(path: string): Promise<Ffi> {
   };
 }
 
-/**
- * Node's own FFI, from 26.1 behind `--experimental-ffi`.
- *
- * Synchronous only — there is no equivalent of koffi's `.async()` — so events
- * are polled with a zero timeout and a sleep between, exactly as Bun is. A
- * blocking call here would hold the event loop for the whole timeout.
- */
+/** Node's own FFI, from 26.1 behind `--experimental-ffi`; synchronous only. */
 async function loadNodeBuiltin(path: string): Promise<Ffi> {
   const ffi = await import("node:ffi");
   const { dlopen, toString: ptrToString, toBuffer } = ffi as unknown as {
@@ -918,8 +858,6 @@ async function loadNodeBuiltin(path: string): Promise<Ffi> {
     return new TextDecoder().decode(out);
   };
 
-  // The job handle comes back through an out pointer; read it as a u64 and
-  // hand it back as one, the same shape the other two backends use.
   const jobOut = (): { slot: Uint8Array; read: () => bigint } => {
     const raw = new BigUint64Array(1);
     const slot = new Uint8Array(raw.buffer);
@@ -981,8 +919,7 @@ async function loadNodeBuiltin(path: string): Promise<Ffi> {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         const len = new BigUint64Array(1);
-        // Zero timeout: this call is synchronous, and blocking in it would
-        // hold the event loop for the whole wait.
+        // Zero timeout: blocking here would hold the event loop.
         const code = Number(functions.tapline_job_next(
           job, 0, buffer, BigInt(buffer.length), new Uint8Array(len.buffer),
         ));

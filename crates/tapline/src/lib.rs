@@ -1,9 +1,5 @@
 //! Install Steam apps.
 //!
-//! The crate other projects link. Everything below it — the CM session, PICS,
-//! the manifest format, the chunk pipeline — is assembled here into the two
-//! operations a caller actually wants:
-//!
 //! ```no_run
 //! # async fn example() -> Result<(), tapline::InstallError> {
 //! use tapline::{Session, InstallOptions};
@@ -20,13 +16,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! # Why `plan` is separate
-//!
-//! A scheduler placing an install on a node wants the byte cost before it
-//! commits the disk, and an operator wants to know that a "20 GB update" is
-//! really 200 MB of changed chunks. steamcmd cannot answer either question
-//! without doing the download.
 
 mod browse;
 mod delta;

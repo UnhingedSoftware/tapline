@@ -13,8 +13,7 @@ rust-version.workspace = true
 
 [lib]
 name = "tapline_ffi"
-# cdylib for the JS runtimes, which all load a plain shared library; staticlib
-# so a C or Rust host can link the same surface without a second artifact.
+# cdylib for the JS runtimes; staticlib for C hosts.
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
@@ -24,18 +23,12 @@ tapline-gmad = { workspace = true }
 tapline-pipe = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
-# Not `workspace = true`. The workspace forbids unsafe, and `forbid` cannot be
-# lifted by an inner `allow` — which is the point of it. A C ABI cannot be
-# written without raw pointers, so this crate opts out of that one lint by
-# hand and restates every other guarantee rather than inheriting a weakened
-# set. The other seventeen crates keep `forbid` untouched.
+# The workspace `forbid(unsafe_code)` cannot be lifted, so lints are restated here.
 [lints.rust]
 unsafe_code = "allow"
 missing_docs = "warn"
 
 [lints.clippy]
-# A panic here is a panic inside someone's Deno or Node process, across an FFI
-# boundary that cannot unwind. These matter more here than anywhere else.
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

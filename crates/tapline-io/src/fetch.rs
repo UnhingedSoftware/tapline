@@ -1,9 +1,4 @@
-//! The HTTP side of the seam.
-//!
-//! Narrow on purpose: the CDN needs `GET`, optionally with a byte range, and
-//! nothing else. A general HTTP trait would be a larger thing to implement for a
-//! test double and would invite the rest of the workspace to reach for verbs the
-//! protocol never uses.
+//! The HTTP side of the seam: `GET`, optionally ranged, nothing else.
 
 use std::fmt;
 use std::future::Future;
@@ -15,9 +10,7 @@ pub struct Request {
     pub url: String,
     /// Extra request headers, as name/value pairs.
     pub headers: Vec<(String, String)>,
-    /// An optional byte range, inclusive of both ends.
-    ///
-    /// Used to resume a partially fetched chunk rather than starting over.
+    /// An optional byte range, inclusive of both ends, for resuming a chunk.
     pub range: Option<(u64, u64)>,
 }
 
@@ -47,12 +40,7 @@ impl Request {
     }
 }
 
-/// A response.
-///
-/// The body is held in memory because every body tapline fetches is one chunk —
-/// a megabyte at the outside — and streaming it would buy nothing but a more
-/// complicated trait. Manifests are larger but still bounded, and are fetched
-/// once per depot.
+/// A response, body in memory; everything tapline fetches is bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     /// The HTTP status code.
@@ -84,18 +72,12 @@ impl Response {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
     /// The connection failed, timed out, or was reset.
-    ///
-    /// Distinct from an HTTP error status because the host pool treats them
-    /// differently: a transport failure demotes the host, a 404 does not.
     Transport(String),
     /// The URL could not be parsed, or used a scheme we do not speak.
     InvalidUrl(String),
     /// The response was not valid HTTP.
     MalformedResponse(String),
     /// The body was larger than the caller said it would accept.
-    ///
-    /// A CDN that returns a gigabyte for a one-megabyte chunk is either broken
-    /// or hostile, and either way the download must not follow it into swap.
     BodyTooLarge {
         /// The cap that was exceeded.
         limit: u64,
@@ -115,18 +97,9 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
-/// Something that can perform HTTP `GET`s.
-///
-/// Takes `&self` so one fetcher backs many concurrent requests — the connection
-/// pool lives inside the implementation, which is where the per-host limits and
-/// keep-alive reuse belong.
+/// Something that can perform HTTP `GET`s; `&self` backs concurrent requests.
 pub trait Fetch: Send + Sync {
-    /// Performs the request.
-    ///
-    /// `limit` caps the body size. It is a parameter rather than a property of
-    /// the fetcher because the caller is the only one who knows how big the
-    /// thing it asked for should be: a chunk's size comes from the manifest, so
-    /// an over-long response is detectable before it is fully read.
+    /// Performs the request; `limit` caps the body, and only the caller knows it.
     fn get(
         &self,
         request: Request,

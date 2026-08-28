@@ -1,34 +1,8 @@
-//! The KeyValues writer.
-//!
-//! This reproduces Valve's layout exactly rather than picking a tidier one,
-//! because the files it writes are shared with the Steam client, steamcmd and
-//! every host panel that has ever grepped an `appmanifest`. A file that came
-//! back reformatted would still parse, and would still show up as a diff to
-//! everyone watching those files for changes.
-//!
-//! Valve's layout is:
-//!
-//! ```text
-//! "AppState"
-//! {
-//! →   "appid"→→"232250"
-//! →   "InstalledDepots"
-//! →   {
-//! →   →   "232251"
-//! →   →   {
-//! →   →   →   "manifest"→→"3005584029853244745"
-//! →   →   }
-//! →   }
-//! }
-//! ```
-//!
-//! — tab per level of indent, two tabs between a key and its string value, and
-//! a nested block's brace on its own line at the key's indent.
+//! The KeyValues writer, reproducing Valve's exact layout byte for byte.
 
 use crate::{Object, Value};
 use std::fmt;
 
-/// Writes `object`'s pairs at `depth` levels of indentation.
 pub(crate) fn write_object(
     f: &mut fmt::Formatter<'_>,
     object: &Object,
@@ -65,12 +39,7 @@ fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
     Ok(())
 }
 
-/// Writes a quoted string, escaping only what would otherwise break the quoting.
-///
-/// Backslash and double quote are escaped. Tabs and newlines inside a value are
-/// left as literal bytes, which is what Valve writes and what its reader accepts
-/// — escaping them would produce a file that differs from the one Steam wrote
-/// for the same content.
+/// Escapes only `\` and `"`; tabs and newlines stay literal, matching Valve.
 fn write_quoted(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")?;
     for ch in s.chars() {
@@ -87,8 +56,7 @@ fn write_quoted(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 mod tests {
     use crate::{Object, Value, parse};
 
-    /// A real `appmanifest_232250.acf` in Valve's own layout, trimmed to the
-    /// fields that matter. This is the round-trip fixture the M1 gate names.
+    /// A real `appmanifest_232250.acf` in Valve's layout; the M1 round-trip fixture.
     const ACF: &str = "\"AppState\"\n\
 {\n\
 \t\"appid\"\t\t\"232250\"\n\
@@ -115,9 +83,7 @@ mod tests {
 
     #[test]
     fn an_acf_file_round_trips_byte_for_byte() {
-        // The M1 gate. If this ever fails, tapline can no longer share an
-        // install directory with the Steam client without rewriting files it
-        // did not mean to change.
+        // The M1 gate: byte-for-byte sharing with the Steam client.
         let parsed = parse(ACF).expect("the fixture must parse");
         assert_eq!(parsed.to_string(), ACF);
     }
@@ -131,9 +97,6 @@ mod tests {
 
     #[test]
     fn editing_a_field_preserves_every_other_byte() {
-        // Updating an install must rewrite the fields that changed and nothing
-        // else — a reordered or reformatted file is a diff for everyone
-        // watching appmanifests.
         let mut parsed = parse(ACF).expect("must parse");
         let state = match parsed.get("AppState") {
             Some(Value::Object(o)) => o.clone(),
@@ -160,8 +123,6 @@ mod tests {
 
     #[test]
     fn empty_nested_blocks_survive() {
-        // A depot list with no depots is a legal state, and it must not
-        // disappear on rewrite.
         let mut obj = Object::new();
         obj.push("InstalledDepots", Value::Object(Object::new()));
         let text = obj.to_string();

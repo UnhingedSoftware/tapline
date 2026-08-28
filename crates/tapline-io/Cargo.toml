@@ -11,13 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
-# Traits only, no implementations, and therefore no dependencies. This is the
-# crate that keeps `tokio` out of every other crate's graph.
 [dependencies]
 
 [features]
-# In-memory doubles and a runtime-free executor, for testing the protocol
-# without a socket. Off by default so they never reach a production build.
+# In-memory doubles; off by default so they never reach a production build.
 testing = []
 
 [dev-dependencies]

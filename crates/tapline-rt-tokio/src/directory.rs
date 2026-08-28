@@ -1,19 +1,9 @@
-//! Finding a CM to connect to.
-//!
-//! `ISteamDirectory/GetCMListForConnect` is the bootstrap, and it is the one
-//! place tapline uses the WebAPI as a primary path rather than an accelerator —
-//! there is no CM session yet to ask, so there is nothing to fall back to.
-//! Everything afterwards goes over the session.
-//!
-//! The response is JSON. Rather than take a JSON dependency for one endpoint
-//! with three fields we care about, the fields are extracted directly; anything
-//! unexpected yields no servers rather than a wrong one.
+//! Finding a CM via `ISteamDirectory/GetCMListForConnect`, the one WebAPI bootstrap.
 
 use crate::tls::connect_tls;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// The directory host.
 const DIRECTORY_HOST: &str = "api.steampowered.com";
 
 /// A CM the directory offered.
@@ -23,16 +13,11 @@ pub struct CmServer {
     pub endpoint: String,
     /// The datacentre code, useful in a log line when one is misbehaving.
     pub datacentre: String,
-    /// Steam's own load figure, lower being better. Used to order the list.
+    /// Steam's own load figure, lower being better.
     pub load: u32,
 }
 
-/// Fetches CMs for `cell_id`, best first.
-///
-/// Only `websockets` servers are returned. Measured 2026-08-26, the directory
-/// offers 52 of those, 6 `netfilter`, and no TCP at all — `netfilter` is the
-/// Steam Datagram Relay transport, which is a different protocol, so returning
-/// one here would hand the caller an endpoint that cannot speak CM messages.
+/// Fetches CMs for `cell_id`, best first; only `websockets` servers are returned.
 pub async fn cm_list(cell_id: u32) -> io::Result<Vec<CmServer>> {
     let path = format!("/ISteamDirectory/GetCMListForConnect/v1/?cellid={cell_id}&maxcount=64");
     let body = get(DIRECTORY_HOST, &path).await?;
@@ -42,16 +27,14 @@ pub async fn cm_list(cell_id: u32) -> io::Result<Vec<CmServer>> {
     Ok(servers)
 }
 
-/// Extracts the websocket entries from the directory's JSON.
 fn parse_cm_list(body: &str) -> Vec<CmServer> {
     let mut servers = Vec::new();
 
-    // Each entry is a flat object, so splitting on `{` and reading the fields
-    // out of each fragment is enough — and cannot mis-nest, because there is no
-    // nesting to get wrong.
+    // Entries are flat objects, so splitting on braces cannot mis-nest.
     for fragment in body.split('{').skip(1) {
         let fragment = fragment.split('}').next().unwrap_or(fragment);
 
+        // `netfilter` is Steam Datagram Relay, a different protocol.
         if field(fragment, "type").as_deref() != Some("websockets") {
             continue;
         }
@@ -68,7 +51,6 @@ fn parse_cm_list(body: &str) -> Vec<CmServer> {
     servers
 }
 
-/// Reads a string field out of a flat JSON fragment.
 fn field(fragment: &str, name: &str) -> Option<String> {
     let needle = format!("\"{name}\":\"");
     let start = fragment.find(&needle)? + needle.len();
@@ -77,7 +59,6 @@ fn field(fragment: &str, name: &str) -> Option<String> {
     Some(rest.get(..end)?.to_owned())
 }
 
-/// Reads a numeric field out of a flat JSON fragment.
 fn number(fragment: &str, name: &str) -> Option<u32> {
     let needle = format!("\"{name}\":");
     let start = fragment.find(&needle)? + needle.len();
@@ -103,9 +84,7 @@ async fn get(host: &str, path: &str) -> io::Result<String> {
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    // `Connection: close` means the body ends at EOF, so no chunked decoding is
-    // needed here. The CDN client needs keep-alive and gets its own
-    // implementation; this one endpoint does not justify sharing it.
+    // `Connection: close` means the body ends at EOF; no chunked decoding.
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await?;
     let text = String::from_utf8_lossy(&raw).into_owned();
@@ -148,9 +127,6 @@ mod tests {
 
     #[test]
     fn netfilter_servers_are_left_out() {
-        // netfilter is the Steam Datagram Relay transport, a different protocol.
-        // Handing one to CmTransport would produce a connection that cannot
-        // speak CM messages at all.
         let servers = parse_cm_list(REAL_RESPONSE);
         assert!(
             servers.iter().all(|s| !s.endpoint.starts_with("162.254")),
@@ -163,14 +139,11 @@ mod tests {
         assert!(parse_cm_list("").is_empty());
         assert!(parse_cm_list("not json").is_empty());
         assert!(parse_cm_list(r#"{"response":{"serverlist":[{}]}}"#).is_empty());
-        // A websockets entry with no endpoint is unusable, not a default.
         assert!(parse_cm_list(r#"[{"type":"websockets","dc":"x"}]"#).is_empty());
     }
 
     #[test]
     fn an_entry_missing_its_load_sorts_last_rather_than_first() {
-        // Defaulting a missing load to zero would make the least-known server
-        // look like the best one.
         let servers = parse_cm_list(r#"[{"endpoint":"a:443","type":"websockets","dc":"x"}]"#);
         assert_eq!(servers.first().map(|s| s.load), Some(u32::MAX));
     }

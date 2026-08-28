@@ -18,9 +18,7 @@ tapline-vdf = { workspace = true }
 zeroize = { workspace = true }
 
 [features]
-# Persist the refresh token in the OS keyring rather than a file. Off by
-# default: a headless game-server node usually has no keyring daemon, and
-# failing to start because of one would be worse than a 0600 file.
+# Off by default: a headless game-server node usually has no keyring daemon.
 keyring = ["dep:keyring"]
 
 [dependencies.keyring]

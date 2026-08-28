@@ -1,35 +1,8 @@
 //! The pipeline as a value, and its text form.
-//!
-//! A chain is nice to write and cannot cross a C ABI. This is what actually
-//! travels: a small value the chain builds, the bindings encode, and the
-//! runner consumes. An HTTP API would accept the same thing.
-//!
-//! The text form is line-based rather than JSON, because tapline writes JSON
-//! and does not parse it — a parser here would be a parser to get wrong, on
-//! input from outside the process. One directive per line, a keyword and the
-//! rest of the line:
-//!
-//! ```text
-//! decode gma
-//! only lua/**
-//! zip /srv/out.zip
-//! dir /srv/addons
-//! ```
-//!
-//! Paths are taken to the end of the line, so a path with spaces needs no
-//! quoting and there is no quoting to get wrong. A path with a newline in it
-//! cannot be expressed, which is the one thing this form gives up; such a path
-//! would be refused by the filesystem layer anyway.
 
 use tapline_ext::ExtensionError;
 
 /// The formats a pipeline can decode.
-///
-/// One list, checked by [`Pipeline::validate`] and by the dispatchers in the
-/// runner, because they disagreed: the chain grew a `.zip()` and the runner
-/// learned to read ZIP, and this validation still said `gma` or nothing. So
-/// `.zip()` compiled, ran, and failed with "unknown format" from inside the
-/// thing that had just been taught the format.
 pub const KNOWN_FORMATS: [&str; 2] = ["gma", "zip"];
 
 /// Why a pipeline could not be read or used.
@@ -107,7 +80,6 @@ pub enum Sink {
 }
 
 impl Sink {
-    /// Builds the thing that does the writing.
     pub(crate) fn build(&self) -> Result<Box<dyn tapline_gmad::EntrySink + Send>, ExtensionError> {
         match self {
             Self::Directory(path) => Ok(Box::new(tapline_gmad::ToDirectory::new(
@@ -124,25 +96,13 @@ impl Sink {
 /// What to do with a download.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pipeline {
-    /// The format to read it as. Only `gma` today.
+    /// The format to read it as.
     pub format: String,
     /// Globs selecting entries. Empty selects everything.
     pub filters: Vec<String>,
     /// Exact paths to take, whatever the globs say.
-    ///
-    /// Separate from [`Pipeline::filters`] because the two mean different
-    /// things. A pattern that matches nothing is a legitimate answer — you
-    /// asked what was there and nothing was. A named file that is not in the
-    /// archive means the caller is wrong about the archive, and running anyway
-    /// would produce an empty result that looks like success.
     pub picks: Vec<String>,
     /// Where to write. Exactly one.
-    ///
-    /// One destination, not a list. A stream has a direction: writing it to two
-    /// places at once is a fan-out, and a fan-out is a different thing with
-    /// different costs — a second sink that buffers would multiply what the
-    /// first one holds. `Fanout` is still there for anyone who wants that
-    /// explicitly; the chain does not offer it by accident.
     pub sink: Option<Sink>,
 }
 
@@ -213,8 +173,6 @@ impl Pipeline {
         for (index, raw) in text.lines().enumerate() {
             let line = index + 1;
             let trimmed = raw.trim();
-            // Blank lines and comments, so a pipeline can be kept in a file a
-            // person edits.
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
@@ -236,9 +194,7 @@ impl Pipeline {
                 "decode" => pipeline.format = need(value)?,
                 "only" => pipeline.filters.push(need(value)?),
                 "pick" => pipeline.picks.push(need(value)?),
-                // Last one wins rather than accumulating: the pipeline has one
-                // destination, and silently writing to two because a line was
-                // repeated is not something a caller asked for.
+                // Last destination wins: one sink, never silently two.
                 "dir" => pipeline.sink = Some(Sink::Directory(need(value)?)),
                 "zip" => {
                     pipeline.sink = Some(Sink::Zip {
@@ -285,8 +241,6 @@ mod tests {
 
     #[test]
     fn a_second_destination_replaces_the_first() {
-        // One stream, one direction. Accumulating would make a repeated line
-        // silently write to two places.
         let pipeline = Pipeline::parse("decode gma\ndir /a\nzip /b.zip\n").expect("parse");
         assert_eq!(
             pipeline.sink,
@@ -299,7 +253,6 @@ mod tests {
 
     #[test]
     fn a_path_with_spaces_needs_no_quoting() {
-        // The reason the value is the rest of the line rather than a token.
         let pipeline = Pipeline::parse("decode gma\ndir /srv/my addons/here\n").expect("parse");
         assert_eq!(
             pipeline.sink,
@@ -327,8 +280,6 @@ mod tests {
 
     #[test]
     fn a_directive_without_a_value_is_refused() {
-        // Silently accepting `dir` with no path would write to whatever the
-        // empty path resolves to.
         let error = Pipeline::parse("decode gma\ndir\n").expect_err("must refuse");
         assert!(error.to_string().contains("needs a value"), "{error}");
     }
@@ -350,9 +301,6 @@ mod tests {
 
     #[test]
     fn every_known_format_validates() {
-        // The regression this exists for: `.zip()` on the chain produced a
-        // pipeline the runner could decode and this function refused, so the
-        // failure arrived at run time from inside the code that supported it.
         for format in KNOWN_FORMATS {
             let pipeline = Pipeline::parse(&format!("decode {format}\ndir /x\n")).expect("parse");
             assert_eq!(
@@ -374,7 +322,6 @@ mod tests {
 
     #[test]
     fn an_empty_text_parses_to_something_that_does_not_validate() {
-        // Rather than to something that runs and writes nowhere.
         let pipeline = Pipeline::parse("").expect("parse");
         assert_eq!(pipeline.validate(), Err(SpecError::NoSinks));
     }

@@ -1,24 +1,4 @@
 //! A small glob matcher, for selecting entries out of an archive.
-//!
-//! Deliberately not a glob library. It handles the three patterns anyone
-//! actually writes against an addon — `lua/**`, `*.lua`, `materials/*/x.vmt` —
-//! and nothing else, which keeps it to a page of code that can be read in one
-//! sitting rather than a dependency every consumer of the C ABI inherits.
-//!
-//! The rules:
-//!
-//! | pattern | matches |
-//! |---|---|
-//! | `?` | any one character except `/` |
-//! | `*` | any run of characters except `/` |
-//! | `**` | any run, including `/` |
-//!
-//! An archive has no directory entries, so `lua/**` selects files *under*
-//! `lua/` and not a file named `lua`.
-//!
-//! Matching is on the archive's own paths, which use forward slashes, and is
-//! case-insensitive: Workshop authors name files by hand and `Lua/` and `lua/`
-//! are the same directory to a server on Windows.
 
 /// Whether `path` matches `pattern`.
 #[must_use]
@@ -28,10 +8,6 @@ pub fn matches(pattern: &str, path: &str) -> bool {
     matches_from(&pattern, 0, &path, 0)
 }
 
-/// Recursive matcher over char positions.
-///
-/// Written as an explicit recursion rather than a regex build so the `**` case
-/// — the only one that can cross a separator — is visible.
 fn matches_from(pattern: &[char], mut p: usize, path: &[char], mut s: usize) -> bool {
     while p < pattern.len() {
         match pattern.get(p) {
@@ -39,12 +15,10 @@ fn matches_from(pattern: &[char], mut p: usize, path: &[char], mut s: usize) -> 
                 let double = pattern.get(p + 1) == Some(&'*');
                 let next = if double { p + 2 } else { p + 1 };
 
-                // A trailing `**` takes the rest, including separators.
                 if double && next >= pattern.len() {
                     return true;
                 }
-                // Try every split point. `*` may not cross a separator; `**`
-                // may.
+                // Try every split point; `*` may not cross a separator, `**` may.
                 let mut at = s;
                 loop {
                     if matches_from(pattern, next, path, at) {
@@ -114,10 +88,7 @@ impl Patterns {
         &self.patterns
     }
 
-    /// Whether `path` is selected.
-    ///
-    /// An empty set selects everything, so a pipeline with no filter behaves
-    /// exactly as one that never had the concept.
+    /// Whether `path` is selected; an empty set selects everything.
     #[must_use]
     pub fn selects(&self, path: &str) -> bool {
         self.patterns.is_empty() || self.patterns.iter().any(|pattern| matches(pattern, path))
@@ -154,12 +125,6 @@ mod tests {
 
     #[test]
     fn a_directory_pattern_does_not_match_a_file_of_that_name() {
-        // An archive has no directory entries — every entry is a file — so a
-        // path of exactly `lua` is a *file* called `lua`, and `lua/**` asking
-        // for "things under lua/" must not pull it in.
-        //
-        // The first version of this matcher special-cased the opposite, from
-        // general glob intuition rather than from what is in an archive.
         assert!(!matches("lua/**", "lua"));
         assert!(matches("lua/**", "lua/a.lua"));
     }
@@ -174,8 +139,6 @@ mod tests {
 
     #[test]
     fn matching_ignores_case() {
-        // Workshop authors name files by hand, and a server on Windows does not
-        // distinguish these.
         assert!(matches("lua/**", "LUA/Init.lua"));
         assert!(matches("*.VMT", "x.vmt"));
     }
@@ -198,16 +161,12 @@ mod tests {
 
     #[test]
     fn a_pattern_that_matches_nothing_is_not_an_error() {
-        // It is a legitimate thing to ask for, and the result is an empty
-        // archive rather than a failure.
         let none = Patterns::all().with("nothing/**");
         assert!(!none.selects("lua/a.lua"));
     }
 
     #[test]
     fn pathological_patterns_terminate() {
-        // Many stars in a row is the classic way to make a naive matcher take
-        // exponential time. This should return, quickly, either way.
         let start = std::time::Instant::now();
         let _ = matches("**/**/**/**/*x", "a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p");
         assert!(

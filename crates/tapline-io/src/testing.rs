@@ -1,9 +1,4 @@
-//! Test doubles for the IO traits, and a runtime-free executor to drive them.
-//!
-//! Behind the `testing` feature so it never reaches a production build. Every
-//! crate that speaks the protocol uses these to test against recorded bytes
-//! instead of a live Steam connection: no account, no network, no flakiness, and
-//! a failing test points at our framing rather than at Valve having a bad day.
+//! Test doubles for the IO traits, and a runtime-free executor.
 
 use crate::{Sink, Transport};
 use std::future::Future;
@@ -11,11 +6,7 @@ use std::io;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 
-/// Drives a future to completion on the calling thread.
-///
-/// Adequate precisely because these doubles never suspend: there is no real IO
-/// behind them, so every future is ready on its first poll. A double that did
-/// suspend would spin here, which is why none of them do.
+/// Drives a future on the calling thread; the doubles never suspend, so no waker.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = Box::pin(future);
     let waker = Waker::noop();
@@ -28,11 +19,6 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 /// A [`Transport`] that serves queued messages and records what was sent.
-///
-/// This is how a recorded CM exchange is replayed: load the messages Steam sent,
-/// run the real protocol code against them, and assert on what it tried to send
-/// back. No socket, no account, no flakiness — a failing test points at our
-/// framing rather than at Valve having a bad day.
 #[derive(Debug, Default)]
 pub struct MemoryTransport {
     incoming: std::collections::VecDeque<Vec<u8>>,
@@ -58,9 +44,6 @@ impl MemoryTransport {
     }
 
     /// How many queued messages have not been read.
-    ///
-    /// A replay test asserting this is zero proves the code consumed the whole
-    /// recording rather than stopping early and passing by accident.
     #[must_use]
     pub fn unread(&self) -> usize {
         self.incoming.len()
@@ -100,10 +83,6 @@ impl Transport for MemoryTransport {
 }
 
 /// A [`Sink`] that assembles a file in memory.
-///
-/// Used to check that a download lands the right bytes at the right offsets
-/// without touching a disk — which also means a chunk-ordering bug shows up as a
-/// failed assertion rather than as a corrupt game install.
 #[derive(Debug, Default)]
 pub struct MemorySink {
     contents: Mutex<Vec<u8>>,
@@ -117,11 +96,7 @@ impl MemorySink {
         Self::default()
     }
 
-    /// The assembled file.
-    ///
-    /// Returns an empty vector if a previous panic poisoned the lock, since a
-    /// test double has nothing useful to say at that point and must not panic
-    /// again on the way out.
+    /// The assembled file; empty if a previous panic poisoned the lock.
     #[must_use]
     pub fn contents(&self) -> Vec<u8> {
         self.contents
@@ -148,9 +123,7 @@ impl Sink for MemorySink {
             .checked_add(data.len())
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
 
-        // Writing past the end grows the file, filling the gap with zeroes —
-        // the same thing a sparse file does, so a test sees what the disk would
-        // have held.
+        // Growing fills the gap with zeroes, like a sparse file.
         if contents.len() < end {
             contents.resize(end, 0);
         }
@@ -183,8 +156,6 @@ mod tests {
 
     #[test]
     fn out_of_order_writes_assemble_the_same_file() {
-        // Chunks arrive from several CDN hosts at once and land wherever their
-        // offsets say. The order they arrive in must not matter.
         let sink = MemorySink::new();
         block_on(async {
             sink.allocate(6).await.expect("must allocate");
@@ -207,7 +178,6 @@ mod tests {
 
     #[test]
     fn unread_messages_are_visible_to_the_test() {
-        // A replay test that stopped reading early would otherwise pass.
         let mut transport = MemoryTransport::new(vec![vec![1, 2], vec![3, 4]]);
         block_on(async {
             let first = transport.recv().await.expect("must receive");
@@ -218,8 +188,6 @@ mod tests {
 
     #[test]
     fn a_closed_transport_reports_eof_not_an_empty_message() {
-        // An empty Vec would be indistinguishable from a real zero-length
-        // message, and the caller would act on it.
         let mut transport = MemoryTransport::new(Vec::new());
         block_on(async {
             let error = transport.recv().await.expect_err("must report EOF");

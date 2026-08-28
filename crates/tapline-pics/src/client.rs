@@ -1,16 +1,4 @@
-//! Running the PICS exchange over a session.
-//!
-//! Two round trips, in this order:
-//!
-//! 1. `PICSAccessTokenRequest` — many apps refuse product info without a token.
-//!    An app that needs no token is granted one of zero, which is not the same
-//!    as being denied.
-//! 2. `PICSProductInfoRequest` — the document itself.
-//!
-//! Denial is reported rather than worked around. An app in `app_denied_tokens`
-//! is one the signed-in account may not see, and asking for its product info
-//! anyway returns a stub with `missing_token` set — which parses fine and
-//! describes nothing.
+//! The PICS exchange: access token first, then product info.
 
 use crate::AppInfo;
 use std::fmt;
@@ -32,17 +20,9 @@ pub enum PicsError {
     Net(NetError),
     /// Steam does not know this app.
     UnknownApp(AppId),
-    /// The account may not see this app.
-    ///
-    /// Distinct from [`PicsError::UnknownApp`]: the app exists, and a different
-    /// account could read it. For anonymous sessions this usually means the app
-    /// is not anonymously accessible.
+    /// The account may not see this app, though it exists.
     AccessDenied(AppId),
-    /// Steam answered without the document.
-    ///
-    /// Happens when a response is large enough that Steam offers it over HTTP
-    /// instead, which is a path tapline does not need for a single app and does
-    /// not pretend to have taken.
+    /// Steam answered without the document (large responses are offered over HTTP).
     NoBuffer(AppId),
     /// The document did not parse.
     Malformed {
@@ -105,9 +85,7 @@ pub async fn product_info<T: Transport>(
         .find(|candidate| candidate.appid == Some(app.get()))
         .ok_or(PicsError::UnknownApp(app))?;
 
-    // `missing_token` means Steam answered with a stub. It parses fine and says
-    // nothing, so treating it as success would hand the caller an app with no
-    // depots and no explanation.
+    // `missing_token` means a stub that parses fine and describes nothing.
     if entry.missing_token == Some(true) {
         return Err(PicsError::AccessDenied(app));
     }
@@ -120,10 +98,7 @@ pub async fn product_info<T: Transport>(
     })
 }
 
-/// Asks for an app's access token.
-///
-/// Returns `None` when Steam grants no token but does not deny one either, which
-/// is a legitimate state for an app that needs none.
+/// Asks for an app's access token; `None` means none needed, not a denial.
 async fn access_token<T: Transport>(
     session: &mut Session<T>,
     app: AppId,
@@ -147,7 +122,6 @@ async fn access_token<T: Transport>(
         .and_then(|token| token.access_token))
 }
 
-/// Sends a request and waits for its reply, correlated by job id.
 async fn request_response<T: Transport, R: Message>(
     session: &mut Session<T>,
     emsg: EMsg,

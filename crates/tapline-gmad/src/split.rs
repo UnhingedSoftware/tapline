@@ -1,13 +1,4 @@
 //! Turning a stream of archive bytes into a stream of entry events.
-//!
-//! The part both streaming consumers share. Feed it the archive from the start
-//! and it calls a [`EntrySink`] as things happen: the index, then each entry
-//! beginning, its bytes, and its end.
-//!
-//! Splitting this out is what makes the target pluggable. Writing files to a
-//! directory and writing a ZIP are the same problem — read entries in order,
-//! do something with each — differing only in what "something" is, and neither
-//! wants its own copy of a byte-boundary state machine.
 
 use crate::format::{Addon, parse_index};
 use tapline_ext::ExtensionError;
@@ -19,17 +10,11 @@ const HEADER_LIMIT: usize = 1 << 26;
 /// Feeds archive bytes to an [`EntrySink`].
 pub struct Splitter<S: EntrySink> {
     sink: S,
-    /// The header, until the index parses. Dropped afterwards.
     header: Vec<u8>,
-    /// The index, once known.
     addon: Option<Addon>,
-    /// The same index in the format-neutral vocabulary the sinks speak.
     entries: Vec<ArchiveEntry>,
-    /// Which entry is being fed.
     at: usize,
-    /// How much of it is still to come.
     remaining: u64,
-    /// Bytes fed in, for the error that needs it.
     seen: u64,
 }
 
@@ -112,18 +97,14 @@ impl<S: EntrySink> Splitter<S> {
         self.feed(bytes)
     }
 
-    /// Announces the current entry, if there is one.
     fn open(&mut self) -> Result<(), ExtensionError> {
         let Some(entry) = self.entries.get(self.at) else {
             return Ok(());
         };
-        // Cloned so the sink call does not hold a borrow of `self.entries`
-        // while `self.sink` is borrowed mutably.
         let entry = entry.clone();
         self.sink.begin(&entry, self.at)
     }
 
-    /// Closes out entries with no bytes to wait for.
     fn close_empty(&mut self) -> Result<(), ExtensionError> {
         while self.remaining == 0 && self.has_current() {
             self.advance()?;
@@ -135,7 +116,6 @@ impl<S: EntrySink> Splitter<S> {
         self.at < self.entries.len()
     }
 
-    /// Ends the current entry and opens the next.
     fn advance(&mut self) -> Result<(), ExtensionError> {
         self.sink.end()?;
         self.at += 1;
@@ -147,7 +127,6 @@ impl<S: EntrySink> Splitter<S> {
         self.open()
     }
 
-    /// Routes content bytes across however many entries they span.
     fn feed(&mut self, mut bytes: &[u8]) -> Result<(), ExtensionError> {
         while !bytes.is_empty() && self.has_current() {
             let take = (self.remaining as usize).min(bytes.len());
@@ -162,22 +141,15 @@ impl<S: EntrySink> Splitter<S> {
                 self.close_empty()?;
             }
         }
-        // Bytes past the last entry are the archive's trailing checksum, which
-        // belongs to no entry.
+        // Bytes past the last entry are the archive's trailing checksum; no entry owns them.
         Ok(())
     }
 
-    /// Finishes, returning the sink.
-    ///
-    /// A stream that ended early is an error: telling a caller the archive was
-    /// processed when the last entry is short would be false.
-    /// Ends the archive without consuming the splitter.
     fn finish_in_place(&mut self) -> Result<(), ExtensionError> {
         self.check_complete()?;
         self.sink.finish()
     }
 
-    /// Whether every entry was fed.
     fn check_complete(&self) -> Result<(), ExtensionError> {
         let Some(addon) = &self.addon else {
             return Err(ExtensionError::Malformed {
@@ -206,10 +178,7 @@ impl<S: EntrySink> Splitter<S> {
         Ok(())
     }
 
-    /// Finishes, returning the sink.
-    ///
-    /// A stream that ended early is an error: telling a caller the archive was
-    /// processed when the last entry is short would be false.
+    /// Finishes, returning the sink; a stream that ended early is an error.
     pub fn finish(mut self) -> Result<S, ExtensionError> {
         self.finish_in_place()?;
         Ok(self.sink)
@@ -230,10 +199,6 @@ impl<S: EntrySink> Decoder for Splitter<S> {
     }
 }
 
-/// Whether an error means "not enough bytes yet" rather than "wrong".
-///
-/// Not "past the archive": `parse_index` does not perform that check, and a
-/// stream's contents are supposed to be missing while its index is read.
 fn is_incomplete(error: &ExtensionError) -> bool {
     matches!(
         error,
@@ -246,7 +211,6 @@ fn is_incomplete(error: &ExtensionError) -> bool {
 mod tests {
     use super::*;
 
-    /// Records what it was told, so the ordering can be asserted.
     #[derive(Default, Debug)]
     struct Recorder {
         events: Vec<String>,
@@ -325,8 +289,6 @@ mod tests {
 
     #[test]
     fn the_piece_size_does_not_change_the_events() {
-        // A chunked download splits bytes arbitrarily, so the sink must see the
-        // same sequence whatever the split.
         let raw = build(&[("a.txt", b"hello"), ("b/c.txt", b"world!")]);
         let reference = run(&raw, raw.len());
         for piece in [1, 2, 3, 7, 13, 64, 1024] {
@@ -361,8 +323,6 @@ mod tests {
 
     #[test]
     fn a_sink_that_refuses_stops_the_stream() {
-        // A sink rejecting the index — a path validator, say — must prevent any
-        // entry bytes reaching it.
         struct Refuses;
         impl EntrySink for Refuses {
             fn index(&mut self, _entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {

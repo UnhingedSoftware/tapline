@@ -7,18 +7,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# NOT published to crates.io, though it is in the default binary build. This is
-# the one place tapline touches Valve's closed SDK, which its whole design
-# otherwise avoids:
-#
-#  * It links (by runtime dlopen) a proprietary blob, so the pure-Rust,
-#    no-C-toolchain, scratch-container story does not apply to it. The container
-#    is built `--no-default-features` to keep that story true there.
-#  * Keeping it off crates.io keeps SDK-adjacent code from being redistributed
-#    under our name; the binary that uses it ships as a release artifact.
-#
-# Loaded with dlopen, so a machine without the SDK still compiles and runs
-# everything else — this only fails at the point of use, cleanly.
+# Unpublished: the one place tapline touches Valve's closed SDK.
 publish = false
 
 [dependencies]
@@ -26,9 +15,7 @@ tapline-ids = { workspace = true }
 libloading = "0.8"
 
 [lints.rust]
-# The workspace forbids unsafe; a C ABI cannot be called without it, and
-# `forbid` cannot be lifted by an inner `allow`. The same exception tapline-ffi
-# makes, restated rather than inherited.
+# The workspace `forbid(unsafe_code)` cannot be lifted, so lints are restated here.
 unsafe_code = "allow"
 missing_docs = "warn"
 

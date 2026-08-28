@@ -1,27 +1,4 @@
 //! Workshop items.
-//!
-//! A published file reaches a client one of two ways, and
-//! `PublishedFile.GetDetails` says which:
-//!
-//! * **SteamPipe UGC** — `hcontent_file` is a manifest id inside the app's
-//!   workshop depot. The item then downloads exactly like depot content, which
-//!   means everything M5 and M6 built applies unchanged: request code, manifest,
-//!   chunks, decrypt, decompress, verify.
-//! * **Legacy UFS** — `file_url` is a plain HTTPS blob with no chunking and no
-//!   encryption.
-//!
-//! Measured on 2026-08-26 across twelve real items from Garry's Mod, Arma 3 and
-//! Counter-Strike 2: **eight SteamPipe, zero legacy**. The legacy path is
-//! implemented anyway because it is twenty lines and a `file_url` does appear in
-//! the wild — a Steam screenshot carries both — but the SteamPipe path is the
-//! one that matters.
-//!
-//! # Workshop content is the hostile case
-//!
-//! Anyone can publish a Workshop item, and its manifest names the paths tapline
-//! will create. This is the input `tapline-fs` exists for, and it is why an
-//! unsafe path here is a fatal error rather than a skipped file.
-
 use crate::{InstallError, InstallOptions};
 use std::fmt;
 use tapline_ids::{AppId, DepotId, ManifestId, PublishedFileId};
@@ -33,8 +10,6 @@ const RESULT_OK: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkshopContent {
     /// Content in the app's workshop depot, addressed by manifest.
-    ///
-    /// The overwhelmingly common case.
     SteamPipe {
         /// The depot the app keeps Workshop content in.
         depot: DepotId,
@@ -71,10 +46,6 @@ pub struct WorkshopItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkshopError {
     /// Steam returned a non-success result for the item.
-    ///
-    /// Carries the code, because the difference between "no such item" and
-    /// "you may not see it" is the difference between a typo and a permission
-    /// problem.
     Refused {
         /// Which item.
         id: PublishedFileId,
@@ -82,17 +53,11 @@ pub enum WorkshopError {
         eresult: u32,
     },
     /// Steam described the item but gave no way to fetch it.
-    ///
-    /// Neither a manifest nor a URL. Four of twelve real items came back this
-    /// way — an item can exist and still have nothing an anonymous session may
-    /// download.
     NoContent {
         /// Which item.
         id: PublishedFileId,
     },
     /// The item's app publishes no workshop depot.
-    ///
-    /// Without one a SteamPipe item has no depot to fetch a manifest from.
     NoWorkshopDepot {
         /// The app.
         app: AppId,
@@ -124,11 +89,7 @@ impl fmt::Display for WorkshopError {
 
 impl std::error::Error for WorkshopError {}
 
-/// Turns one `PublishedFileDetails` into an item, given the app's workshop
-/// depot.
-///
-/// Split out so the classification — which is the part with rules — is testable
-/// without a network.
+/// Turns one `PublishedFileDetails` into an item, given the app's workshop depot.
 pub fn classify(
     details: &tapline_proto::steammessages_publishedfile_steamclient::PublishedFileDetails,
     workshop_depot: Option<DepotId>,
@@ -145,9 +106,7 @@ pub fn classify(
 
     let app = AppId(details.consumer_appid.unwrap_or(0));
 
-    // A manifest wins over a URL. An item can carry both — a Steam screenshot
-    // does — and the manifest is the real content while the URL is the image
-    // CDN's copy.
+    // A manifest wins over a URL: screenshots carry both, the URL is the thumbnail CDN.
     let manifest = details.hcontent_file.filter(|handle| *handle != 0);
     let url = details
         .file_url
@@ -184,10 +143,7 @@ pub fn classify(
     })
 }
 
-/// Where an item's content is installed under a root.
-///
-/// Matches the layout the Steam client uses, so a server configured to load
-/// Workshop content from a steamcmd install finds it in the same place.
+/// Where an item installs under a root; matches the Steam client's layout.
 #[must_use]
 pub fn item_dir(root: &std::path::Path, app: AppId, id: PublishedFileId) -> std::path::PathBuf {
     root.join("steamapps")
@@ -248,7 +204,6 @@ mod tests {
 
     #[test]
     fn a_steampipe_item_resolves_to_a_manifest_in_the_workshop_depot() {
-        // The path eight of twelve real items took.
         let item = classify(
             &details(3_790_437_566, 1, Some(2_351_397_028_775_917_616), None),
             Some(DepotId(4000)),
@@ -269,9 +224,6 @@ mod tests {
 
     #[test]
     fn a_manifest_wins_over_a_url_when_an_item_has_both() {
-        // A Steam screenshot carries both: hcontent_file is the real content and
-        // file_url is the image CDN's copy. Taking the URL would download a
-        // JPEG where the item's actual content was asked for.
         let item = classify(
             &details(
                 2_942_526_891,
@@ -308,8 +260,7 @@ mod tests {
 
     #[test]
     fn a_zero_manifest_handle_is_not_a_manifest() {
-        // Steam sets the field to zero rather than omitting it, and treating
-        // that as a manifest id would ask the CDN for manifest 0.
+        // Steam sends zero rather than omitting the field.
         let item = classify(
             &details(1, 1, Some(0), Some("https://example.invalid/blob")),
             Some(DepotId(4000)),
@@ -320,8 +271,7 @@ mod tests {
 
     #[test]
     fn a_refused_item_carries_steams_own_code() {
-        // 9 is FileNotFound and 15 is AccessDenied — a typo and a permission
-        // problem, and an operator needs to tell them apart.
+        // 9 is FileNotFound, 15 is AccessDenied.
         for eresult in [9, 15] {
             assert_eq!(
                 classify(
@@ -338,8 +288,6 @@ mod tests {
 
     #[test]
     fn an_item_with_no_content_is_reported_rather_than_downloaded_as_nothing() {
-        // Four of twelve real items came back this way: they exist, and there is
-        // nothing an anonymous session may fetch.
         assert_eq!(
             classify(&details(1, 1, None, None), Some(DepotId(4000))),
             Err(WorkshopError::NoContent {
@@ -358,8 +306,6 @@ mod tests {
 
     #[test]
     fn items_install_where_the_steam_client_puts_them() {
-        // A server configured against a steamcmd install must find content in
-        // the same place.
         assert_eq!(
             item_dir(
                 std::path::Path::new("/srv/gmod"),
@@ -384,9 +330,6 @@ mod tests {
 
     #[test]
     fn the_flat_layout_writes_into_the_directory_it_was_given() {
-        // The Garry's Mod case: garrysmod/addons is already the right folder,
-        // and the steamcmd layout would put the .gma four directories below
-        // where the server looks for it.
         let options = InstallOptions {
             install_dir: std::path::PathBuf::from("/srv/gmod/garrysmod/addons"),
             workshop_layout: crate::WorkshopLayout::Flat,
@@ -400,8 +343,6 @@ mod tests {
 
     #[test]
     fn flat_puts_two_items_side_by_side() {
-        // Which is the point: a collection downloaded flat is a folder of
-        // addons, not a folder of folders.
         let options = InstallOptions {
             install_dir: std::path::PathBuf::from("/srv/addons"),
             workshop_layout: crate::WorkshopLayout::Flat,

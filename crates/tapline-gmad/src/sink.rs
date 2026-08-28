@@ -1,11 +1,4 @@
 //! Where a streamed archive can go.
-//!
-//! Both of these sit on [`Splitter`], so they see the same entry events and
-//! differ only in what they do with them. Adding a third target — an object
-//! store, a tar, a hash manifest — means writing an [`EntrySink`] and nothing
-//! else.
-//!
-//! [`Splitter`]: crate::Splitter
 
 use crate::zip;
 use std::io::Write;
@@ -13,11 +6,7 @@ use std::path::{Path, PathBuf};
 use tapline_ext::ExtensionError;
 use tapline_ext::{ArchiveEntry, EntrySink};
 
-/// Validates every path in an index, up front.
-///
-/// Before a single byte is written, always. A Workshop item is published by
-/// anyone, and an archive that gets half its files onto disk before the one
-/// escaping the root is noticed has already done the damage.
+/// Validates every path up front, before a single byte is written.
 fn validate(entries: &[ArchiveEntry], root: &Path) -> Result<Vec<PathBuf>, ExtensionError> {
     entries
         .iter()
@@ -106,35 +95,16 @@ impl EntrySink for ToDirectory {
     }
 }
 
-/// How many bytes of completed entries to hold before compressing them.
-///
-/// Deflate is the cost of building a ZIP, and it parallelises across entries —
-/// but only if there are several to hand. Compressing each entry the moment it
-/// completed measured 2.29 s against 2.01 s for downloading and converting
-/// afterwards, because it gave up the parallelism to save the disk. Batching
-/// gets both.
-///
-/// Smaller than the seeking path's 32 MB: this is memory held *during* a
-/// download rather than instead of one.
+/// Caps completed entries held in memory before compressing a batch.
 const BATCH_BYTES: usize = 8 << 20;
 
 /// Writes an archive's files into a ZIP as they arrive.
-///
-/// A ZIP is written front to back — local header, data, repeat, then the
-/// central directory — so it can be built from a stream without ever holding
-/// the whole thing. What it holds is a batch of completed entries waiting to be
-/// deflated together; peak memory is that batch, not the archive.
 pub struct ToZip {
     writer: Option<zip::Writer<std::io::BufWriter<std::fs::File>>>,
-    /// The validated, normalised name for each entry.
     names: Vec<String>,
-    /// The entry being accumulated.
     buffer: Vec<u8>,
-    /// Completed entries waiting to be compressed together.
     batch: Vec<(String, Vec<u8>)>,
-    /// How many bytes those hold.
     batch_bytes: usize,
-    /// How many threads to compress across.
     threads: usize,
     at: usize,
     compress: bool,
@@ -143,10 +113,6 @@ pub struct ToZip {
 
 impl ToZip {
     /// A sink writing a ZIP at `dest`.
-    ///
-    /// `compress` deflates entries that get smaller for it; otherwise
-    /// everything is stored, which is roughly four times faster and the right
-    /// choice when the result goes somewhere that compresses on the wire.
     pub fn new(dest: &Path, compress: bool) -> Result<Self, ExtensionError> {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -172,7 +138,6 @@ impl ToZip {
         self.entries
     }
 
-    /// Compresses everything queued and writes it, in order.
     fn flush_batch(&mut self) -> Result<(), ExtensionError> {
         if self.batch.is_empty() {
             return Ok(());
@@ -188,9 +153,6 @@ impl ToZip {
     }
 
     /// Closes the archive, writing its central directory.
-    ///
-    /// Required: a ZIP without one is a file most readers refuse. Also reached
-    /// through [`EntrySink::finish`], which is how a boxed sink gets closed.
     pub fn close(mut self) -> Result<usize, ExtensionError> {
         self.close_in_place()?;
         Ok(self.entries)
@@ -208,9 +170,7 @@ impl ToZip {
 
 impl EntrySink for ToZip {
     fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
-        // Validated against a notional root: the names go inside a ZIP rather
-        // than onto the filesystem, but an archive carrying `..` into whatever
-        // unpacks it next is the same problem one step removed.
+        // Validated against a notional root: `..` inside a ZIP is the same attack.
         let root = Path::new("");
         self.names = validate(entries, root)?
             .iter()
@@ -222,8 +182,6 @@ impl EntrySink for ToZip {
     fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
         self.at = index;
         self.buffer.clear();
-        // The size is known from the index, so the buffer is allocated once
-        // rather than grown as bytes arrive.
         self.buffer.reserve(entry.size as usize);
         Ok(())
     }
@@ -235,8 +193,6 @@ impl EntrySink for ToZip {
 
     fn end(&mut self) -> Result<(), ExtensionError> {
         let name = self.names.get(self.at).cloned().unwrap_or_default();
-        // Queued rather than compressed here: deflate parallelises across
-        // entries and there is nothing to parallelise with one.
         let body = std::mem::take(&mut self.buffer);
         self.batch_bytes = self.batch_bytes.saturating_add(body.len());
         self.batch.push((name, body));
@@ -249,9 +205,7 @@ impl EntrySink for ToZip {
     }
 
     fn finish(&mut self) -> Result<(), ExtensionError> {
-        // Where the central directory gets written. Without this a boxed sink
-        // is dropped holding an archive nothing can open — which is exactly
-        // what happened before this existed, and what the live test caught.
+        // Writes the central directory; a dropped boxed sink otherwise leaves an unreadable archive.
         self.close_in_place()
     }
 }
@@ -337,11 +291,8 @@ mod tests {
 
         let bytes = std::fs::read(&zip_path).expect("read");
         assert_eq!(bytes.get(..2), Some(&b"PK"[..]), "no PK signature");
-        // 5000 identical bytes must have compressed, so the archive is far
-        // smaller than its contents.
         assert!(bytes.len() < 1000, "not compressed: {} bytes", bytes.len());
 
-        // And an external reader must accept it.
         if let Ok(output) = std::process::Command::new("unzip")
             .arg("-t")
             .arg(&zip_path)
@@ -354,9 +305,6 @@ mod tests {
 
     #[test]
     fn a_streamed_zip_holds_one_entry_not_the_archive() {
-        // The memory claim, checked by construction rather than asserted: after
-        // an entry is written its buffer is released, so a 10-entry archive
-        // never holds more than its largest entry.
         let raw = build(&[("big", &vec![7_u8; 100_000]), ("small", b"x")]);
         let dir = scratch("zipmem");
         let mut splitter = Splitter::new(ToZip::new(&dir.0.join("m.zip"), false).expect("create"));
@@ -365,15 +313,11 @@ mod tests {
         }
         let sink = splitter.finish().expect("finish");
         assert_eq!(sink.entries(), 2);
-        // The in-progress buffer is handed to the batch rather than kept, so
-        // nothing holds a second copy of the entry just finished.
         assert_eq!(
             sink.buffer.capacity(),
             0,
             "the last entry's buffer was kept"
         );
-        // And the batch holds only what has not been written yet, which is
-        // bounded by BATCH_BYTES rather than by the archive.
         assert!(sink.batch_bytes <= BATCH_BYTES, "batch grew past its bound");
         sink.close().expect("close");
     }
@@ -401,9 +345,6 @@ mod tests {
 
     #[test]
     fn a_zip_without_close_is_not_silently_valid() {
-        // Dropping the sink without closing leaves a file with no central
-        // directory. The test records that this is the caller's mistake to
-        // avoid, and that `close` is what makes the archive readable.
         let dir = scratch("noclose");
         let path = dir.0.join("partial.zip");
         let raw = build(&[("a", b"body")]);
@@ -421,16 +362,10 @@ mod tests {
 }
 
 /// Passes only the entries whose paths match, to another sink.
-///
-/// A wrapper rather than an option on each sink: filtering is the same
-/// behaviour whatever the destination, and a sink that had to implement it
-/// would be a sink that could get it wrong.
 pub struct Filtered<S: EntrySink> {
     inner: S,
     patterns: crate::glob::Patterns,
-    /// Whether the entry currently being fed was selected.
     passing: bool,
-    /// How many entries got through.
     passed: usize,
 }
 
@@ -446,9 +381,6 @@ impl<S: EntrySink> Filtered<S> {
     }
 
     /// How many entries the filter let through.
-    ///
-    /// The number a caller means by "how many were written", which is not the
-    /// archive's entry count when a filter is in play.
     pub const fn passed(&self) -> usize {
         self.passed
     }
@@ -461,10 +393,7 @@ impl<S: EntrySink> Filtered<S> {
 
 impl<S: EntrySink> EntrySink for Filtered<S> {
     fn index(&mut self, entries: &[ArchiveEntry]) -> Result<(), ExtensionError> {
-        // The index is passed through whole. A sink validating paths must see
-        // every one of them, including the ones about to be filtered out: an
-        // archive containing an escaping path is hostile whether or not this
-        // run happened to select it.
+        // The whole index passes through: hostile paths must be seen even when filtered out.
         self.inner.index(entries)
     }
 
@@ -498,10 +427,6 @@ impl<S: EntrySink> EntrySink for Filtered<S> {
 }
 
 /// Feeds every entry to several sinks.
-///
-/// One pass over the download writes all of them. Before this, asking for both
-/// an unpacked directory and a zip read the archive twice — see the extension
-/// pipeline, which did exactly that.
 #[derive(Default)]
 pub struct Fanout {
     sinks: Vec<Box<dyn EntrySink + Send>>,
@@ -564,8 +489,7 @@ impl EntrySink for Fanout {
     }
 
     fn finish(&mut self) -> Result<(), ExtensionError> {
-        // Every one of them, even if an earlier fails: a half-closed ZIP is a
-        // file nothing can read, and the first error is still what is reported.
+        // Close every sink even after an error; report the first failure.
         let mut first = Ok(());
         for sink in &mut self.sinks {
             let result = sink.finish();
@@ -630,7 +554,6 @@ mod composition_tests {
         }
         splitter.finish().expect("finish");
 
-        // Both landed, from a single read of the stream.
         assert!(unpacked.join("lua/a.lua").exists(), "directory missing");
         assert!(zip_path.exists(), "zip missing");
     }
@@ -670,10 +593,6 @@ mod composition_tests {
 
     #[test]
     fn a_boxed_zip_sink_still_writes_its_central_directory() {
-        // The failure this catches: through a `Box<dyn EntrySink>` there is no
-        // `close` to call, so without `EntrySink::finish` the archive is left
-        // with no directory and `unzip` reports "cannot find zipfile
-        // directory". A live test found it; this one keeps it found.
         let dir = super::tests::scratch("boxedzip");
         let zip_path = dir.0.join("boxed.zip");
         let mut fanout = Fanout::new().with(Box::new(ToZip::new(&zip_path, true).expect("zip")));
@@ -693,8 +612,6 @@ mod composition_tests {
 
     #[test]
     fn an_empty_fanout_consumes_the_stream_without_writing() {
-        // Useful on its own: it is how you read an archive's index and sizes
-        // without keeping any of it.
         let mut splitter = Splitter::new(Fanout::new());
         splitter.push(&archive()).expect("push");
         let fanout = splitter.finish().expect("finish");
@@ -703,8 +620,6 @@ mod composition_tests {
 
     #[test]
     fn a_filter_still_shows_every_path_to_the_sink_for_validation() {
-        // An escaping path is hostile whether or not this run selected it, so
-        // the index must reach the sink whole.
         let raw = super::tests::build(&[("../escape", b"x"), ("lua/ok.lua", b"y")]);
         let dir = super::tests::scratch("filtervalidate");
         let sink = Filtered::new(ToDirectory::new(&dir.0), Patterns::all().with("lua/**"));

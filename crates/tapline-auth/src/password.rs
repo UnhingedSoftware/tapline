@@ -1,18 +1,4 @@
-//! Encrypting a password for `BeginAuthSessionViaCredentials`.
-//!
-//! Steam hands out a **per-account RSA public key** for each login attempt, as a
-//! hex modulus and hex exponent, with a timestamp that must be echoed back. The
-//! password is encrypted under it with PKCS#1 v1.5 and base64-encoded.
-//!
-//! Two things worth stating plainly.
-//!
-//! **There is no hardcoded Valve key here, and there is none anywhere in this
-//! workspace.** The key arrives from Steam for this login and is used once.
-//!
-//! **The plaintext is zeroed as soon as it has been encrypted.** That is not a
-//! guarantee against a determined attacker with memory access, and it is not
-//! meant to be — it shortens the window in which a password sits in a heap
-//! allocation that might be swapped, cored, or read by a later bug.
+//! Encrypting a password for `BeginAuthSessionViaCredentials` under Steam's per-login RSA key.
 
 use rsa::{BigUint, Pkcs1v15Encrypt, RsaPublicKey};
 use std::fmt;
@@ -23,17 +9,11 @@ use zeroize::Zeroize;
 pub struct PublicKey {
     key: RsaPublicKey,
     /// Steam's timestamp, which must be echoed in the login request.
-    ///
-    /// A login that sends a password encrypted under one key and the timestamp
-    /// of another is rejected, which is the point: it binds the ciphertext to
-    /// the key exchange.
     pub timestamp: u64,
 }
 
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // A public key is not secret, but printing a 2048-bit modulus in a log
-        // line helps nobody.
         f.debug_struct("PublicKey")
             .field("timestamp", &self.timestamp)
             .finish_non_exhaustive()
@@ -46,15 +26,11 @@ pub enum PasswordError {
     /// The modulus or exponent was not valid hex.
     MalformedKey(String),
     /// The key Steam sent was too small to be a real RSA key.
-    ///
-    /// Refused rather than used: a login that encrypts a password under a
-    /// 64-bit modulus has not protected it.
     KeyTooSmall {
         /// The modulus size in bits.
         bits: usize,
     },
-    /// RSA rejected the input, almost always because the password is longer
-    /// than the key can hold.
+    /// RSA rejected the input, usually a password longer than the key holds.
     Encryption(String),
 }
 
@@ -75,11 +51,7 @@ impl fmt::Display for PasswordError {
 
 impl std::error::Error for PasswordError {}
 
-/// The smallest modulus we will encrypt under.
-///
-/// Steam uses 2048. Anything markedly smaller means either a broken response or
-/// something interposing on the connection, and encrypting a password under it
-/// would be worse than failing to log in.
+/// The smallest modulus we will encrypt under; Steam uses 2048.
 const MIN_KEY_BITS: usize = 1024;
 
 impl PublicKey {
@@ -104,17 +76,14 @@ impl PublicKey {
         Ok(Self { key, timestamp })
     }
 
-    /// The modulus size, for a log line that says what was used.
+    /// The modulus size in bits.
     #[must_use]
     pub fn bits(&self) -> usize {
         rsa::traits::PublicKeyParts::n(&self.key).bits()
     }
 }
 
-/// Encrypts a password under Steam's key, returning the base64 Steam expects.
-///
-/// Takes the password by value and zeroes it before returning: the caller
-/// cannot forget to, and there is no borrowed copy left behind.
+/// Encrypts a password under Steam's key; consumes and zeroes the plaintext.
 pub fn encrypt_password(mut password: String, key: &PublicKey) -> Result<String, PasswordError> {
     let mut rng = rsa::rand_core::OsRng;
     let result = key
@@ -122,14 +91,12 @@ pub fn encrypt_password(mut password: String, key: &PublicKey) -> Result<String,
         .encrypt(&mut rng, Pkcs1v15Encrypt, password.as_bytes())
         .map_err(|error| PasswordError::Encryption(error.to_string()));
 
-    // Before the `?`, so the plaintext is gone on the failure path too — which
-    // is the path where something has already gone wrong and nobody is looking.
+    // Zeroed before the `?` so the failure path clears it too.
     password.zeroize();
 
     Ok(base64_encode(&result?))
 }
 
-/// Decodes a hex string.
 fn decode_hex(input: &str) -> Option<Vec<u8>> {
     let trimmed = input.trim();
     // An odd-length hex string is malformed, not something to pad silently.
@@ -188,9 +155,6 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// A 2048-bit key generated once for these tests, in the hex shape Steam
-    /// sends. Not Valve's, and not secret — it exists so the encryption path can
-    /// be exercised without a login.
     fn test_key() -> PublicKey {
         use rsa::traits::PublicKeyParts;
 
@@ -216,8 +180,6 @@ mod tests {
 
     #[test]
     fn a_password_encrypts_to_base64_that_is_not_the_password() {
-        // The bar is low and worth asserting anyway: the ciphertext must not
-        // contain the plaintext.
         let key = test_key();
         let encrypted = encrypt_password("hunter2".to_owned(), &key).expect("must encrypt");
 
@@ -230,8 +192,7 @@ mod tests {
 
     #[test]
     fn the_same_password_encrypts_differently_each_time() {
-        // PKCS#1 v1.5 randomises its padding. Identical ciphertexts would mean
-        // an observer could tell that two logins used the same password.
+        // PKCS#1 v1.5 padding is randomised.
         let key = test_key();
         let first = encrypt_password("hunter2".to_owned(), &key).expect("encrypt");
         let second = encrypt_password("hunter2".to_owned(), &key).expect("encrypt");
@@ -240,8 +201,6 @@ mod tests {
 
     #[test]
     fn the_ciphertext_decrypts_back_to_the_password() {
-        // The real check: a key we hold both halves of, so the round trip can be
-        // verified rather than assumed.
         use rsa::traits::PublicKeyParts;
 
         let mut rng = rsa::rand_core::OsRng;
@@ -265,8 +224,6 @@ mod tests {
 
     #[test]
     fn a_key_too_small_to_trust_is_refused() {
-        // Encrypting a password under a 64-bit modulus has not protected it,
-        // and a login that fails is better than one that pretends.
         let error = PublicKey::from_hex("ffffffffffffffff", "010001", 0)
             .expect_err("a tiny key must be refused");
         assert!(matches!(error, PasswordError::KeyTooSmall { .. }));
@@ -295,7 +252,6 @@ mod tests {
         assert_eq!(base64_encode(b""), "");
     }
 
-    /// Decodes base64, for the round-trip test above.
     fn base64_decode(input: &str) -> Option<Vec<u8>> {
         fn value(byte: u8) -> Option<u8> {
             match byte {

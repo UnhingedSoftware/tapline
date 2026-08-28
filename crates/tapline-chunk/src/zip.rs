@@ -1,36 +1,4 @@
-//! The ZIP chunk container.
-//!
-//! The third one, and the one that made Garry's Mod fail to install at all.
-//! Read off a real chunk from GMod Dedicated Server's depot 4021 on 2026-08-26:
-//!
-//! ```text
-//! +----------+----+----+--------+--------+--------+----+----+------+---------+
-//! |PK\x03\x04|ver |flg |method  | time   | crc32  |csize|usize|n,e  | 'z'|data|
-//! +----------+----+----+--------+--------+--------+----+----+------+---------+
-//!   0..4      4..6 6..8 8..10    10..14   14..18   18..22 22..26 26..30
-//! ```
-//!
-//! Structurally identical to the wrapper around a manifest: one deflated entry
-//! named `z`. Unlike `VZ` and `VSZ` there is no Steam footer, so the integrity
-//! check is the ZIP header's own CRC-32 over the decompressed bytes — plus the
-//! SHA-1 the caller checks against the chunk id, which is the real guarantee
-//! either way.
-//!
-//! # It is not rare
-//!
-//! A census of GMod's depots on the same day:
-//!
-//! | depot | ZIP | VSZ | VZ  |
-//! |-------|-----|-----|-----|
-//! | 1006  |   0 |  32 |   8 |
-//! | 4021  |  14 |  36 |  30 |
-//! | 4023  |  18 |  53 |  49 |
-//!
-//! All three coexist inside a single depot, so the container is a per-chunk
-//! property and dispatch cannot be hoisted out of the loop. The earlier probe
-//! sampled only depot 1006 — which has no ZIP chunks at all — and concluded
-//! there were two containers. That is the second time a sample of one depot
-//! gave a confident wrong answer about the whole app.
+//! The ZIP chunk container: one deflated entry named `z`, no Steam footer.
 
 use crate::ChunkError;
 
@@ -49,12 +17,7 @@ pub fn matches(input: &[u8]) -> bool {
     input.get(..4) == Some(&MAGIC)
 }
 
-/// Decodes a ZIP-wrapped chunk.
-///
-/// Deliberately not a general ZIP reader: a chunk holds exactly one entry, so
-/// the local file header is enough and the central directory is never consulted
-/// — which also sidesteps every ZIP-parsing trick that turns on the two
-/// disagreeing.
+/// Decodes a ZIP-wrapped chunk from its local header alone; one entry, no directory.
 pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     if input.len() < HEADER_LEN {
         return Err(ChunkError::Truncated);
@@ -103,8 +66,6 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
         });
     }
 
-    // The ZIP header carries a CRC-32 and checking it costs nothing next to the
-    // transfer that delivered these bytes.
     let actual_crc = crc32fast::hash(&out);
     if actual_crc != expected_crc {
         return Err(ChunkError::ChecksumMismatch {
@@ -126,15 +87,6 @@ mod tests {
     use super::*;
     use crate::MAX_CHUNK;
 
-    /// A real ZIP-wrapped chunk from GMod Dedicated Server's depot 4021,
-    /// captured 2026-08-27. Its SHA-1 is its filename, which is what makes the
-    /// decode verifiable here without any network.
-    ///
-    /// The smallest ZIP chunk in that depot, deliberately: a fixture has to be
-    /// real, not big. This one is 102 bytes on the wire and two bytes decoded,
-    /// which is enough to exercise the container and leaves no meaningful
-    /// amount of somebody else's content in this repository. The version before
-    /// it was a full 1 MiB chunk — 462 KB committed to prove the same thing.
     const REAL: &[u8] = include_bytes!(
         "../tests/fixtures/smallest_zip_ba8ab5a0280b953aa97435ff8946cbcbb2755a27.bin"
     );
@@ -147,9 +99,7 @@ mod tests {
 
     #[test]
     fn the_decoded_bytes_hash_to_the_chunk_id() {
-        // The check that matters: the id *is* the SHA-1 of the plaintext, so
-        // this proves the decode produced the content Steam named rather than
-        // merely something of the right length.
+        // The chunk id is the SHA-1 of the plaintext.
         let out = decode(REAL, MAX_CHUNK).expect("must decode");
         let mut hasher = <sha1::Sha1 as sha1::Digest>::new();
         sha1::Digest::update(&mut hasher, &out);
@@ -167,11 +117,7 @@ mod tests {
 
     #[test]
     fn a_corrupted_payload_is_caught() {
-        // The payload, not an arbitrary byte. A ZIP holds its entry twice —
-        // local header and central directory — and this decoder reads the
-        // local one, so damage anywhere else is not what the CRC protects.
-        // The old version of this flipped the middle byte, which only landed
-        // in the payload because the fixture was a megabyte of deflate stream.
+        // Damage the payload specifically; the CRC protects nothing else.
         const LOCAL_HEADER: usize = 30;
         let name_len = usize::from(read_u16(REAL, 26).expect("a name length"));
         let payload = LOCAL_HEADER + name_len;
@@ -212,8 +158,6 @@ mod tests {
 
     #[test]
     fn an_unsupported_compression_method_names_itself() {
-        // bzip2 and lzma are legal ZIP methods Steam does not use. If one ever
-        // appears, the error should say which rather than "malformed".
         let mut odd = REAL.to_vec();
         if let Some(slot) = odd.get_mut(8..10) {
             slot.copy_from_slice(&12_u16.to_le_bytes());
@@ -226,7 +170,7 @@ mod tests {
 
     #[test]
     fn truncation_is_an_error_not_a_panic() {
-        // Stepped: the fixture is 462 KB and inflating prefixes is not free.
+        // Stepped: inflating every prefix is not free.
         for cut in (0..REAL.len()).step_by(4099) {
             let prefix = REAL.get(..cut).expect("in range");
             assert!(

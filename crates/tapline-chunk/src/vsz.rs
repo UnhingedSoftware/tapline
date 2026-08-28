@@ -1,21 +1,4 @@
 //! The `VSZ` chunk container: zstd.
-//!
-//! Read off a real chunk from Valheim's depot 1006 on 2026-08-26.
-//!
-//! ```text
-//!  0    1    2    3      4            8                  -15       -11      -7    -3
-//! +----+----+----+----+------------+-------------------+---------+--------+------+-----+
-//! |'V' |'S' |'Z' |'a' |   crc32    |    zstd frame     |  crc32  |  size  | ???  |'zsv'|
-//! +----+----+----+----+------------+-------------------+---------+--------+------+-----+
-//!                       u32 LE                           u32 LE   u32 LE  u32 LE
-//! ```
-//!
-//! Both containers carry the CRC-32 twice and both check out; the differences
-//! from `VZ` are a four-byte magic instead of three, a three-byte footer magic
-//! instead of two, and an extra four-byte field before it that has been zero in
-//! every chunk observed. That field is preserved rather than asserted to be
-//! zero — a value there would mean something, and refusing the chunk would be a
-//! worse answer than downloading it.
 
 use crate::ChunkError;
 use std::io::Read as _;
@@ -46,7 +29,7 @@ pub fn decode(input: &[u8], max_output: usize) -> Result<Vec<u8>, ChunkError> {
     Ok(out)
 }
 
-/// Decodes into a buffer the caller owns. See [`crate::vz::decode_into`].
+/// Decodes into a buffer the caller owns.
 pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result<(), ChunkError> {
     if input.len() < HEADER_LEN + FOOTER_LEN {
         return Err(ChunkError::Truncated);
@@ -86,14 +69,10 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
         .get(HEADER_LEN..footer_start)
         .ok_or(ChunkError::Truncated)?;
 
-    // `ruzstd` is a pure-Rust decoder; the size is capped by the caller rather
-    // than trusted from the frame header.
     let mut reader = ruzstd::decoding::StreamingDecoder::new(frame)
         .map_err(|e| ChunkError::Decompress(e.to_string()))?;
 
-    // Capped by the caller rather than trusted from the frame header: a zstd
-    // frame can claim any output size, and one byte over the cap is enough to
-    // notice without allocating what it asked for.
+    // Take one byte past the claim so an overlong frame is detected, not trusted.
     out.clear();
     out.reserve(claimed_size as usize);
     (&mut reader)
@@ -124,11 +103,6 @@ mod tests {
     use super::*;
     use crate::MAX_CHUNK;
 
-    /// A real `VSZ` chunk from Garry's Mod's depot 4021, captured 2026-08-27.
-    ///
-    /// The smallest in that depot: a fixture has to be real, not big. 80 bytes
-    /// on the wire, 61 decoded. The version before it was a full 1 MiB chunk,
-    /// 131 KB committed to prove the same thing about the container.
     const REAL: &[u8] = include_bytes!(
         "../tests/fixtures/smallest_vsz_7395dfeef25971f3be265de414de08c61ec65563.bin"
     );
@@ -190,8 +164,7 @@ mod tests {
 
     #[test]
     fn truncation_is_an_error_not_a_panic() {
-        // Stepped rather than exhaustive: the fixture is 134 KB and zstd
-        // decoding a prefix is not free.
+        // Stepped rather than exhaustive: zstd-decoding every prefix is not free.
         for cut in (0..REAL.len()).step_by(997) {
             let prefix = REAL.get(..cut).expect("in range");
             assert!(

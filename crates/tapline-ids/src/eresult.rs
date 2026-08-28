@@ -1,22 +1,15 @@
 //! `EResult`: the status code on nearly every Steam response.
-//!
-//! Steam reports failure as a number in a field, not as a transport error, so a
-//! request can "succeed" and still have told you nothing. Every caller in this
-//! workspace is expected to check it, which is why this type is deliberately not
-//! convertible to `bool` — you have to say [`EResult::is_ok`] out loud.
 
 use std::fmt;
 
-/// Generates the enum, its wire conversions and a human-readable description
-/// from a single table, so the three can never drift apart.
+/// Generates the enum, wire conversions and descriptions from one table.
 macro_rules! eresults {
     ($( $(#[$doc:meta])* $name:ident = $value:expr, $text:literal ;)*) => {
         /// A Steam result code.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum EResult {
             $( $(#[$doc])* $name, )*
-            /// A code this build does not know about. Valve adds them; the
-            /// number is kept so a log line is still actionable.
+            /// A code this build does not know about; the number is kept.
             Unknown(i32),
         }
 
@@ -177,11 +170,7 @@ eresults! {
 }
 
 impl EResult {
-    /// Whether the call actually worked.
-    ///
-    /// Note that [`EResult::Pending`] is *not* ok: it means the answer has not
-    /// arrived yet, and treating it as success is how a caller ends up acting on
-    /// a response it never received.
+    /// Whether the call actually worked; [`EResult::Pending`] is not ok.
     #[inline]
     #[must_use]
     pub const fn is_ok(self) -> bool {
@@ -189,10 +178,6 @@ impl EResult {
     }
 
     /// Whether retrying the same request could plausibly succeed.
-    ///
-    /// Used to decide between backing off and giving up. Rate limiting counts as
-    /// retryable, but only after a delay — see the CDN host pool, which demotes
-    /// a host rather than hammering it.
     #[must_use]
     pub const fn is_retryable(self) -> bool {
         matches!(
@@ -234,8 +219,6 @@ mod tests {
 
     #[test]
     fn unknown_codes_keep_their_number() {
-        // Valve ships new codes; losing the number turns a diagnosable failure
-        // into "something went wrong".
         let r = EResult::from_i32(9_999);
         assert_eq!(r, EResult::Unknown(9_999));
         assert_eq!(r.to_i32(), 9_999);

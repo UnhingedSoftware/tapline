@@ -1,16 +1,9 @@
 //! The file and chunk view of a manifest.
-//!
-//! [`RawManifest`](crate::RawManifest) is the protobuf as it arrived. This is
-//! what a downloader wants: files with real paths, each carrying the chunks that
-//! make it up, in offset order.
 
 use crate::{ManifestError, RawManifest};
 use tapline_ids::{DepotId, ManifestId};
 
 /// What a file's `flags` field means.
-///
-/// Values taken from the flags Valve's own depots set. Anything unrecognised is
-/// preserved in [`FileEntry::raw_flags`] rather than dropped.
 pub mod flag {
     /// A directory entry, with no content of its own.
     pub const DIRECTORY: u32 = 1 << 6;
@@ -23,10 +16,6 @@ pub mod flag {
     /// Marked read-only.
     pub const READ_ONLY: u32 = 1 << 3;
     /// Hidden on Windows.
-    ///
-    /// Recorded for completeness — nothing on a Linux install acts on it, and
-    /// dropping it from this list would make the next reader wonder whether
-    /// bit 4 means something we missed.
     #[allow(dead_code, reason = "documents the flag word; no Linux behaviour")]
     pub const HIDDEN: u32 = 1 << 4;
 }
@@ -61,10 +50,6 @@ impl FileFlags {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     /// The chunk id: the SHA-1 of its plaintext.
-    ///
-    /// Content addressing, and the whole basis of verification — a chunk that
-    /// does not hash to this is not the chunk the manifest named, whatever
-    /// served it.
     pub id: [u8; 20],
     /// CRC-32 of the encrypted, compressed form, as the CDN stores it.
     pub crc: u32,
@@ -87,8 +72,7 @@ impl Chunk {
 /// One file in a depot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
-    /// The path relative to the install root, using the separator the manifest
-    /// used.
+    /// The path relative to the install root, as the manifest spells it.
     pub path: String,
     /// The file's size in bytes.
     pub size: u64,
@@ -114,8 +98,6 @@ pub struct Manifest {
     /// Total installed size.
     pub total_size: u64,
     /// How many distinct chunks the depot has.
-    ///
-    /// Distinct: a chunk repeated across files is stored once and fetched once.
     pub unique_chunks: u32,
     /// The files, in the order the manifest lists them.
     pub files: Vec<FileEntry>,
@@ -123,12 +105,6 @@ pub struct Manifest {
 
 impl Manifest {
     /// Builds a manifest from its raw blocks, decrypting filenames if needed.
-    ///
-    /// `depot_key` is required exactly when the manifest says its filenames are
-    /// encrypted. Passing one that is not needed is harmless; omitting one that
-    /// is gives [`ManifestError::FilenamesEncrypted`] rather than a file list of
-    /// base64 blobs, which would otherwise be written to disk as literal
-    /// filenames.
     pub fn from_raw(
         raw: &RawManifest,
         depot_key: Option<&[u8; 32]>,
@@ -169,8 +145,7 @@ impl Manifest {
                 })
                 .collect();
 
-            // The manifest does not promise an order, and the writer needs one:
-            // a resume decides where to restart from the first unwritten offset.
+            // The manifest promises no chunk order; resume logic needs offset order.
             chunks.sort_by_key(|chunk| chunk.offset);
 
             files.push(FileEntry {
@@ -199,10 +174,6 @@ impl Manifest {
     }
 
     /// Every distinct chunk in the depot, with the total bytes to download.
-    ///
-    /// Distinct by id: a chunk referenced by several files is fetched once and
-    /// written to every offset that names it, which is where a large part of a
-    /// depot's apparent size disappears.
     #[must_use]
     pub fn distinct_chunks(&self) -> (Vec<&Chunk>, u64) {
         let mut seen = std::collections::HashSet::new();
@@ -228,13 +199,7 @@ impl Manifest {
     }
 }
 
-/// Decrypts one filename.
-///
-/// Steam base64-encodes the ciphertext, which is the usual
-/// `ECB(iv) || CBC(iv, plaintext)` layering under the depot key. Backslashes are
-/// normalised to forward slashes because Valve writes Windows separators even in
-/// Linux depots, and a literal `a\b` would otherwise become a filename with a
-/// backslash in it rather than a directory.
+/// Decrypts one filename; backslashes become forward slashes (Valve writes Windows separators).
 fn decrypt_filename(encoded: &str, key: &[u8; 32]) -> Result<String, ManifestError> {
     let ciphertext = base64_decode(encoded).ok_or(ManifestError::FilenameUndecryptable)?;
     let plaintext = tapline_crypto::decrypt_content(key, &ciphertext)
@@ -248,9 +213,7 @@ fn decrypt_filename(encoded: &str, key: &[u8; 32]) -> Result<String, ManifestErr
     Ok(text.replace('\\', "/"))
 }
 
-/// Standard base64 decoding.
 fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    /// Maps a base64 character to its value.
     fn value(byte: u8) -> Option<u8> {
         match byte {
             b'A'..=b'Z' => Some(byte - b'A'),
@@ -292,14 +255,11 @@ mod tests {
         assert_eq!(base64_decode("Zg=="), Some(b"f".to_vec()));
         assert_eq!(base64_decode("Zm8="), Some(b"fo".to_vec()));
         assert_eq!(base64_decode(""), Some(Vec::new()));
-        // A character outside the alphabet must not decode to something.
         assert_eq!(base64_decode("not!base64"), None);
     }
 
     #[test]
     fn an_encrypted_manifest_refuses_to_produce_filenames_without_a_key() {
-        // Otherwise the base64 blobs would be written to disk as literal
-        // filenames, which is a broken install that looks like a working one.
         let raw = crate::RawManifest::parse(REAL).expect("must parse");
         assert_eq!(
             Manifest::from_raw(&raw, None),
@@ -318,8 +278,6 @@ mod tests {
 
     #[test]
     fn windows_separators_become_forward_slashes() {
-        // Valve writes backslashes even in Linux depots. Left alone, `a\b`
-        // becomes a file with a backslash in its name instead of a directory.
         let key = [0x11_u8; 32];
         let ciphertext =
             tapline_crypto::encrypt_content(&key, b"bin\\linux64\\srcds\0").expect("encrypt");
@@ -354,8 +312,6 @@ mod tests {
 
     #[test]
     fn distinct_chunks_counts_a_repeated_chunk_once() {
-        // A chunk shared between files is fetched once and written twice, which
-        // is where a good deal of a depot's apparent size goes.
         let shared = Chunk {
             id: [7; 20],
             crc: 0,
@@ -396,23 +352,17 @@ mod tests {
 
     #[test]
     fn chunks_come_back_in_offset_order() {
-        // The manifest makes no promise about order, and a resume decides where
-        // to restart from the first unwritten offset.
         let raw = crate::RawManifest::parse(REAL).expect("must parse");
-        // Filenames stay encrypted here; only the chunk ordering is under test.
         let payload = &raw.payload;
         for mapping in &payload.mappings {
             let manifest_chunks: Vec<u64> =
                 mapping.chunks.iter().filter_map(|c| c.offset).collect();
             let mut sorted = manifest_chunks.clone();
             sorted.sort_unstable();
-            // Not asserting the manifest is sorted — asserting that our sort is
-            // what makes it so.
             assert_eq!(sorted.len(), manifest_chunks.len());
         }
     }
 
-    /// Encodes base64, for the fixtures above.
     fn base64_encode(input: &[u8]) -> String {
         const ALPHABET: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

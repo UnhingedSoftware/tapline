@@ -1,30 +1,4 @@
 //! Account-scoped Workshop actions, through a running Steam client.
-//!
-//! tapline speaks the CM protocol itself for everything else, and subscribing
-//! is finished there too once an account has signed in. This is the other way
-//! to reach it: the session already open in the desktop Steam client. It
-//! initialises the Steamworks API as an app the account owns and asks the
-//! logged-in user's `ISteamUGC` to subscribe. The client does the work.
-//!
-//! Modelled on the same approach kirie's Steam helper uses, folded into tapline
-//! so tapline depends on nothing else for it — the dependency runs the other
-//! way, kirie onto tapline.
-//!
-//! # Why this is separate, off by default, and unpublished
-//!
-//! It links Valve's closed SDK, which the rest of tapline is built to avoid —
-//! no third-party Steam library at any layer, a pure-Rust floor, a 5 MB scratch
-//! container. None of that survives contact with `steamclient.so`, so this is
-//! walled off: its own crate, `publish = false`, reached only through tapline's
-//! `steamworks` feature. The SDK is `dlopen`ed at runtime, so a machine without
-//! it still compiles tapline; only using this needs the libraries.
-//!
-//! # Playtime
-//!
-//! Initialising as an app makes Steam count the process as that app running.
-//! Keep a [`Steam`] only as long as the action takes and drop it — a one-shot
-//! `tapline workshop subscribe` does exactly that. A long-running service
-//! should spawn a short-lived child to do the same rather than hold one open.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
@@ -37,19 +11,15 @@ const RESULT_OK: i32 = 1;
 /// `RemoteStorageSubscribePublishedFileResult_t` — `k_iSteamRemoteStorageCallbacks + 13`.
 const SUBSCRIBE_RESULT: i32 = 1313;
 
-/// The versioned interface accessors. These are the symbols most likely to move
-/// between SDK releases; a rename surfaces as [`SteamError::SymbolMissing`]
-/// rather than a crash.
+/// Versioned accessors; an SDK rename surfaces as `SymbolMissing`, not a crash.
 const UGC_ACCESSOR: &[u8] = b"SteamAPI_SteamUGC_v021\0";
 const UTILS_ACCESSOR: &[u8] = b"SteamAPI_SteamUtils_v011\0";
 const APPS_ACCESSOR: &[u8] = b"SteamAPI_SteamApps_v009\0";
 
-/// Where a Steam install keeps `libsteam_api.so`, relative to a root.
 const LIB_RELATIVE: [&str; 2] = ["steamrt64/libsteam_api.so", "linux64/libsteam_api.so"];
 
 type Handle = *mut c_void;
 
-/// The SDK entry points this binds, resolved by name from `libsteam_api.so`.
 struct Api {
     _lib: libloading::Library,
     shutdown: unsafe extern "C" fn(),
@@ -63,9 +33,6 @@ struct Api {
 }
 
 /// A connection to the running client, initialised as one owned app.
-///
-/// Dropping it calls `SteamAPI_Shutdown`, so the app context does not outlive
-/// what asked for it.
 pub struct Steam {
     api: Api,
     ugc: Handle,
@@ -79,13 +46,11 @@ pub struct Steam {
 pub enum SteamError {
     /// `libsteam_api.so` was not found under any known Steam root.
     LibraryNotFound(String),
-    /// The library loaded but a symbol was missing — usually a versioned
-    /// accessor after a client update.
+    /// The library loaded but a symbol was missing.
     SymbolMissing(String),
     /// Steam is not running.
     NotRunning,
-    /// `SteamAPI_Init` refused, with the reason it gave. Usually: the account
-    /// does not own the app.
+    /// `SteamAPI_Init` refused, with the reason it gave.
     InitFailed(String),
     /// An interface pointer came back null.
     NoInterface(&'static str),
@@ -124,7 +89,6 @@ impl std::fmt::Display for SteamError {
 
 impl std::error::Error for SteamError {}
 
-/// The Steam roots to search for the library.
 fn steam_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(over) = std::env::var_os("TAPLINE_STEAM_ROOT") {
@@ -139,7 +103,6 @@ fn steam_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Finds `libsteam_api.so` under a Steam root.
 fn find_library(roots: &[PathBuf]) -> Option<PathBuf> {
     roots
         .iter()
@@ -149,13 +112,6 @@ fn find_library(roots: &[PathBuf]) -> Option<PathBuf> {
 
 impl Steam {
     /// Connects to the running client, initialised as `app`.
-    ///
-    /// `app` must be owned by the signed-in account; init refuses otherwise,
-    /// and [`Steam::owns_app`] confirms it after.
-    ///
-    /// # Errors
-    /// If the library is missing, Steam is not running, init fails, or an
-    /// interface is null.
     pub fn connect(app: AppId) -> Result<Self, SteamError> {
         let roots = steam_roots();
         let path = find_library(&roots).ok_or_else(|| {
@@ -168,19 +124,14 @@ impl Steam {
             )
         })?;
 
-        // Steam reads the app identity from the environment at init. Set before
-        // the call, and only for this process.
-        //
-        // SAFETY: single-threaded here — nothing has been spawned, and no Steam
-        // thread exists yet to observe the environment.
+        // Steam reads the app identity from the environment at init.
+        // SAFETY: still single-threaded; no other thread observes the environment.
         unsafe {
             std::env::set_var("SteamAppId", app.get().to_string());
             std::env::set_var("SteamGameId", app.get().to_string());
         }
 
-        // SAFETY: `path` is a real file; a load or resolution failure is
-        // reported, never assumed. Every signature below is the documented
-        // flat-API one, verified against the installed library's symbol table.
+        // SAFETY: every signature below is the documented flat-API one.
         unsafe {
             let lib = libloading::Library::new(&path)
                 .map_err(|e| SteamError::InitFailed(format!("could not load {path:?}: {e}")))?;
@@ -218,8 +169,7 @@ impl Steam {
                 }));
             }
 
-            // Resolve every symbol first, into plain function pointers, so the
-            // borrow of `lib` by `sym` ends before `lib` is moved into `Api`.
+            // Resolve symbols first so `sym`'s borrow ends before `lib` moves into `Api`.
             let shutdown = sym(b"SteamAPI_Shutdown\0")?;
             let subscribe = sym(b"SteamAPI_ISteamUGC_SubscribeItem\0")?;
             let unsubscribe = sym(b"SteamAPI_ISteamUGC_UnsubscribeItem\0")?;
@@ -295,13 +245,6 @@ impl Steam {
     }
 
     /// Subscribes the signed-in account to an item, waiting for Steam's answer.
-    ///
-    /// Unlike a fire-and-forget, this reads the actual result — Steam's
-    /// `SubscribeItem` returns an async handle, and this polls it and checks the
-    /// result code, so a refusal is reported rather than mistaken for success.
-    ///
-    /// # Errors
-    /// If the account does not own the app, or Steam refuses or times out.
     pub fn subscribe(&self, item: PublishedFileId, timeout: Duration) -> Result<(), SteamError> {
         if !self.owns_app() {
             return Err(SteamError::NotOwned(self.app));
@@ -315,7 +258,6 @@ impl Steam {
         }
         self.await_call(call, timeout)?;
 
-        // The result carries the EResult. Read it and require success.
         #[repr(C)]
         struct SubscribeResult {
             result: i32,
@@ -323,8 +265,7 @@ impl Steam {
         }
         let mut out = std::mem::MaybeUninit::<SubscribeResult>::zeroed();
         let mut failed = false;
-        // SAFETY: `out` is a live local of exactly the size passed, and
-        // `SUBSCRIBE_RESULT` is the callback id for this result type.
+        // SAFETY: `out` matches the size passed; `SUBSCRIBE_RESULT` is this result's id.
         let got = unsafe {
             (self.api.get_call_result)(
                 self.utils,
@@ -350,9 +291,6 @@ impl Steam {
     }
 
     /// Removes the signed-in account's subscription to an item.
-    ///
-    /// # Errors
-    /// If Steam refuses or times out.
     pub fn unsubscribe(&self, item: PublishedFileId, timeout: Duration) -> Result<(), SteamError> {
         // SAFETY: interface pointer and integer.
         let call = unsafe { (self.api.unsubscribe)(self.ugc, item.get()) };
@@ -364,10 +302,7 @@ impl Steam {
         self.await_call(call, timeout)
     }
 
-    /// Steam's item-state bitflags for an item, raw.
-    ///
-    /// Bit 0 set means subscribed. Exposed for a caller that wants to confirm
-    /// what changed without decoding the whole `EItemStateFlags` set here.
+    /// Steam's raw item-state bitflags; bit 0 set means subscribed.
     #[must_use]
     pub fn item_state(&self, item: PublishedFileId) -> u32 {
         // SAFETY: interface pointer and integer.
@@ -380,7 +315,6 @@ impl Steam {
         self.item_state(item) & 1 != 0
     }
 
-    /// Waits for an async call to complete, or times out.
     fn await_call(&self, call: u64, timeout: Duration) -> Result<(), SteamError> {
         let started = Instant::now();
         loop {
@@ -413,16 +347,12 @@ mod tests {
 
     #[test]
     fn library_search_covers_the_known_layouts() {
-        // A missing install returns None rather than panicking, which is what
-        // lets `connect` give a clean "not found" with the paths it tried.
         let none = find_library(&[PathBuf::from("/definitely/not/steam")]);
         assert!(none.is_none());
     }
 
     #[test]
     fn roots_include_the_three_standard_locations() {
-        // The three symlinks a desktop install exposes. Missing one is how a
-        // real account went undetected before.
         // SAFETY: test-local env set on a single thread.
         unsafe { std::env::set_var("HOME", "/home/someone") };
         let roots = steam_roots();

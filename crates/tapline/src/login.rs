@@ -1,21 +1,4 @@
 //! Signing in with an account.
-//!
-//! Two flows, and the QR one is better for anything interactive:
-//!
-//! * [`begin_qr`] asks Steam for a challenge URL. The user approves it in the
-//!   mobile app, [`poll`] returns a token, and **no password is ever typed,
-//!   transmitted or held in memory**.
-//! * [`begin_password`] is the traditional flow, for a script that has
-//!   credentials in a secret store and no human present.
-//!
-//! Both end in the same place: a refresh token, which is what
-//! `Session::logon_with_token` uses and what the token store persists.
-//!
-//! # Nothing here is needed for a dedicated server
-//!
-//! Anonymous logon covers every dedicated-server depot, which is what this
-//! project mostly exists for. This module is for the case where an owned app has
-//! to be installed, and none of it runs otherwise.
 
 use crate::InstallError;
 use std::fmt;
@@ -29,9 +12,6 @@ pub struct PendingLogin {
     /// The opaque request id to poll with.
     pub request_id: Vec<u8>,
     /// How often Steam wants to be polled, in seconds.
-    ///
-    /// Honoured rather than ignored: polling faster is how a login gets rate
-    /// limited, and Steam is explicit about the interval it wants.
     pub interval: f32,
     /// How the user must confirm, in the order Steam listed them.
     pub confirmations: Vec<GuardType>,
@@ -45,21 +25,12 @@ pub struct PendingLogin {
 
 impl PendingLogin {
     /// Whether typing a code is *among* the ways to confirm this login.
-    ///
-    /// Not the same as "the user must type a code". A real QR login comes back
-    /// offering `[DeviceConfirmation, DeviceCode]` — approve it on the phone
-    /// **or** type the authenticator code — so the list is a set of
-    /// alternatives, not a set of requirements. Reading it as requirements is
-    /// what an earlier version of this did, and it would have prompted for a
-    /// code during a QR login that needed no such thing.
     #[must_use]
     pub fn accepts_a_code(&self) -> bool {
         self.confirmations.iter().any(|guard| guard.needs_a_code())
     }
 
     /// Whether a code is the *only* way to confirm.
-    ///
-    /// This is the question a caller deciding whether to prompt should ask.
     #[must_use]
     pub fn requires_a_code(&self) -> bool {
         self.challenge_url.is_none()
@@ -68,10 +39,6 @@ impl PendingLogin {
     }
 
     /// What to tell a person waiting to log in.
-    ///
-    /// The QR URL wins when there is one, because scanning is the path that
-    /// needs no typing — but any code alternative is mentioned, since someone
-    /// without the phone to hand needs to know it exists.
     #[must_use]
     pub fn instruction(&self) -> String {
         match &self.challenge_url {
@@ -95,15 +62,10 @@ impl PendingLogin {
 pub enum PollOutcome {
     /// Still waiting for the user.
     Pending {
-        /// Whether the user has interacted at all yet, which is worth showing:
-        /// it distinguishes "they have not looked at their phone" from
-        /// "they are part-way through".
+        /// Whether the user has interacted at all yet.
         had_interaction: bool,
     },
     /// Steam moved the session; poll with the new identifiers.
-    ///
-    /// Happens on a QR login when the code is refreshed. Ignoring it means
-    /// polling a dead session forever.
     Moved {
         /// The new client id.
         client_id: u64,
@@ -125,10 +87,6 @@ pub enum PollOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginError {
     /// Steam refused, with its own result code.
-    ///
-    /// Kept as a number because the difference between "wrong password",
-    /// "rate limited" and "needs a Guard code" decides what the caller does
-    /// next, and collapsing them to "login failed" throws that away.
     Refused {
         /// Steam's `EResult`.
         eresult: i32,
@@ -163,10 +121,6 @@ impl fmt::Display for LoginError {
 }
 
 /// Says what a login result code means.
-///
-/// The number alone is useless to the person who has to act on it, and these
-/// four are almost all of what a login actually returns. Anything else keeps
-/// its number rather than being guessed at.
 #[must_use]
 pub fn describe_login_result(eresult: i32) -> &'static str {
     match eresult {
@@ -193,9 +147,6 @@ impl From<LoginError> for InstallError {
 }
 
 /// Builds the device details Steam records against the login.
-///
-/// Named honestly, so someone auditing their account's authorised devices can
-/// tell what added one.
 #[must_use]
 pub fn device_details()
 -> tapline_proto::steammessages_auth_steamclient::CAuthentication_DeviceDetails {
@@ -249,7 +200,6 @@ mod tests {
 
     #[test]
     fn a_refusal_says_what_to_do_about_it() {
-        // "EResult 5" tells the person nothing; the number is for the log.
         let wrong = LoginError::Refused {
             eresult: 5,
             message: None,
@@ -268,7 +218,6 @@ mod tests {
         .to_string();
         assert!(throttled.contains("rate limiting"), "{throttled}");
 
-        // An unknown code keeps its number rather than being invented.
         let odd = LoginError::Refused {
             eresult: 1234,
             message: None,
@@ -301,10 +250,6 @@ mod tests {
 
     #[test]
     fn a_real_qr_login_offers_a_code_as_an_alternative() {
-        // Measured against live Steam: a QR session comes back offering
-        // [DeviceConfirmation, DeviceCode]. The list is alternatives, not
-        // requirements — reading it as requirements would prompt for a code
-        // during a login that needs none.
         let login = pending(
             Some("https://s.team/q/1/2"),
             vec![GuardType::DeviceConfirmation, GuardType::DeviceCode],
@@ -315,14 +260,11 @@ mod tests {
             !login.requires_a_code(),
             "a QR login was treated as requiring a code"
         );
-        // And the alternative is mentioned, for someone without their phone.
         assert!(login.instruction().contains("Steam Guard code"));
     }
 
     #[test]
     fn a_guard_code_login_says_where_the_code_comes_from() {
-        // Email and authenticator are different places to look, and telling
-        // someone the wrong one wastes their time.
         let email = pending(None, vec![GuardType::EmailCode]);
         assert!(email.requires_a_code());
         assert!(email.instruction().contains("email"));
@@ -364,7 +306,6 @@ mod tests {
 
     #[test]
     fn a_missing_rsa_key_is_reported_as_missing() {
-        // Rather than encrypting a password under a default-constructed key.
         let response = CAuthentication_GetPasswordRSAPublicKey_Response::default();
         assert_eq!(
             key_from_response(&response),
@@ -374,8 +315,6 @@ mod tests {
 
     #[test]
     fn a_refusal_keeps_steams_own_code_and_message() {
-        // Wrong password, rate limited and needs-a-Guard-code lead to three
-        // different next actions.
         let error = LoginError::Refused {
             eresult: 5,
             message: Some("Invalid password".to_owned()),
@@ -387,8 +326,6 @@ mod tests {
 
     #[test]
     fn the_device_name_is_honest_about_what_it_is() {
-        // Someone auditing their authorised devices should be able to tell what
-        // added one.
         let details = device_details();
         assert_eq!(details.device_friendly_name.as_deref(), Some("tapline"));
     }

@@ -1,35 +1,13 @@
-//! Just enough gzip to unwrap a `CMsgMulti` payload.
-//!
-//! `miniz_oxide` inflates raw deflate and zlib streams but not gzip, so the
-//! RFC 1952 wrapper is handled here. That is a gain rather than a chore: the
-//! gzip trailer carries a CRC-32 and the uncompressed length, and checking both
-//! catches a truncated or corrupted batch that raw inflation would happily
-//! return a short buffer for.
-//!
-//! ```text
-//! +----+----+----+----+----+----+----+----+----+----+
-//! |x1f |x8b | CM |FLG |     MTIME     | XFL| OS |    header, 10 bytes
-//! +----+----+----+----+----+----+----+----+----+----+
-//! | ... optional FEXTRA / FNAME / FCOMMENT / FHCRC ...
-//! +---------------------------------------------------+
-//! | deflate stream                                    |
-//! +----+----+----+----+----+----+----+----+
-//! |      CRC-32       |      ISIZE        |            trailer, 8 bytes
-//! +----+----+----+----+----+----+----+----+
-//! ```
+//! Just enough gzip (RFC 1952) to unwrap a `CMsgMulti` payload.
 
 use std::fmt;
 
-/// The two bytes every gzip stream starts with.
 const MAGIC: [u8; 2] = [0x1F, 0x8B];
-/// The only compression method gzip defines.
 const METHOD_DEFLATE: u8 = 8;
-/// Fixed header length, before any optional fields.
 const HEADER_LEN: usize = 10;
-/// Trailer length: CRC-32 then ISIZE.
+// Trailer: CRC-32 then ISIZE.
 const TRAILER_LEN: usize = 8;
 
-// FLG bits.
 const FLG_FHCRC: u8 = 1 << 1;
 const FLG_FEXTRA: u8 = 1 << 2;
 const FLG_FNAME: u8 = 1 << 3;
@@ -47,9 +25,6 @@ pub enum GzipError {
     /// The output would have exceeded the caller's limit.
     TooLarge,
     /// The trailer's CRC-32 did not match what we decompressed.
-    ///
-    /// Worth distinguishing: it means the bytes were damaged in transit rather
-    /// than that we misread the format.
     ChecksumMismatch,
     /// The trailer's length did not match what we decompressed.
     LengthMismatch {
@@ -78,9 +53,6 @@ impl fmt::Display for GzipError {
 impl std::error::Error for GzipError {}
 
 /// Decompresses a gzip stream, refusing to produce more than `limit` bytes.
-///
-/// The limit is enforced by the inflater rather than checked afterwards, so a
-/// stream that would expand to gigabytes fails without allocating them.
 pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, GzipError> {
     let magic = data.get(..2).ok_or(GzipError::Malformed)?;
     if magic != MAGIC {
@@ -156,7 +128,6 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, GzipError> {
     Ok(out)
 }
 
-/// Skips a NUL-terminated header field.
 fn skip_nul_terminated(data: &[u8], from: usize) -> Result<usize, GzipError> {
     let tail = data.get(from..).ok_or(GzipError::Malformed)?;
     let nul = tail
@@ -166,10 +137,7 @@ fn skip_nul_terminated(data: &[u8], from: usize) -> Result<usize, GzipError> {
     from.checked_add(nul + 1).ok_or(GzipError::Malformed)
 }
 
-/// Wraps a deflate stream in a gzip container.
-///
-/// Only used to build test fixtures — nothing in the protocol asks tapline to
-/// produce gzip.
+/// Builds test fixtures; nothing in the protocol asks tapline to produce gzip.
 #[cfg(test)]
 pub fn compress(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -201,7 +169,6 @@ mod tests {
 
     #[test]
     fn optional_header_fields_are_skipped() {
-        // FNAME is the one gzip writers actually set.
         let payload = b"payload";
         let deflated = miniz_oxide::deflate::compress_to_vec(payload, 6);
 
@@ -223,7 +190,6 @@ mod tests {
 
     #[test]
     fn a_corrupted_payload_is_caught_by_the_checksum() {
-        // Raw inflation would have returned these bytes without complaint.
         let mut compressed = compress(b"important message");
         let last = compressed.len() - TRAILER_LEN - 1;
         if let Some(byte) = compressed.get_mut(last) {
@@ -250,7 +216,6 @@ mod tests {
 
     #[test]
     fn the_limit_is_enforced_during_inflation() {
-        // A batch that would expand past the cap must fail rather than allocate.
         let big = vec![b'x'; 200_000];
         let compressed = compress(&big);
         assert_eq!(decompress(&compressed, 1024), Err(GzipError::TooLarge));

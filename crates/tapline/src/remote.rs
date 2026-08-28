@@ -1,34 +1,4 @@
 //! Reading part of a file that has not been downloaded.
-//!
-//! A depot file is stored as content-addressed chunks, each one carrying the
-//! offset its plaintext belongs at. That means a range of the file can be
-//! fetched on its own: find the chunks the range crosses, fetch those, and
-//! slice.
-//!
-//! # What this changes
-//!
-//! Streaming a format required reading it front to back, which is only possible
-//! for a container whose index comes first — GMAD, and not much else. A ZIP
-//! keeps its central directory at the **end**, so a sequential reader cannot
-//! know what is in it until it has read all of it.
-//!
-//! With random access that stops being a limitation of the transport and
-//! becomes an ordinary read: fetch the tail, parse the directory, then fetch
-//! whatever entries are wanted. The same applies to any container whose index
-//! can be found without reading everything before it.
-//!
-//! # And filtering can stop downloading what it discards
-//!
-//! `only("lua/**")` selects entries from an archive. Read sequentially, every
-//! byte still crosses the wire and the unselected ones are dropped on arrival.
-//! Read by range, the chunks holding unselected entries are never asked for.
-//!
-//! # What it costs
-//!
-//! A chunk is the unit, so a one-byte read fetches up to a whole chunk, and two
-//! ranges inside one chunk fetch it twice unless the caller asks for them
-//! together. [`RemoteFile::read_many`] exists for that: it plans the whole set
-//! of ranges, fetches each chunk once, and hands back the pieces.
 
 use crate::install::InstallError;
 use std::sync::Arc;
@@ -37,9 +7,7 @@ use tapline_manifest::Chunk;
 
 /// A file in a depot, readable without downloading all of it.
 pub struct RemoteFile {
-    /// Chunks in offset order.
     chunks: Vec<Chunk>,
-    /// The file's total size.
     size: u64,
     depot: DepotId,
     key: [u8; 32],
@@ -59,7 +27,6 @@ impl std::fmt::Debug for RemoteFile {
 }
 
 impl RemoteFile {
-    /// Builds a reader over a file's chunks.
     pub(crate) fn new(
         mut chunks: Vec<Chunk>,
         depot: DepotId,
@@ -68,8 +35,7 @@ impl RemoteFile {
         http: Arc<tapline_rt_tokio::HttpClient>,
         limit: Arc<tokio::sync::Semaphore>,
     ) -> Self {
-        // Offset order, because every lookup below is a search over it and the
-        // manifest does not promise the index is sorted.
+        // The manifest does not promise offset order; every lookup below assumes it.
         chunks.sort_by_key(|chunk| chunk.offset);
         let size = chunks
             .last()
@@ -104,9 +70,6 @@ impl RemoteFile {
     }
 
     /// Which chunks a byte range crosses.
-    ///
-    /// Separate from the fetching so it can be tested without a network: the
-    /// arithmetic is where the bug would be.
     #[must_use]
     pub fn chunks_for(&self, offset: u64, len: u64) -> Vec<usize> {
         if len == 0 {
@@ -125,9 +88,6 @@ impl RemoteFile {
     }
 
     /// How many bytes fetching these ranges would transfer.
-    ///
-    /// The number worth quoting when deciding whether a filter is worth it: a
-    /// selective read that touches every chunk saves nothing.
     #[must_use]
     pub fn cost_of(&self, ranges: &[(u64, u64)]) -> u64 {
         let mut wanted = std::collections::BTreeSet::new();
@@ -148,12 +108,7 @@ impl RemoteFile {
     }
 
     /// Reads several ranges, fetching each chunk at most once.
-    ///
-    /// Returns the pieces in the order asked for. Ranges that share a chunk —
-    /// several small files packed together, which is the common case in an
-    /// archive — cost one fetch between them rather than one each.
     pub async fn read_many(&self, ranges: &[(u64, u64)]) -> Result<Vec<Vec<u8>>, InstallError> {
-        // Every chunk any range needs, once.
         let mut wanted: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         for (offset, len) in ranges {
             wanted.extend(self.chunks_for(*offset, *len));
@@ -176,8 +131,7 @@ impl RemoteFile {
 
             tasks.spawn(async move {
                 let outcome = async move {
-                    // The same process-wide budget an ordinary download draws
-                    // on, so a ranged read and an install do not each take one.
+                    // Draws on the same process-wide budget as ordinary downloads.
                     let _permit = limit
                         .acquire_owned()
                         .await
@@ -196,7 +150,6 @@ impl RemoteFile {
             fetched.insert(index, outcome?);
         }
 
-        // Cut the requested ranges out of the chunks that hold them.
         let mut out = Vec::with_capacity(ranges.len());
         for (offset, len) in ranges {
             let mut piece = Vec::with_capacity(*len as usize);
@@ -205,7 +158,6 @@ impl RemoteFile {
                 else {
                     continue;
                 };
-                // Where this range starts and ends inside this chunk.
                 let start = offset.saturating_sub(chunk.offset) as usize;
                 let stop = ((offset + len).saturating_sub(chunk.offset) as usize).min(bytes.len());
                 if let Some(slice) = bytes.get(start..stop) {
@@ -222,7 +174,6 @@ impl RemoteFile {
 mod tests {
     use super::*;
 
-    /// A file of `count` chunks of `size` bytes each, with no network behind it.
     fn file(count: usize, size: u32) -> RemoteFile {
         let chunks = (0..count)
             .map(|index| Chunk {
@@ -276,17 +227,12 @@ mod tests {
 
     #[test]
     fn a_zero_length_range_needs_nothing() {
-        // Asking for nothing must not fetch a chunk, which is the difference
-        // between a filter that skips a file and one that pays for it anyway.
         let file = file(4, 1000);
         assert!(file.chunks_for(1500, 0).is_empty());
     }
 
     #[test]
     fn a_range_at_the_very_end_is_included() {
-        // The tail is exactly what a ZIP's central directory lives in, so an
-        // off-by-one here is the difference between reading a directory and
-        // reading nothing.
         let file = file(4, 1000);
         assert_eq!(file.chunks_for(3999, 1), vec![3]);
         assert_eq!(file.chunks_for(3000, 1000), vec![3]);
@@ -301,8 +247,6 @@ mod tests {
 
     #[test]
     fn cost_counts_each_chunk_once() {
-        // Two ranges inside one chunk cost one fetch, which is the whole reason
-        // `read_many` exists.
         let file = file(4, 1000);
         assert_eq!(file.cost_of(&[(0, 10)]), 500);
         assert_eq!(file.cost_of(&[(0, 10), (20, 10)]), 500);
@@ -321,8 +265,6 @@ mod tests {
 
     #[test]
     fn chunks_are_sorted_even_when_the_manifest_is_not() {
-        // The manifest does not promise index order, and every lookup here is a
-        // scan that assumes it.
         let chunks = vec![
             Chunk {
                 id: [0; 20],
