@@ -209,6 +209,19 @@ await downloadWorkshopItem({ app: 4000, item: page.items[0].item, dir: "/srv/gmo
 
 Works on an anonymous session: no key, no login.
 
+Steam's sidebar filters by groups — one tag from each — which a flat tag list
+cannot say:
+
+```ts
+// (Scene or Video) and Anime, ranked by the last six months of activity.
+await searchWorkshop({
+  app: 431960,
+  tagGroups: [["Scene", "Video"], ["Anime"]],
+  sort: "trend",
+  days: 180,
+});
+```
+
 | option | does |
 |---|---|
 | `text` | free text to match |

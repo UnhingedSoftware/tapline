@@ -138,6 +138,18 @@ await test("a bad sort is refused before the search runs", async () => {
   assert(message.includes("subscribed"), `should list what works: ${message}`);
 });
 
+await test("a trend window on another sort is refused", async () => {
+  // Steam takes the number and ignores it, so accepting it would show a
+  // period control that does nothing.
+  let message = "";
+  try {
+    await searchWorkshop({ app: 4000, sort: "vote", days: 7 });
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assert(message.includes("trend"), `unexpected: ${message}`);
+});
+
 await test("a text sort without text is refused", async () => {
   // It "works" and returns an arbitrary order, which looks like a ranking.
   let message = "";
@@ -161,6 +173,26 @@ await test("a bad directive fails before anything downloads", async () => {
 });
 
 if (process_env("TAPLINE_LIVE") === "1") {
+  await test("tag groups reach Steam as groups", async () => {
+    // (Scene or Video) and Anime is a query the flat tag list cannot express,
+    // so it must match fewer items than accepting any of the three tags.
+    const grouped = await searchWorkshop({
+      app: 431960,
+      tagGroups: [["Scene", "Video"], ["Anime"]],
+      limit: 1,
+    });
+    const any = await searchWorkshop({
+      app: 431960,
+      tags: ["Scene", "Video", "Anime"],
+      limit: 1,
+    });
+    assert(grouped.total > 0, "grouped search matched nothing");
+    assert(
+      grouped.total < any.total,
+      `grouped ${grouped.total} should be fewer than any-of ${any.total}`,
+    );
+  });
+
   await test("a filtered chain downloads less than the whole archive", async () => {
     // The capability the chain exists for: a selection makes the *download*
     // selective, rather than fetching everything and discarding on arrival.

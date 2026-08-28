@@ -675,9 +675,18 @@ export interface SearchOptions {
   text?: string;
   /** Tags an item must carry. */
   tags?: string[];
+  /**
+   * Groups of tags, of which an item must carry at least one from each.
+   *
+   * Steam's own sidebar: `[["Scene", "Video"], ["Anime"]]` means *(Scene or
+   * Video) and Anime*. {@link SearchOptions.tags} cannot express that —
+   * {@link SearchOptions.allTags} is one switch over the whole list, so it is
+   * every tag or any tag and nothing between.
+   */
+  tagGroups?: string[][];
   /** Tags that exclude an item. */
   excludeTags?: string[];
-  /** Require every tag rather than any of them. */
+  /** Require every tag rather than any of them. Applies to `tags` only. */
   allTags?: boolean;
   /**
    * How to order results: `vote`, `recent`, `updated`, `trend`, `subscribed`
@@ -685,6 +694,15 @@ export interface SearchOptions {
    * returns an arbitrary order that looks like a ranking, so it is refused.
    */
   sort?: "vote" | "recent" | "updated" | "trend" | "subscribed" | "text";
+  /**
+   * How many days of activity a `trend` ranking covers — the period beside
+   * Steam's "Most Popular". Steam's own window is a single day.
+   *
+   * It applies to no other sort: Steam takes the number and ignores it, so
+   * passing one with another sort is refused rather than quietly doing
+   * nothing.
+   */
+  days?: number;
   /** How many to return. Capped at 100, because Steam silently returns fewer. */
   limit?: number;
   /** {@link SearchPage.nextCursor} from a previous page. */
@@ -730,9 +748,13 @@ export function searchWorkshop(options: SearchOptions): Job<SearchPage> {
         options.app,
         options.text ?? null,
         options.tags?.length ? options.tags.join(",") : null,
+        options.tagGroups?.length
+          ? options.tagGroups.map((group) => group.join(",")).join(";")
+          : null,
         options.excludeTags?.length ? options.excludeTags.join(",") : null,
         options.allTags ? 1 : 0,
         options.sort ?? null,
+        options.days ?? 0,
         options.limit ?? 0,
         options.cursor ?? null,
       ),

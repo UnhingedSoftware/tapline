@@ -562,6 +562,15 @@ pub unsafe extern "C" fn tapline_workshop_download(
 /// or null for the first. Results arrive as `result` events followed by one
 /// `searched` event carrying the totals.
 ///
+/// `tag_groups` is Steam's sidebar: groups separated by `;`, tags within a
+/// group by `,`, so `"Scene,Video;Anime"` means *(Scene or Video) and Anime*.
+/// A flat tag list cannot express that, which is the whole reason it is a
+/// second parameter rather than more of the first.
+///
+/// `trend_days` is the period a `trend` sort ranks over. Zero means unset,
+/// which is also what Steam does with a zero it is sent, and it applies to no
+/// other sort — passing one elsewhere is refused rather than ignored.
+///
 /// # Safety
 ///
 /// Every pointer must be a null-terminated UTF-8 string or null, and `out` must
@@ -572,9 +581,11 @@ pub unsafe extern "C" fn tapline_workshop_search(
     app_id: u32,
     text: *const c_char,
     tags: *const c_char,
+    tag_groups: *const c_char,
     excluded_tags: *const c_char,
     all_tags: u8,
     sort: *const c_char,
+    trend_days: u32,
     limit: u32,
     cursor: *const c_char,
     out: *mut *mut TaplineJob,
@@ -585,6 +596,19 @@ pub unsafe extern "C" fn tapline_workshop_search(
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
                 .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    fn groups(raw: Option<&str>) -> Vec<Vec<String>> {
+        raw.map(|raw| {
+            raw.split(';')
+                .map(|group| split(Some(group)))
+                // An empty group would be refused by validate; dropping the
+                // empties first means a trailing `;` is a typo rather than an
+                // error, the same way an empty tag in a list is skipped.
+                .filter(|group: &Vec<String>| !group.is_empty())
                 .collect()
         })
         .unwrap_or_default()
@@ -611,12 +635,17 @@ pub unsafe extern "C" fn tapline_workshop_search(
         app: AppId(app_id),
         text: unsafe { read_str(text) }.map(str::to_owned),
         required_tags: split(unsafe { read_str(tags) }),
+        tag_groups: groups(unsafe { read_str(tag_groups) }),
         excluded_tags: split(unsafe { read_str(excluded_tags) }),
         match_all_tags: all_tags != 0,
         sort,
+        trend_days: if trend_days == 0 {
+            None
+        } else {
+            Some(trend_days)
+        },
         per_page: if limit == 0 { defaults.per_page } else { limit },
         cursor: unsafe { read_str(cursor) }.map(str::to_owned),
-        ..defaults
     };
     if let Err(error) = query.validate() {
         set_error(error.to_string());

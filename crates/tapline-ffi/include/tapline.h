@@ -101,12 +101,20 @@ int32_t tapline_workshop_download(uint32_t app_id,
 
 /* Searches an app's Workshop.
  *
- * text, tags, excluded_tags, sort and cursor may all be NULL. tags and
- * excluded_tags are comma-separated. sort is one of: vote, recent, updated,
+ * text, tags, tag_groups, excluded_tags, sort and cursor may all be NULL. tags
+ * and excluded_tags are comma-separated. sort is one of: vote, recent, updated,
  * trend, subscribed, text — and "text" requires text to be set, because
  * without it Steam returns an arbitrary order that looks like a ranking.
  * limit of 0 takes the default; anything above 100 is clamped, since Steam
  * silently returns fewer rather than erroring.
+ *
+ * tag_groups is Steam's own sidebar: groups separated by ';', tags within a
+ * group by ',', so "Scene,Video;Anime" means (Scene or Video) and Anime. The
+ * flat tag list cannot say that — all_tags is one switch over the whole set.
+ *
+ * trend_days is the period a trend ranking covers, and 0 means unset. It
+ * applies to no other sort: Steam accepts the number and ignores it, so
+ * sending one with another sort is refused here instead.
  *
  * cursor is the nextCursor from a previous page, or NULL for the first. Paging
  * is a cursor rather than an offset because offsets repeat items past about a
@@ -120,9 +128,11 @@ int32_t tapline_workshop_download(uint32_t app_id,
 int32_t tapline_workshop_search(uint32_t app_id,
                                 const char *text,
                                 const char *tags,
+                                const char *tag_groups,
                                 const char *excluded_tags,
                                 uint8_t all_tags,
                                 const char *sort,
+                                uint32_t trend_days,
                                 uint32_t limit,
                                 const char *cursor,
                                 TaplineJob **out);
