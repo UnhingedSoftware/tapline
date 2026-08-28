@@ -1,0 +1,64 @@
+name: Publish
+# Publishes every crate in the workspace to crates.io, in dependency order.
+#
+# Separate from Release on purpose. A GitHub release can be deleted and redone;
+# a crates.io version cannot be unpublished, only yanked, and yanking leaves the
+# version number spent forever. So this is its own button, run deliberately
+# after a release has been reviewed.
+#
+# Needs a CARGO_REGISTRY_TOKEN secret with publish rights.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Package and verify without uploading. Do this first."
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The gates, again. crates.io is append-only, so "it built on my machine"
+      # is not a good enough reason to spend a version number.
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Format
+        run: cargo fmt --all --check
+
+      # cargo works out the order from the dependency graph. Sibling
+      # dev-dependencies are declared path-only so cargo strips them when
+      # packaging — otherwise a crate could not be published before the crates
+      # its own tests use.
+      - name: Package every crate
+        run: cargo publish --workspace --dry-run
+
+      - name: Publish to crates.io
+        if: ${{ inputs.dry-run == false }}
+        run: cargo publish --workspace --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Say what happened
+        run: |
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "Dry run only. Nothing was uploaded." >> "$GITHUB_STEP_SUMMARY"
+            echo "Re-run with dry-run unchecked to publish." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published $(cargo metadata --format-version 1 --no-deps \
+              | grep -o '\"name\":\"tapline[^\"]*\"' | wc -l) crates to crates.io." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi

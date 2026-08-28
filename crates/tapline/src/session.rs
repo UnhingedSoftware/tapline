@@ -25,7 +25,9 @@ use tapline_proto::steammessages_contentsystem_steamclient::{
     CContentServerDirectory_GetManifestRequestCode_Request,
     CContentServerDirectory_GetServersForSteamPipe_Request,
 };
-use tapline_proto::steammessages_publishedfile_steamclient::CPublishedFile_GetDetails_Request;
+use tapline_proto::steammessages_publishedfile_steamclient::{
+    CPublishedFile_GetDetails_Request, CPublishedFile_Unsubscribe_Request,
+};
 use tapline_rt_tokio::{CmTransport, FileSink, cm_list};
 use tapline_state::AppState;
 use tapline_wire::Message;
@@ -1360,6 +1362,35 @@ impl Session {
         request.numperpage = Some(1);
         let response = self.cm.call(&request).await?;
         Ok(response.total.unwrap_or(0))
+    }
+
+    /// Tells Steam this account no longer wants an item.
+    ///
+    /// The other half of removing a wallpaper: deleting the files leaves the
+    /// subscription, and the Steam client downloads it again the next time it
+    /// syncs. Needs an account — an anonymous session has no subscriptions to
+    /// change.
+    ///
+    /// # Errors
+    /// When the call fails, or the session is not signed in.
+    pub async fn unsubscribe_workshop_item(
+        &mut self,
+        app: AppId,
+        item: PublishedFileId,
+    ) -> Result<(), InstallError> {
+        self.cm
+            .call(&CPublishedFile_Unsubscribe_Request {
+                publishedfileid: Some(item.get()),
+                // Steam wants the app the item belongs to; without it the
+                // unsubscribe applies to nothing and still answers success.
+                appid: i32::try_from(app.get()).ok(),
+                // So a running Steam client notices rather than finding out on
+                // its next sync.
+                notify_client: Some(true),
+                ..CPublishedFile_Unsubscribe_Request::default()
+            })
+            .await?;
+        Ok(())
     }
 
     /// Downloads one Workshop item.

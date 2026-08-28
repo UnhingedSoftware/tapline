@@ -32,6 +32,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/UnhingedSoftware/tapline"
+homepage = "https://github.com/UnhingedSoftware/tapline"
+readme = "README.md"
+keywords = ["steam", "steamcmd", "depot", "workshop", "steampipe"]
+categories = ["network-programming", "game-development", "command-line-utilities"]
 rust-version = "1.85"
 
 # The dependency floor. Everything here is pure Rust with no C toolchain, and

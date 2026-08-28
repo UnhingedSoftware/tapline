@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
 
 # The only crate in the workspace that opens a socket, and therefore the only one
@@ -20,13 +24,15 @@ webpki-roots = { workspace = true }
 
 [dev-dependencies]
 tapline-io = { workspace = true, features = ["testing"] }
-# The doctest and the live tests drive a real session, which is the only way to
-# show what this crate is for.
-tapline-crypto = { workspace = true }
-tapline-ids = { workspace = true }
-tapline-manifest = { workspace = true }
+# The doctest and live_cm drive a real session, which is the only way to show
+# what this crate is for.
+#
+# Nothing higher up the stack belongs here. The probes that needed a manifest
+# or PICS now live in `tapline`'s tests: a dev-dependency pointing up the DAG
+# made a cycle that no publish order can satisfy — manifest -> pics ->
+# rt-tokio -> manifest — and cargo resolves dev-dependencies even with
+# --no-verify, so the first release could not be cut at all.
 tapline-net = { workspace = true }
-tapline-pics = { workspace = true }
 tapline-proto = { workspace = true }
 tapline-wire = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

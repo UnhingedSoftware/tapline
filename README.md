@@ -218,6 +218,22 @@ Network tests are `#[ignore]`d, so the default suite is offline. Run them with
 `-- --ignored`; the steamcmd differential needs `TAPLINE_STEAMCMD_DIR` pointing
 at a steamcmd install of the same app.
 
+## Contributing
+
+Patches welcome. Two things are worth knowing before you spend time on one:
+
+- **Tests ship with the change**, in the same commit. Every parser here eats
+  untrusted bytes, so a new one arrives with its own tests rather than in a
+  later pass.
+- **The gates are `cargo test --workspace`, `cargo clippy --workspace
+  --all-targets` and `cargo fmt --all --check`.** CI runs all three. Network
+  tests are `#[ignore]`d and are not required to pass for a PR, since they need
+  Steam.
+
+No CLA. Contributions are MPL-2.0 like everything else — see below.
+
+Security problems go to [SECURITY.md](SECURITY.md), not to a public issue.
+
 ## Licence
 
 **MPL-2.0.** File-level copyleft, which in practice means:
