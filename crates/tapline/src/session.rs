@@ -63,6 +63,27 @@ struct ResolvedDepot {
     key: [u8; 32],
 }
 
+#[must_use]
+fn accounts_to_try(
+    account: Option<&str>,
+    steam_recent: Option<String>,
+    saved: Vec<String>,
+) -> Vec<String> {
+    if let Some(name) = account {
+        return vec![name.to_owned()];
+    }
+    let mut order: Vec<String> = steam_recent
+        .filter(|name| saved.iter().any(|held| held == name))
+        .into_iter()
+        .collect();
+    for name in saved {
+        if !order.contains(&name) {
+            order.push(name);
+        }
+    }
+    order
+}
+
 impl Session {
     pub async fn anonymous() -> Result<Self, InstallError> {
         Self::anonymous_shared(crate::Shared::new(InstallOptions::default().concurrency)).await
@@ -174,14 +195,16 @@ impl Session {
         shared: Arc<crate::Shared>,
     ) -> Result<Self, InstallError> {
         let store = tapline_auth::TokenStore::default_file();
-        let wanted = match account {
-            Some(name) => Some(name.to_owned()),
-            None => tapline_auth::most_recent().map(|found| found.account),
-        };
+        let wanted = accounts_to_try(
+            account,
+            tapline_auth::most_recent().map(|found| found.account),
+            store.accounts().unwrap_or_default(),
+        );
 
-        if let Some(name) = wanted
-            && let Ok(Some(token)) = store.load(&name)
-        {
+        for name in wanted {
+            let Ok(Some(token)) = store.load(&name) else {
+                continue;
+            };
             if let Ok(session) = Self::with_token_shared(&token, Arc::clone(&shared)).await {
                 return Ok(session);
             }
@@ -1785,6 +1808,27 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::accounts_to_try;
+
+    #[test]
+    fn a_saved_token_is_used_when_no_steam_client_is_installed() {
+        let order = accounts_to_try(None, None, vec!["someone".to_owned()]);
+        assert_eq!(order, vec!["someone".to_owned()]);
+    }
+
+    #[test]
+    fn the_account_steam_used_last_goes_first_when_it_has_a_token() {
+        let saved = vec!["other".to_owned(), "recent".to_owned()];
+        let order = accounts_to_try(None, Some("recent".to_owned()), saved);
+        assert_eq!(order, vec!["recent".to_owned(), "other".to_owned()]);
+    }
+
+    #[test]
+    fn a_steam_account_with_no_token_does_not_shadow_the_saved_ones() {
+        let order = accounts_to_try(None, Some("nologin".to_owned()), vec!["saved".to_owned()]);
+        assert_eq!(order, vec!["saved".to_owned()]);
+    }
+
     use super::*;
 
     #[test]
