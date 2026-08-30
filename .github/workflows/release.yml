@@ -101,7 +101,7 @@ jobs:
           | --- | --- |
           | `tapline-linux-x86_64` | the command line — `chmod +x`, run |
           | `libtapline_ffi-linux-x86_64.so` | the C ABI the JavaScript bindings load |
-          | `tapline-macos-aarch64` / `tapline-macos-x86_64` | the command line for macOS |
+          | `tapline-macos-aarch64` | the command line for macOS (Apple Silicon) |
           | `libtapline_ffi-macos-*.dylib` | the same C ABI for macOS |
 
           EOF
@@ -133,15 +133,7 @@ jobs:
   # self-hosted runners are Linux, so these are GitHub-hosted.
   macos:
     needs: release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            arch: aarch64
-          - runner: macos-13
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     env:
       GH_TOKEN: ${{ github.token }}
       V: ${{ needs.release.outputs.version }}
@@ -153,7 +145,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.arch }}
+          key: release-aarch64
 
       - name: Set crate version
         run: |
@@ -170,15 +162,15 @@ jobs:
       - name: Name the artifacts
         run: |
           set -euo pipefail
-          cp target/release/tapline "tapline-macos-${{ matrix.arch }}"
-          cp target/release/libtapline_ffi.dylib "libtapline_ffi-macos-${{ matrix.arch }}.dylib"
-          chmod +x "tapline-macos-${{ matrix.arch }}"
+          cp target/release/tapline "tapline-macos-aarch64"
+          cp target/release/libtapline_ffi.dylib "libtapline_ffi-macos-aarch64.dylib"
+          chmod +x "tapline-macos-aarch64"
           ls -la tapline-macos-* libtapline_ffi-macos-*
 
       - name: Upload into the draft
         run: |
           set -euo pipefail
-          files="tapline-macos-${{ matrix.arch }} libtapline_ffi-macos-${{ matrix.arch }}.dylib"
+          files="tapline-macos-aarch64 libtapline_ffi-macos-aarch64.dylib"
           for f in $files; do
             gh release delete-asset "$V" "$f" --yes 2>/dev/null || true
           done
