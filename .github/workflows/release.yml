@@ -29,6 +29,8 @@ env:
 jobs:
   release:
     runs-on: self-hosted
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -99,6 +101,8 @@ jobs:
           | --- | --- |
           | `tapline-linux-x86_64` | the command line — `chmod +x`, run |
           | `libtapline_ffi-linux-x86_64.so` | the C ABI the JavaScript bindings load |
+          | `tapline-macos-aarch64` / `tapline-macos-x86_64` | the command line for macOS |
+          | `libtapline_ffi-macos-*.dylib` | the same C ABI for macOS |
 
           EOF
           if gh release view "$V" >/dev/null 2>&1; then
@@ -124,3 +128,63 @@ jobs:
               --notes-file RELEASE_NOTES.md $files
           fi
           echo "Draft $V ready."
+
+  # macOS artifacts, uploaded into the draft the job above created. The
+  # self-hosted runners are Linux, so these are GitHub-hosted.
+  macos:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: aarch64
+          - runner: macos-13
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      V: ${{ needs.release.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.arch }}
+
+      - name: Set crate version
+        run: |
+          python3 - <<'PY'
+          import os, re
+          want = os.environ["V"].lstrip("v")
+          text = open("Cargo.toml").read()
+          text = re.sub(r'^version = "\d+\.\d+\.\d+"', f'version = "{want}"', text, count=1, flags=re.M)
+          open("Cargo.toml", "w").write(text)
+          PY
+
+      - run: cargo build --release -p tapline-cli -p tapline-ffi
+
+      - name: Name the artifacts
+        run: |
+          set -euo pipefail
+          cp target/release/tapline "tapline-macos-${{ matrix.arch }}"
+          cp target/release/libtapline_ffi.dylib "libtapline_ffi-macos-${{ matrix.arch }}.dylib"
+          chmod +x "tapline-macos-${{ matrix.arch }}"
+          ls -la tapline-macos-* libtapline_ffi-macos-*
+
+      - name: Upload into the draft
+        run: |
+          set -euo pipefail
+          files="tapline-macos-${{ matrix.arch }} libtapline_ffi-macos-${{ matrix.arch }}.dylib"
+          for f in $files; do
+            gh release delete-asset "$V" "$f" --yes 2>/dev/null || true
+          done
+          for attempt in 1 2 3; do
+            if gh release upload "$V" $files --clobber; then exit 0; fi
+            echo "upload attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::could not upload the macOS assets"; exit 1
