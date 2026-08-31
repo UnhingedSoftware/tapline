@@ -8,17 +8,47 @@ pub struct LocalAccount {
     pub most_recent: bool,
 }
 
-fn roots(home: &Path) -> [PathBuf; 3] {
-    [
-        home.join(".steam/steam"),
-        home.join(".local/share/Steam"),
-        home.join(".steam/root"),
-    ]
+#[must_use]
+pub fn home_relative_roots() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &["Library/Application Support/Steam"]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        &["Steam"]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        &[
+            ".steam/steam",
+            ".local/share/Steam",
+            ".steam/root",
+            ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+            "snap/steam/common/.local/share/Steam",
+        ]
+    }
+}
+
+fn roots(home: &Path) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = home_relative_roots()
+        .iter()
+        .map(|relative| home.join(relative))
+        .collect();
+    for key in ["ProgramFiles(x86)", "ProgramFiles"] {
+        if let Some(base) = std::env::var_os(key) {
+            roots.push(PathBuf::from(base).join("Steam"));
+        }
+    }
+    roots
 }
 
 #[must_use]
 pub fn discover() -> Vec<LocalAccount> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+    let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+    else {
         return Vec::new();
     };
     discover_in(&roots(&home))
@@ -138,6 +168,34 @@ pub fn parse_libraries(text: &str) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn this_platform_knows_where_steam_keeps_its_accounts() {
+        let roots = home_relative_roots();
+        assert!(!roots.is_empty());
+        if cfg!(target_os = "macos") {
+            assert_eq!(roots, ["Library/Application Support/Steam"]);
+        } else if !cfg!(target_os = "windows") {
+            assert!(roots.contains(&".steam/steam"));
+            assert!(
+                roots
+                    .iter()
+                    .any(|root| root.contains("com.valvesoftware.Steam"))
+            );
+        }
+    }
+
+    #[test]
+    fn a_home_yields_one_root_per_known_layout() {
+        let home = std::path::Path::new("/home/someone");
+        let roots = roots(home);
+        assert!(roots.len() >= home_relative_roots().len());
+        assert!(
+            roots
+                .iter()
+                .all(|root| root.starts_with(home) || root.is_absolute())
+        );
+    }
     use super::*;
 
     const TWO_ACCOUNTS: &str = r#"
