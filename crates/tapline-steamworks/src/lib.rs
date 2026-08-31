@@ -11,7 +11,27 @@ const UGC_ACCESSOR: &[u8] = b"SteamAPI_SteamUGC_v021\0";
 const UTILS_ACCESSOR: &[u8] = b"SteamAPI_SteamUtils_v011\0";
 const APPS_ACCESSOR: &[u8] = b"SteamAPI_SteamApps_v009\0";
 
-const LIB_RELATIVE: [&str; 2] = ["steamrt64/libsteam_api.so", "linux64/libsteam_api.so"];
+#[cfg(target_os = "linux")]
+const LIB_RELATIVE: &[&str] = &["steamrt64/libsteam_api.so", "linux64/libsteam_api.so"];
+
+#[cfg(target_os = "macos")]
+const LIB_RELATIVE: &[&str] = &[
+    "Steam.AppBundle/Steam/Contents/MacOS/osx32/libsteam_api.dylib",
+    "Steam.AppBundle/Steam/Contents/MacOS/libsteam_api.dylib",
+    "osx32/libsteam_api.dylib",
+];
+
+#[cfg(target_os = "windows")]
+const LIB_RELATIVE: &[&str] = &["steam_api64.dll", "bin/steam_api64.dll"];
+
+#[cfg(target_os = "linux")]
+const LIB_FILE: &str = "libsteam_api.so";
+
+#[cfg(target_os = "macos")]
+const LIB_FILE: &str = "libsteam_api.dylib";
+
+#[cfg(target_os = "windows")]
+const LIB_FILE: &str = "steam_api64.dll";
 
 type Handle = *mut c_void;
 
@@ -74,25 +94,79 @@ impl std::fmt::Display for SteamError {
 
 impl std::error::Error for SteamError {}
 
+pub fn home_relative_roots() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &["Library/Application Support/Steam"]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &[
+            ".local/share/Steam",
+            ".steam/steam",
+            ".steam/root",
+            ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+            "snap/steam/common/.local/share/Steam",
+        ]
+    }
+}
+
 fn steam_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(over) = std::env::var_os("TAPLINE_STEAM_ROOT") {
         roots.push(PathBuf::from(over));
     }
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         let home = Path::new(&home);
-        roots.push(home.join(".local/share/Steam"));
-        roots.push(home.join(".steam/steam"));
-        roots.push(home.join(".steam/root"));
+        for relative in home_relative_roots() {
+            roots.push(home.join(relative));
+        }
+    }
+    if cfg!(target_os = "macos") {
+        roots.push(PathBuf::from("/Applications/Steam.app/Contents/MacOS"));
+    }
+    for key in ["ProgramFiles(x86)", "ProgramFiles"] {
+        if let Some(base) = std::env::var_os(key) {
+            roots.push(PathBuf::from(base).join("Steam"));
+        }
     }
     roots
 }
 
 fn find_library(roots: &[PathBuf]) -> Option<PathBuf> {
-    roots
+    let named = roots
         .iter()
         .flat_map(|root| LIB_RELATIVE.iter().map(move |rel| root.join(rel)))
-        .find(|path| path.is_file())
+        .find(|path| path.is_file());
+    named.or_else(|| roots.iter().find_map(|root| hunt(root, 3)))
+}
+
+fn hunt(root: &Path, depth: usize) -> Option<PathBuf> {
+    let here = root.join(LIB_FILE);
+    if here.is_file() {
+        return Some(here);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let skip = matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("steamapps" | "userdata" | "logs" | "appcache" | "depotcache" | "music")
+        );
+        if skip {
+            continue;
+        }
+        if let Some(found) = hunt(&path, depth - 1) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl Steam {
@@ -320,6 +394,45 @@ impl Drop for Steam {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn this_platform_looks_where_steam_installs() {
+        let roots = home_relative_roots();
+        assert!(!roots.is_empty());
+        if cfg!(target_os = "macos") {
+            assert_eq!(roots, ["Library/Application Support/Steam"]);
+        } else {
+            assert!(roots.contains(&".local/share/Steam"));
+            assert!(
+                roots
+                    .iter()
+                    .any(|root| root.contains("com.valvesoftware.Steam")),
+                "a flatpak install is still a Steam install"
+            );
+        }
+    }
+
+    #[test]
+    fn the_library_is_hunted_out_of_an_unusual_layout() {
+        let root = std::env::temp_dir().join(format!("tapline-steam-hunt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("ubuntu12_64/steam-runtime");
+        std::fs::create_dir_all(&nested).expect("scratch dirs");
+        let planted = nested.join(LIB_FILE);
+        std::fs::write(&planted, b"not really a library").expect("plant");
+
+        assert_eq!(find_library(std::slice::from_ref(&root)), Some(planted));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nothing_is_found_in_an_empty_root() {
+        let root = std::env::temp_dir().join(format!("tapline-steam-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        assert_eq!(find_library(std::slice::from_ref(&root)), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use super::*;
 
     #[test]
