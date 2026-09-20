@@ -232,14 +232,16 @@ fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStore
 
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     let temporary = path.with_extension("tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(&temporary)
         .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
 
@@ -252,6 +254,7 @@ fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     std::fs::rename(&temporary, path).map_err(|e| TokenStoreError::Backend(e.to_string()))
 }
 
+#[cfg(unix)]
 fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -261,6 +264,12 @@ fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     if mode & 0o077 != 0 {
         return Err(TokenStoreError::Insecure { mode });
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
+    std::fs::metadata(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
     Ok(())
 }
 
@@ -324,6 +333,7 @@ mod tests {
             "the standard alphabet is not this one"
         );
     }
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     struct Scratch(PathBuf);
@@ -393,6 +403,7 @@ mod tests {
         assert!(store.accounts().expect("accounts").is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_file_is_created_private_and_never_widens() {
         let scratch = Scratch::new("tokens-perms");
@@ -408,6 +419,7 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_world_readable_token_file_is_refused_rather_than_used() {
         let scratch = Scratch::new("tokens-insecure");
