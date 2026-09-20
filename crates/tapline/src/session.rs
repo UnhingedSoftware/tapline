@@ -1595,7 +1595,7 @@ fn create_symlinks(
         if let Some(parent) = link_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(&link_path);
+        let _ = tapline_fs::remove_existing(&link_path);
         tapline_fs::symlink(&resolved_target, &link_path)?;
         report.files += 1;
     }

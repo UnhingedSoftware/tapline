@@ -85,6 +85,31 @@ pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     }
 }
 
+pub fn remove_existing(path: &Path) -> io::Result<()> {
+    let file_type = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if names_a_directory(&file_type) {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+#[cfg(unix)]
+fn names_a_directory(file_type: &std::fs::FileType) -> bool {
+    file_type.is_dir()
+}
+
+#[cfg(windows)]
+fn names_a_directory(file_type: &std::fs::FileType) -> bool {
+    use std::os::windows::fs::FileTypeExt;
+
+    file_type.is_dir() || file_type.is_symlink_dir()
+}
+
 #[cfg(unix)]
 pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -197,6 +222,44 @@ mod tests {
         let link = scratch.join("link.txt");
         std::fs::write(&target, b"contents").expect("seed");
 
+        symlink(Path::new("real.txt"), &link).expect("symlink");
+
+        assert_eq!(std::fs::read(&link).expect("read through"), b"contents");
+    }
+
+    #[test]
+    fn removing_a_symlink_takes_the_link_and_leaves_its_target() {
+        let scratch = Scratch::new("file-remove-link");
+        let target = scratch.join("real");
+        std::fs::create_dir_all(&target).expect("seed");
+        std::fs::write(target.join("inside.txt"), b"kept").expect("seed");
+        let link = scratch.join("link");
+        symlink(Path::new("real"), &link).expect("symlink");
+
+        remove_existing(&link).expect("remove");
+
+        assert!(!link.exists(), "the link is still there");
+        assert!(
+            target.join("inside.txt").is_file(),
+            "the target was removed along with the link"
+        );
+    }
+
+    #[test]
+    fn removing_a_path_that_is_not_there_is_not_an_error() {
+        let scratch = Scratch::new("file-remove-missing");
+        remove_existing(&scratch.join("never-existed")).expect("nothing to remove");
+    }
+
+    #[test]
+    fn a_symlink_replaces_whatever_stood_in_its_place() {
+        let scratch = Scratch::new("file-relink");
+        let target = scratch.join("real.txt");
+        std::fs::write(&target, b"contents").expect("seed");
+        let link = scratch.join("link.txt");
+        std::fs::write(&link, b"stale").expect("seed");
+
+        remove_existing(&link).expect("remove");
         symlink(Path::new("real.txt"), &link).expect("symlink");
 
         assert_eq!(std::fs::read(&link).expect("read through"), b"contents");
