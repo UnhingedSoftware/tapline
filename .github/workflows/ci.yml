@@ -11,21 +11,33 @@ env:
   CARGO_NET_RETRY: 3
 
 # Every job here reads the repository and writes nothing back, so the token that
-# reaches them needs nothing more. It matters because these are self-hosted
-# runners executing pull-request code: a build script from a fork runs with
-# whatever the workflow was handed. `persist-credentials: false` on each checkout
-# keeps the token out of .git/config on the runner for the same reason; nothing
-# in the workspace is a git dependency, so no step needs it to fetch.
+# reaches them needs nothing more. It matters most when a runner is self-hosted
+# and executing pull-request code: a build script from a fork runs with whatever
+# the workflow was handed. `persist-credentials: false` on each checkout keeps
+# the token out of .git/config on the runner for the same reason; nothing in the
+# workspace is a git dependency, so no step needs it to fetch.
 permissions:
   contents: read
 
+# Where these jobs run. GitHub's own runners are the default because they are
+# always there and cost nothing on a public repository, and because a pull
+# request from a fork cannot reach our self-hosted ones at all. The self-hosted
+# box is faster when it is up, so to send the jobs back to it set the repository
+# variable CI_RUNNER to `self-hosted` (Settings > Secrets and variables >
+# Actions > Variables); deleting the variable brings them back here. Nothing in
+# this file assumes one or the other: every job installs what it needs.
+#
+# There is no way to fail over automatically. A job addressed to a runner that
+# is offline queues rather than failing, and the API that would say whether one
+# is online needs administration rights the workflow token does not have.
+
 jobs:
   # Per-commit gate. clippy --all-targets type-checks every bin, test and example
-  # in the workspace, which is most of the value here; `cargo test` runs beside it
-  # rather than after, since the runners are 32-core and neither job is the
+  # in the workspace, which is most of the value here; `cargo test` runs beside
+  # it rather than after, since the jobs run in parallel and neither is the
   # bottleneck.
   check:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +67,7 @@ jobs:
   # binary-size needs musl-tools.
   windows:
     name: Windows cross-check
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,14 +91,15 @@ jobs:
   # an advisory, or anything from the deny list in deny.toml (openssl, hyper,
   # reqwest, prost, a C build).
   deny:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      # The official cargo-deny action runs in Docker, and these runners have no
-      # Docker daemon. This installs the same binary directly.
+      # The official cargo-deny action runs in Docker, which the self-hosted
+      # runners have no daemon for. This installs the same binary directly and
+      # works wherever the job lands.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
@@ -96,7 +109,7 @@ jobs:
   # Also proves the static musl build works, which needs a musl-targeting C
   # compiler because rustls's `ring` backend compiles C for the target.
   binary-size:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -155,7 +168,7 @@ jobs:
   # The metadata build is what a webapp links: it must not drag in rayon, cap-std,
   # clap or serde. Asserted against the dependency graph rather than hoped for.
   minimal-graph:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -176,7 +189,7 @@ jobs:
 
   bindings:
     name: JS bindings
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
