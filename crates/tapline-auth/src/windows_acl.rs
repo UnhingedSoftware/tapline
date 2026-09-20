@@ -20,7 +20,7 @@ use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, EqualSid, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
     SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows_sys::Win32::Storage::FileSystem::{CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL};
+use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const ATTRIBUTES_SIZE: u32 = size_of::<SECURITY_ATTRIBUTES>() as u32;
@@ -62,6 +62,15 @@ pub fn current_user_sid() -> io::Result<String> {
     // the allocation happened to land unaligned, so copy the header out first.
     // The SID it points at stays where it is, inside `buffer`, which outlives
     // the call below.
+    if buffer.len() < size_of::<TOKEN_USER>() {
+        // Windows says how much room it wants before it writes, so this cannot
+        // happen; reading a short buffer as a TOKEN_USER would be out of
+        // bounds, which is worth one comparison to rule out rather than trust.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the token's user information was shorter than a TOKEN_USER",
+        ));
+    }
     let mut text: *mut u16 = ptr::null_mut();
     let converted = unsafe {
         let user = ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>());
@@ -73,12 +82,20 @@ pub fn current_user_sid() -> io::Result<String> {
     Ok(unsafe { take_wide(text) })
 }
 
-/// Creates (or replaces) a file carrying `dacl`, an SDDL access-control list,
-/// from the moment it exists.
+/// Creates a file carrying `dacl`, an SDDL access-control list, from the moment
+/// it exists.
 ///
 /// Setting the list afterwards would leave a window in which the file is
 /// readable by whoever the parent directory says, so it is passed to the
 /// creation call instead.
+///
+/// The disposition is `CREATE_NEW`, and that is load-bearing: Windows applies
+/// `lpSecurityAttributes` only when the call actually creates the file. Asking
+/// it to replace an existing one instead truncates that file and keeps the list
+/// it already had, so a temporary left behind by a crashed run -- or one
+/// another account pre-created in a writable directory -- would have taken the
+/// secret under its own permissions. Failing with `AlreadyExists` puts that
+/// decision on the caller, which removes the previous file first.
 pub fn create_with_dacl(path: &Path, dacl: &str) -> io::Result<File> {
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let wide_dacl = wide(OsStr::new(dacl));
@@ -106,7 +123,7 @@ pub fn create_with_dacl(path: &Path, dacl: &str) -> io::Result<File> {
             GENERIC_WRITE,
             0,
             &attributes,
-            CREATE_ALWAYS,
+            CREATE_NEW,
             FILE_ATTRIBUTE_NORMAL,
             ptr::null_mut(),
         )

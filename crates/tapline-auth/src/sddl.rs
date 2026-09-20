@@ -65,11 +65,52 @@ fn dacl_body(descriptor: &str) -> Option<&str> {
     Some(body)
 }
 
-fn aces(body: &str) -> impl Iterator<Item = &str> {
-    body.split('(').skip(1).filter_map(|ace| {
-        let end = ace.find(')')?;
-        ace.get(..end)
-    })
+/// The access-control entries in a DACL body, each without its brackets.
+///
+/// Splitting on `(` and cutting at the first `)` looks like it would do, and
+/// does for an ordinary ACE, but a conditional one carries a bracketed
+/// expression of its own: `(XA;;FA;;;WD;(Member_of {SID}))`. The naive split
+/// left the grant itself unterminated, so it was dropped, and a file shared
+/// with everyone through a conditional ACE read back as private. `XA` and `ZA`
+/// are in `ALLOW_ACE_TYPES`, so those are entries this is meant to see.
+/// Counting brackets keeps each ACE whole.
+fn aces(body: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut depth: usize = 0;
+    let mut start: Option<usize> = None;
+    for (at, byte) in body.bytes().enumerate() {
+        match byte {
+            b'(' => {
+                if depth == 0 {
+                    start = Some(at.saturating_add(1));
+                }
+                depth = depth.saturating_add(1);
+            }
+            b')' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0
+                    && let Some(from) = start.take()
+                    && let Some(ace) = body.get(from..at)
+                {
+                    found.push(ace);
+                }
+            }
+            _ => {}
+        }
+    }
+    // A bracket that never closes is a descriptor we do not understand. Keeping
+    // what it opened means the grantee inside it is still read and can still be
+    // reported, rather than a malformed list quietly reading as private.
+    if depth > 0
+        && let Some(from) = start
+        && let Some(ace) = body.get(from..)
+    {
+        found.push(ace);
+    }
+    found
 }
 
 #[cfg(test)]
@@ -178,5 +219,39 @@ mod tests {
     #[test]
     fn an_empty_dacl_grants_nobody_anything() {
         assert_eq!(shared_with("D:P", owned_by(OWNER)), None);
+    }
+}
+
+#[cfg(test)]
+mod conditional_ace_tests {
+    use super::{aces, shared_with};
+
+    const OWNER: &str = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+    fn owned_by(owner: &str) -> impl Fn(&str) -> bool + '_ {
+        move |holder| holder.eq_ignore_ascii_case(owner)
+    }
+
+    #[test]
+    fn a_conditional_ace_keeps_its_own_brackets() {
+        let body = "P(A;;FA;;;S-1-5-21-1)(XA;;FA;;;WD;(Member_of {SID(BA)}))";
+        assert_eq!(
+            aces(body),
+            vec!["A;;FA;;;S-1-5-21-1", "XA;;FA;;;WD;(Member_of {SID(BA)})"]
+        );
+    }
+
+    #[test]
+    fn a_conditional_grant_to_everyone_is_reported() {
+        // Before brackets were counted this came back `None`: the grant was cut
+        // in half, dropped, and the file read as the owner's alone.
+        let dacl = format!("D:P(A;;FA;;;{OWNER})(XA;;FA;;;WD;(Member_of {{SID(BA)}}))");
+        assert_eq!(shared_with(&dacl, owned_by(OWNER)), Some("WD".to_owned()));
+    }
+
+    #[test]
+    fn an_unterminated_ace_is_not_silently_dropped() {
+        let dacl = format!("D:P(A;;FA;;;{OWNER})(A;;FA;;;WD");
+        assert_eq!(shared_with(&dacl, owned_by(OWNER)), Some("WD".to_owned()));
     }
 }
