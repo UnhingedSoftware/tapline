@@ -10,15 +10,38 @@ env:
   # A dependency that fails to build is a dependency we should not have.
   CARGO_NET_RETRY: 3
 
+# Every job here reads the repository and writes nothing back, so the token that
+# reaches them needs nothing more. It matters most when a runner is self-hosted
+# and executing pull-request code: a build script from a fork runs with whatever
+# the workflow was handed. `persist-credentials: false` on each checkout keeps
+# the token out of .git/config on the runner for the same reason; nothing in the
+# workspace is a git dependency, so no step needs it to fetch.
+permissions:
+  contents: read
+
+# Where these jobs run. GitHub's own runners are the default because they are
+# always there and cost nothing on a public repository, and because a pull
+# request from a fork cannot reach our self-hosted ones at all. The self-hosted
+# box is faster when it is up, so to send the jobs back to it set the repository
+# variable CI_RUNNER to `self-hosted` (Settings > Secrets and variables >
+# Actions > Variables); deleting the variable brings them back here. Nothing in
+# this file assumes one or the other: every job installs what it needs.
+#
+# There is no way to fail over automatically. A job addressed to a runner that
+# is offline queues rather than failing, and the API that would say whether one
+# is online needs administration rights the workflow token does not have.
+
 jobs:
   # Per-commit gate. clippy --all-targets type-checks every bin, test and example
-  # in the workspace, which is most of the value here; `cargo test` runs beside it
-  # rather than after, since the runners are 32-core and neither job is the
+  # in the workspace, which is most of the value here; `cargo test` runs beside
+  # it rather than after, since the jobs run in parallel and neither is the
   # bottleneck.
   check:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -37,16 +60,77 @@ jobs:
       # deterministic. They are run by hand against real Steam.
       - run: cargo test --workspace --all-features
 
+  # The port to Windows is only a port while something checks it. Cross-checking
+  # from the Linux runners is enough to catch the regression that matters -- a
+  # `std::os::unix` import creeping back in -- and costs no new runner. `ring`
+  # compiles C for the target, so this needs the mingw toolchain the same way
+  # binary-size needs musl-tools.
+  windows:
+    name: Windows cross-check
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the mingw toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+
+      # clippy --all-targets type-checks but never links. The CLI is what a
+      # Windows user actually runs, so link it.
+      - run: cargo build --target x86_64-pc-windows-gnu -p tapline-cli
+
+  # The cross-check above type-checks Windows code but never runs it, and the
+  # token store now calls the Win32 security APIs by hand. Unsafe FFI nobody
+  # executes is unsafe FFI nobody has checked, so this runs the suite on a real
+  # Windows machine. GitHub's Windows runners are free on a public repository,
+  # and this is the only job that cannot fall back to the self-hosted box --
+  # those are Linux.
+  windows-native:
+    name: Windows tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Creating a symbolic link on Windows needs a privilege an ordinary
+      # account does not have, and tapline creates them when a depot asks for
+      # them. Developer Mode is the supported way to grant it without elevating,
+      # and without it the symlink tests cannot run at all.
+      - name: Turn on Developer Mode, for symlinks
+        run: |
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+
+      # Default features, not --all-features: the `keyring` feature is pinned to
+      # the secret-service backend, which is Linux's. The Linux job covers it.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
   # The dependency floor is a floor: this fails on a new licence, a yanked crate,
   # an advisory, or anything from the deny list in deny.toml (openssl, hyper,
   # reqwest, prost, a C build).
   deny:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      # The official cargo-deny action runs in Docker, and these runners have no
-      # Docker daemon. This installs the same binary directly.
+      # The official cargo-deny action runs in Docker, which the self-hosted
+      # runners have no daemon for. This installs the same binary directly and
+      # works wherever the job lands.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
@@ -56,9 +140,11 @@ jobs:
   # Also proves the static musl build works, which needs a musl-targeting C
   # compiler because rustls's `ring` backend compiles C for the target.
   binary-size:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -113,9 +199,11 @@ jobs:
   # The metadata build is what a webapp links: it must not drag in rayon, cap-std,
   # clap or serde. Asserted against the dependency graph rather than hoped for.
   minimal-graph:
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: No heavy crates in the metadata build
@@ -132,9 +220,11 @@ jobs:
 
   bindings:
     name: JS bindings
-    runs-on: self-hosted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4

@@ -1,0 +1,12 @@
+# Git for Windows converts line endings on checkout by default, which is fine
+# for source but not for a file this repository compares byte for byte. Pinning
+# the working tree to LF everywhere keeps a Windows clone identical to a Linux
+# one, and keeps the diff of a file edited on either the change that was made.
+* text=auto eol=lf
+
+# Captured verbatim from other programs and compared against what we write, so
+# nothing may rewrite them -- not the committed bytes, not a checkout. Marking
+# them binary is what says that, whatever a clone is configured to do.
+*.acf -text
+*.bin -text
+*.txtpb -text

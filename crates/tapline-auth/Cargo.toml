@@ -26,5 +26,29 @@ optional = true
 default-features = false
 features = ["sync-secret-service", "crypto-rust"]
 
-[lints]
-workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+# Restated rather than inherited from the workspace, for one word: the workspace
+# forbids unsafe outright, and `forbid` cannot be opted out of. Making the token
+# file private on Windows means calling the Win32 security APIs by hand -- the
+# crates that wrap them are either unmaintained or too new to trust with a
+# refresh token -- so this crate says `deny` instead and `src/windows_acl.rs`
+# allows it for itself. Nothing else here may, and on every other platform that
+# module is not compiled at all. Everything below matches the workspace; if the
+# workspace lints change, change them here too.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"

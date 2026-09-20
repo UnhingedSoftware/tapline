@@ -170,10 +170,9 @@ mod tests {
     }
 
     fn real_read(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
-        use std::os::unix::fs::FileExt;
         let file = std::fs::File::open(path)?;
         let mut buffer = vec![0_u8; len];
-        file.read_exact_at(&mut buffer, offset)?;
+        tapline_fs::read_exact_at(&file, &mut buffer, offset)?;
         Ok(buffer)
     }
 

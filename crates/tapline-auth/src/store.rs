@@ -74,6 +74,7 @@ pub enum TokenStoreError {
     Backend(String),
     Malformed,
     Insecure { mode: u32 },
+    Shared { holder: String },
 }
 
 impl fmt::Display for TokenStoreError {
@@ -84,6 +85,10 @@ impl fmt::Display for TokenStoreError {
             Self::Insecure { mode } => write!(
                 f,
                 "the token file is mode {mode:o}; it must not be readable by other users"
+            ),
+            Self::Shared { holder } => write!(
+                f,
+                "the token file grants access to {holder}; it must not be readable by other users"
             ),
         }
     }
@@ -108,13 +113,8 @@ const KEYRING_SERVICE: &str = "tapline";
 impl TokenStore {
     #[must_use]
     pub fn default_file() -> Self {
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
-            });
         Self::File {
-            path: base.join("tapline").join("tokens"),
+            path: config_dir().join("tapline").join("tokens"),
         }
     }
 
@@ -230,16 +230,65 @@ fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStore
     Ok(())
 }
 
+fn config_dir() -> PathBuf {
+    resolve_config_dir(configured_config_dir(), home_dir())
+}
+
+#[cfg(not(windows))]
+fn configured_config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+}
+
+#[cfg(windows)]
+fn configured_config_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("LOCALAPPDATA"))
+        .map(PathBuf::from)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn resolve_config_dir(configured: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    configured.unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
+}
+
+#[cfg(windows)]
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     let temporary = path.with_extension("tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
+    let owner = crate::windows_acl::current_user_sid()
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    let mut file =
+        crate::windows_acl::create_with_dacl(&temporary, &crate::sddl::private_dacl(&owner))
+            .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+
+    file.write_all(contents.as_bytes())
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    file.sync_all()
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    drop(file);
+
+    std::fs::rename(&temporary, path).map_err(|e| TokenStoreError::Backend(e.to_string()))
+}
+
+#[cfg(not(windows))]
+fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
+    use std::io::Write;
+
+    let temporary = path.with_extension("tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(&temporary)
         .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
 
@@ -252,6 +301,7 @@ fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     std::fs::rename(&temporary, path).map_err(|e| TokenStoreError::Backend(e.to_string()))
 }
 
+#[cfg(unix)]
 fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -261,6 +311,28 @@ fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     if mode & 0o077 != 0 {
         return Err(TokenStoreError::Insecure { mode });
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
+    let owner = crate::windows_acl::current_user_sid()
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    let dacl =
+        crate::windows_acl::dacl_of(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+
+    let shared = crate::sddl::shared_with(&dacl, |grantee| {
+        crate::windows_acl::same_account(grantee, &owner)
+    });
+    match shared {
+        Some(holder) => Err(TokenStoreError::Shared { holder }),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
+    std::fs::metadata(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
     Ok(())
 }
 
@@ -324,6 +396,7 @@ mod tests {
             "the standard alphabet is not this one"
         );
     }
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     struct Scratch(PathBuf);
@@ -394,6 +467,82 @@ mod tests {
     }
 
     #[test]
+    fn the_platform_config_directory_wins_when_the_environment_names_one() {
+        assert_eq!(
+            resolve_config_dir(
+                Some(PathBuf::from("configured")),
+                Some(PathBuf::from("home"))
+            ),
+            PathBuf::from("configured")
+        );
+    }
+
+    #[test]
+    fn without_one_the_tokens_sit_under_the_home_directory() {
+        assert_eq!(
+            resolve_config_dir(None, Some(PathBuf::from("home"))),
+            PathBuf::from("home/.config")
+        );
+    }
+
+    #[test]
+    fn with_no_home_either_the_path_is_still_a_config_directory() {
+        assert_eq!(resolve_config_dir(None, None), PathBuf::from("./.config"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_file_is_created_reachable_by_nobody_else() {
+        let scratch = Scratch::new("tokens-acl");
+        let store = scratch.store();
+        store.save(&token("someone")).expect("save");
+
+        let path = scratch.0.join("tokens");
+        let owner = crate::windows_acl::current_user_sid().expect("our own sid");
+        let dacl = crate::windows_acl::dacl_of(&path).expect("read the dacl back");
+        assert_eq!(
+            crate::sddl::shared_with(&dacl, |grantee| crate::windows_acl::same_account(
+                grantee, &owner
+            )),
+            None,
+            "a freshly written token file is reachable by someone else: {dacl}"
+        );
+
+        assert_eq!(
+            store.load("someone").expect("load"),
+            Some(token("someone")),
+            "the file we just wrote was refused as insecure"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_token_file_anyone_can_read_is_refused_rather_than_used() {
+        let scratch = Scratch::new("tokens-acl-widened");
+        let store = scratch.store();
+        store.save(&token("someone")).expect("save");
+
+        let path = scratch.0.join("tokens");
+        let widened = std::process::Command::new("icacls")
+            .arg(&path)
+            .arg("/grant")
+            .arg("*S-1-1-0:(R)")
+            .output()
+            .expect("icacls ships with Windows");
+        assert!(
+            widened.status.success(),
+            "could not widen the acl for the test: {}",
+            String::from_utf8_lossy(&widened.stderr)
+        );
+
+        assert!(
+            matches!(store.load("someone"), Err(TokenStoreError::Shared { .. })),
+            "a token file readable by Everyone was accepted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn the_file_is_created_private_and_never_widens() {
         let scratch = Scratch::new("tokens-perms");
         let store = scratch.store();
@@ -408,6 +557,7 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_world_readable_token_file_is_refused_rather_than_used() {
         let scratch = Scratch::new("tokens-insecure");
