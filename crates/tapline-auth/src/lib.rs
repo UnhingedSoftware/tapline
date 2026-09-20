@@ -1,6 +1,9 @@
 mod local;
 mod password;
+mod sddl;
 mod store;
+#[cfg(windows)]
+mod windows_acl;
 
 pub use local::{
     LocalAccount, discover, discover_in, libraries, most_recent, parse_libraries, parse_login_users,

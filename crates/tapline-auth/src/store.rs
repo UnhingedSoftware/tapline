@@ -74,6 +74,7 @@ pub enum TokenStoreError {
     Backend(String),
     Malformed,
     Insecure { mode: u32 },
+    Shared { holder: String },
 }
 
 impl fmt::Display for TokenStoreError {
@@ -84,6 +85,10 @@ impl fmt::Display for TokenStoreError {
             Self::Insecure { mode } => write!(
                 f,
                 "the token file is mode {mode:o}; it must not be readable by other users"
+            ),
+            Self::Shared { holder } => write!(
+                f,
+                "the token file grants access to {holder}; it must not be readable by other users"
             ),
         }
     }
@@ -251,6 +256,27 @@ fn resolve_config_dir(configured: Option<PathBuf>, home: Option<PathBuf>) -> Pat
     configured.unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
 }
 
+#[cfg(windows)]
+fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
+    use std::io::Write;
+
+    let temporary = path.with_extension("tmp");
+    let owner = crate::windows_acl::current_user_sid()
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    let mut file =
+        crate::windows_acl::create_with_dacl(&temporary, &crate::sddl::private_dacl(&owner))
+            .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+
+    file.write_all(contents.as_bytes())
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    file.sync_all()
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    drop(file);
+
+    std::fs::rename(&temporary, path).map_err(|e| TokenStoreError::Backend(e.to_string()))
+}
+
+#[cfg(not(windows))]
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
 
@@ -288,7 +314,20 @@ fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
+    let owner = crate::windows_acl::current_user_sid()
+        .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+    let dacl =
+        crate::windows_acl::dacl_of(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
+
+    match crate::sddl::shared_with(&dacl, &owner) {
+        Some(holder) => Err(TokenStoreError::Shared { holder }),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     std::fs::metadata(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
     Ok(())
@@ -446,6 +485,55 @@ mod tests {
     #[test]
     fn with_no_home_either_the_path_is_still_a_config_directory() {
         assert_eq!(resolve_config_dir(None, None), PathBuf::from("./.config"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_file_is_created_reachable_by_nobody_else() {
+        let scratch = Scratch::new("tokens-acl");
+        let store = scratch.store();
+        store.save(&token("someone")).expect("save");
+
+        let path = scratch.0.join("tokens");
+        let owner = crate::windows_acl::current_user_sid().expect("our own sid");
+        let dacl = crate::windows_acl::dacl_of(&path).expect("read the dacl back");
+        assert_eq!(
+            crate::sddl::shared_with(&dacl, &owner),
+            None,
+            "a freshly written token file is reachable by someone else: {dacl}"
+        );
+
+        assert_eq!(
+            store.load("someone").expect("load"),
+            Some(token("someone")),
+            "the file we just wrote was refused as insecure"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_token_file_anyone_can_read_is_refused_rather_than_used() {
+        let scratch = Scratch::new("tokens-acl-widened");
+        let store = scratch.store();
+        store.save(&token("someone")).expect("save");
+
+        let path = scratch.0.join("tokens");
+        let widened = std::process::Command::new("icacls")
+            .arg(&path)
+            .arg("/grant")
+            .arg("*S-1-1-0:(R)")
+            .output()
+            .expect("icacls ships with Windows");
+        assert!(
+            widened.status.success(),
+            "could not widen the acl for the test: {}",
+            String::from_utf8_lossy(&widened.stderr)
+        );
+
+        assert!(
+            matches!(store.load("someone"), Err(TokenStoreError::Shared { .. })),
+            "a token file readable by Everyone was accepted"
+        );
     }
 
     #[cfg(unix)]

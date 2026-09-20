@@ -1284,6 +1284,7 @@ dependencies = [
  "rsa",
  "tapline-ids",
  "tapline-vdf",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
