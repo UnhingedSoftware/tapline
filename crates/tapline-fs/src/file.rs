@@ -91,10 +91,14 @@ pub fn remove_existing(path: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e),
     };
-    if names_a_directory(&file_type) {
+    let removed = if names_a_directory(&file_type) {
         std::fs::remove_dir(path)
     } else {
         std::fs::remove_file(path)
+    };
+    match removed {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        outcome => outcome,
     }
 }
 
@@ -249,6 +253,34 @@ mod tests {
     fn removing_a_path_that_is_not_there_is_not_an_error() {
         let scratch = Scratch::new("file-remove-missing");
         remove_existing(&scratch.join("never-existed")).expect("nothing to remove");
+    }
+
+    #[test]
+    fn a_directory_with_something_in_it_refuses_to_be_removed() {
+        let scratch = Scratch::new("file-remove-occupied");
+        let occupied = scratch.join("occupied");
+        std::fs::create_dir_all(&occupied).expect("seed");
+        std::fs::write(occupied.join("inside.txt"), b"in the way").expect("seed");
+
+        remove_existing(&occupied).expect_err("a non-empty directory is not ours to delete");
+        assert!(
+            occupied.join("inside.txt").is_file(),
+            "the contents were removed anyway"
+        );
+    }
+
+    #[test]
+    fn an_empty_directory_gives_way_to_a_link() {
+        let scratch = Scratch::new("file-remove-empty-dir");
+        let target = scratch.join("real.txt");
+        std::fs::write(&target, b"contents").expect("seed");
+        let link = scratch.join("link.txt");
+        std::fs::create_dir_all(&link).expect("seed");
+
+        remove_existing(&link).expect("remove");
+        symlink(Path::new("real.txt"), &link).expect("symlink");
+
+        assert_eq!(std::fs::read(&link).expect("read through"), b"contents");
     }
 
     #[test]
