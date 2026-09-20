@@ -14,6 +14,7 @@ rust-version.workspace = true
 [dependencies]
 rustls = { workspace = true }
 tapline-crypto = { workspace = true }
+tapline-fs = { workspace = true }
 tapline-io = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "io-util", "time", "fs", "macros", "sync"] }
 tokio-rustls = { workspace = true }

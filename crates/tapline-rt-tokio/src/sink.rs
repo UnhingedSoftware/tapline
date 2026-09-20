@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use tapline_io::Sink;
 
@@ -28,14 +27,14 @@ impl FileSink {
 
     pub fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0_u8; len];
-        self.file.read_exact_at(&mut buffer, offset)?;
+        tapline_fs::read_exact_at(&self.file, &mut buffer, offset)?;
         Ok(buffer)
     }
 }
 
 impl Sink for FileSink {
     async fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
-        self.file.write_all_at(data, offset)
+        tapline_fs::write_all_at(&self.file, data, offset)
     }
 
     async fn allocate(&self, len: u64) -> io::Result<()> {
