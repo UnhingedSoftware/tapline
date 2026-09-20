@@ -87,6 +87,37 @@ jobs:
       # Windows user actually runs, so link it.
       - run: cargo build --target x86_64-pc-windows-gnu -p tapline-cli
 
+  # The cross-check above type-checks Windows code but never runs it, and the
+  # token store now calls the Win32 security APIs by hand. Unsafe FFI nobody
+  # executes is unsafe FFI nobody has checked, so this runs the suite on a real
+  # Windows machine. GitHub's Windows runners are free on a public repository,
+  # and this is the only job that cannot fall back to the self-hosted box --
+  # those are Linux.
+  windows-native:
+    name: Windows tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Creating a symbolic link on Windows needs a privilege an ordinary
+      # account does not have, and tapline creates them when a depot asks for
+      # them. Developer Mode is the supported way to grant it without elevating,
+      # and without it the symlink tests cannot run at all.
+      - name: Turn on Developer Mode, for symlinks
+        run: |
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+
+      # Default features, not --all-features: the `keyring` feature is pinned to
+      # the secret-service backend, which is Linux's. The Linux job covers it.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
   # The dependency floor is a floor: this fails on a new licence, a yanked crate,
   # an advisory, or anything from the deny list in deny.toml (openssl, hyper,
   # reqwest, prost, a C build).
