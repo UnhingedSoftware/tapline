@@ -108,13 +108,8 @@ const KEYRING_SERVICE: &str = "tapline";
 impl TokenStore {
     #[must_use]
     pub fn default_file() -> Self {
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
-            });
         Self::File {
-            path: base.join("tapline").join("tokens"),
+            path: config_dir().join("tapline").join("tokens"),
         }
     }
 
@@ -228,6 +223,32 @@ fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStore
     create_private(path, &body)?;
     body.zeroize();
     Ok(())
+}
+
+fn config_dir() -> PathBuf {
+    resolve_config_dir(configured_config_dir(), home_dir())
+}
+
+#[cfg(not(windows))]
+fn configured_config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+}
+
+#[cfg(windows)]
+fn configured_config_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("LOCALAPPDATA"))
+        .map(PathBuf::from)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn resolve_config_dir(configured: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    configured.unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
 }
 
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
@@ -401,6 +422,30 @@ mod tests {
         store.save(&token("gone")).expect("save");
         store.forget_all().expect("forget all");
         assert!(store.accounts().expect("accounts").is_empty());
+    }
+
+    #[test]
+    fn the_platform_config_directory_wins_when_the_environment_names_one() {
+        assert_eq!(
+            resolve_config_dir(
+                Some(PathBuf::from("configured")),
+                Some(PathBuf::from("home"))
+            ),
+            PathBuf::from("configured")
+        );
+    }
+
+    #[test]
+    fn without_one_the_tokens_sit_under_the_home_directory() {
+        assert_eq!(
+            resolve_config_dir(None, Some(PathBuf::from("home"))),
+            PathBuf::from("home/.config")
+        );
+    }
+
+    #[test]
+    fn with_no_home_either_the_path_is_still_a_config_directory() {
+        assert_eq!(resolve_config_dir(None, None), PathBuf::from("./.config"));
     }
 
     #[cfg(unix)]
