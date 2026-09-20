@@ -25,6 +25,8 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 
 const ATTRIBUTES_SIZE: u32 = size_of::<SECURITY_ATTRIBUTES>() as u32;
 
+/// The SID of the account this process is running as, in the text form SDDL
+/// uses.
 pub fn current_user_sid() -> io::Result<String> {
     let mut token: HANDLE = ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
@@ -55,10 +57,15 @@ pub fn current_user_sid() -> io::Result<String> {
         return Err(failure);
     }
 
+    // Windows wrote a TOKEN_USER into a byte buffer, and a Vec<u8> is aligned to
+    // one byte. Reading it as a TOKEN_USER in place would be undefined whenever
+    // the allocation happened to land unaligned, so copy the header out first.
+    // The SID it points at stays where it is, inside `buffer`, which outlives
+    // the call below.
     let mut text: *mut u16 = ptr::null_mut();
     let converted = unsafe {
-        let user = buffer.as_ptr().cast::<TOKEN_USER>();
-        ConvertSidToStringSidW((*user).User.Sid, &mut text)
+        let user = ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>());
+        ConvertSidToStringSidW(user.User.Sid, &mut text)
     };
     if converted == 0 {
         return Err(io::Error::last_os_error());
@@ -66,6 +73,12 @@ pub fn current_user_sid() -> io::Result<String> {
     Ok(unsafe { take_wide(text) })
 }
 
+/// Creates (or replaces) a file carrying `dacl`, an SDDL access-control list,
+/// from the moment it exists.
+///
+/// Setting the list afterwards would leave a window in which the file is
+/// readable by whoever the parent directory says, so it is passed to the
+/// creation call instead.
 pub fn create_with_dacl(path: &Path, dacl: &str) -> io::Result<File> {
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let wide_dacl = wide(OsStr::new(dacl));
@@ -107,6 +120,7 @@ pub fn create_with_dacl(path: &Path, dacl: &str) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(handle.cast()) })
 }
 
+/// Reads back the access-control list on `path` as SDDL.
 pub fn dacl_of(path: &Path) -> io::Result<String> {
     let wide_path = wide(path.as_os_str());
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();

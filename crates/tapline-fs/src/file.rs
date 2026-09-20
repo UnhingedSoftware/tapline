@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+/// Fills `buffer` from `offset` without moving the file's cursor, so several
+/// threads can read one handle at once.
 #[cfg(unix)]
 pub fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
@@ -9,6 +11,12 @@ pub fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<
     file.read_exact_at(buffer, offset)
 }
 
+/// Fills `buffer` from `offset` without moving the file's cursor, so several
+/// threads can read one handle at once.
+///
+/// Windows' positional read may stop short of what was asked for, where the
+/// unix one either fills the buffer or fails, so this loops until it is full
+/// and reports a file that ended early as `UnexpectedEof`.
 #[cfg(windows)]
 pub fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
@@ -34,6 +42,8 @@ pub fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<
     Ok(())
 }
 
+/// Writes `data` at `offset` without moving the file's cursor, so several
+/// threads can write one handle at once.
 #[cfg(unix)]
 pub fn write_all_at(file: &File, data: &[u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
@@ -41,6 +51,11 @@ pub fn write_all_at(file: &File, data: &[u8], offset: u64) -> io::Result<()> {
     file.write_all_at(data, offset)
 }
 
+/// Writes `data` at `offset` without moving the file's cursor, so several
+/// threads can write one handle at once.
+///
+/// Windows' positional write may take less than it was given, so this loops
+/// until all of `data` has landed.
 #[cfg(windows)]
 pub fn write_all_at(file: &File, data: &[u8], offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
@@ -66,11 +81,17 @@ pub fn write_all_at(file: &File, data: &[u8], offset: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Links `link` to `target`, where `target` is read relative to `link`.
 #[cfg(unix)]
 pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
+/// Links `link` to `target`, where `target` is read relative to `link`.
+///
+/// Windows has two kinds of symbolic link and picks the wrong one silently, so
+/// this resolves the target against the link's own directory to decide which to
+/// create. Creating either needs Developer Mode or the privilege to do it.
 #[cfg(windows)]
 pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     let points_at_a_directory = link
@@ -85,6 +106,11 @@ pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     }
 }
 
+/// Removes whatever is at `path`, and succeeds if nothing is.
+///
+/// A directory symlink is removed as a directory, which is what Windows wants
+/// and what unix does not mind; the link is removed either way, never the thing
+/// it points at.
 pub fn remove_existing(path: &Path) -> io::Result<()> {
     let file_type = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata.file_type(),
@@ -114,6 +140,7 @@ fn names_a_directory(file_type: &std::fs::FileType) -> bool {
     file_type.is_dir() || file_type.is_symlink_dir()
 }
 
+/// Applies a unix mode to `path`.
 #[cfg(unix)]
 pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -123,6 +150,11 @@ pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     std::fs::set_permissions(path, permissions)
 }
 
+/// Applies a unix mode to `path`, as far as Windows has anywhere to put one.
+///
+/// Windows has no permission bits on a file in this sense, only a read-only
+/// flag, so the write bit is the part that survives: a mode with none sets it,
+/// a mode with one clears it. The rest is carried by the file's ACL instead.
 #[cfg(windows)]
 pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     let mut permissions = std::fs::metadata(path)?.permissions();

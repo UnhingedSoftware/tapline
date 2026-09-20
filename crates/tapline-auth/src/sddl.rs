@@ -7,6 +7,8 @@ const ADMINISTRATORS_ALIAS: &str = "BA";
 
 const ALLOW_ACE_TYPES: [&str; 4] = ["A", "OA", "XA", "ZA"];
 
+/// An access-control list granting `owner` full control and naming nobody else,
+/// protected so that nothing is inherited from the directory above it.
 pub fn private_dacl(owner: &str) -> String {
     format!("D:P(A;;FA;;;{owner})")
 }
