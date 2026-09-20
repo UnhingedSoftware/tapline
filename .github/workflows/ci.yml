@@ -37,6 +37,31 @@ jobs:
       # deterministic. They are run by hand against real Steam.
       - run: cargo test --workspace --all-features
 
+  # The port to Windows is only a port while something checks it. Cross-checking
+  # from the Linux runners is enough to catch the regression that matters -- a
+  # `std::os::unix` import creeping back in -- and costs no new runner. `ring`
+  # compiles C for the target, so this needs the mingw toolchain the same way
+  # binary-size needs musl-tools.
+  windows:
+    name: Windows cross-check
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the mingw toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+
+      # clippy --all-targets type-checks but never links. The CLI is what a
+      # Windows user actually runs, so link it.
+      - run: cargo build --target x86_64-pc-windows-gnu -p tapline-cli
+
   # The dependency floor is a floor: this fails on a new licence, a yanked crate,
   # an advisory, or anything from the deny list in deny.toml (openssl, hyper,
   # reqwest, prost, a C build).
