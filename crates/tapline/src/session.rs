@@ -1,6 +1,5 @@
 use crate::{InstallError, InstallOptions, InstallReport};
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use tapline_cdn::{Host, HostPool, fetch_chunk_bytes, fetch_manifest};
 use tapline_event::{Event, Plan};
@@ -1285,10 +1284,9 @@ impl Session {
                 &entry.manifest,
                 &options.install_dir,
                 |path, offset, len| {
-                    use std::os::unix::fs::FileExt;
                     let file = std::fs::File::open(path)?;
                     let mut buffer = vec![0_u8; len];
-                    file.read_exact_at(&mut buffer, offset)?;
+                    tapline_fs::read_exact_at(&file, &mut buffer, offset)?;
                     Ok(buffer)
                 },
             );
@@ -1598,7 +1596,7 @@ fn create_symlinks(
             std::fs::create_dir_all(parent)?;
         }
         let _ = std::fs::remove_file(&link_path);
-        std::os::unix::fs::symlink(&resolved_target, &link_path)?;
+        tapline_fs::symlink(&resolved_target, &link_path)?;
         report.files += 1;
     }
     Ok(())
@@ -1649,7 +1647,7 @@ fn finalize_file(file: PendingFile) -> Result<Finished, InstallError> {
     file.sink
         .sync_blocking()
         .map_err(|error| InstallError::Io(error.to_string()))?;
-    set_permissions(&file.target, file.mode)?;
+    tapline_fs::set_mode(&file.target, file.mode)?;
     drop(file.sink);
 
     let mut extended = Vec::new();
@@ -1791,14 +1789,6 @@ fn apply_outcome(
     Ok(())
 }
 
-fn set_permissions(path: &Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_mode(mode);
-    std::fs::set_permissions(path, permissions)
-}
-
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1829,8 +1819,7 @@ mod tests {
         assert_eq!(order, vec!["saved".to_owned()]);
     }
 
-    use super::*;
-
+    #[cfg(unix)]
     #[test]
     fn executables_get_the_bit_a_launcher_needs() {
         use std::os::unix::fs::PermissionsExt;
@@ -1847,7 +1836,7 @@ mod tests {
         std::fs::write(&path, b"#!/bin/sh\n").expect("write");
 
         let mode_of = |policy: crate::FileModes, executable: bool| {
-            set_permissions(&path, policy.mode_for(executable)).expect("chmod");
+            tapline_fs::set_mode(&path, policy.mode_for(executable)).expect("chmod");
             std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777
         };
 

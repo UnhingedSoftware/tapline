@@ -206,6 +206,14 @@ mod tests {
     }
 
     #[test]
+    fn the_steamcmd_policy_makes_everything_runnable_and_the_manifest_one_does_not() {
+        assert_eq!(FileModes::SteamCmd.mode_for(true), 0o755);
+        assert_eq!(FileModes::SteamCmd.mode_for(false), 0o755);
+        assert_eq!(FileModes::Manifest.mode_for(true), 0o755);
+        assert_eq!(FileModes::Manifest.mode_for(false), 0o644);
+    }
+
+    #[test]
     fn concurrency_defaults_to_something_a_cdn_will_tolerate() {
         let concurrency = InstallOptions::default().concurrency;
         assert!(
