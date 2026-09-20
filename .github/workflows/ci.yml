@@ -10,6 +10,15 @@ env:
   # A dependency that fails to build is a dependency we should not have.
   CARGO_NET_RETRY: 3
 
+# Every job here reads the repository and writes nothing back, so the token that
+# reaches them needs nothing more. It matters because these are self-hosted
+# runners executing pull-request code: a build script from a fork runs with
+# whatever the workflow was handed. `persist-credentials: false` on each checkout
+# keeps the token out of .git/config on the runner for the same reason; nothing
+# in the workspace is a git dependency, so no step needs it to fetch.
+permissions:
+  contents: read
+
 jobs:
   # Per-commit gate. clippy --all-targets type-checks every bin, test and example
   # in the workspace, which is most of the value here; `cargo test` runs beside it
@@ -19,6 +28,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -47,6 +58,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -69,6 +82,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       # The official cargo-deny action runs in Docker, and these runners have no
       # Docker daemon. This installs the same binary directly.
@@ -84,6 +99,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -141,6 +158,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: No heavy crates in the metadata build
@@ -160,6 +179,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
