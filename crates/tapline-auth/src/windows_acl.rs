@@ -13,12 +13,12 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
-    SE_FILE_OBJECT,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+    GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-    TOKEN_QUERY, TOKEN_USER, TokenUser,
+    DACL_SECURITY_INFORMATION, EqualSid, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
+    SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -144,6 +144,44 @@ pub fn dacl_of(path: &Path) -> io::Result<String> {
         return Err(failure);
     }
     Ok(unsafe { take_wide(text) })
+}
+
+/// Whether an SDDL grantee names the same account as `owner`.
+///
+/// Windows does not render a SID back the way it was written. A descriptor read
+/// from a file substitutes the two-letter alias for every SID that has one, so
+/// the local administrator writes `S-1-5-21-...-500` and reads back `LA`, and
+/// the built-in accounts likewise. Comparing the text refuses an account its own
+/// file, so both sides are resolved to real SIDs and Windows is asked whether
+/// they match. A grantee that will not resolve is a grantee we cannot vouch for,
+/// and reads as somebody else.
+pub fn same_account(grantee: &str, owner: &str) -> bool {
+    if grantee.eq_ignore_ascii_case(owner) {
+        return true;
+    }
+    let (Some(theirs), Some(ours)) = (sid_of(grantee), sid_of(owner)) else {
+        return false;
+    };
+    unsafe { EqualSid(theirs.0, ours.0) != 0 }
+}
+
+/// A SID Windows allocated for us, freed when it goes out of scope.
+struct Sid(PSID);
+
+impl Drop for Sid {
+    fn drop(&mut self) {
+        unsafe { LocalFree(self.0.cast()) };
+    }
+}
+
+fn sid_of(text: &str) -> Option<Sid> {
+    let wide_text = wide(OsStr::new(text));
+    let mut sid: PSID = ptr::null_mut();
+    let converted = unsafe { ConvertStringSidToSidW(wide_text.as_ptr(), &mut sid) };
+    if converted == 0 {
+        return None;
+    }
+    Some(Sid(sid))
 }
 
 fn wide(value: &OsStr) -> Vec<u16> {

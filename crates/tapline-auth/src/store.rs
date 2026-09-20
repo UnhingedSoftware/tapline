@@ -321,7 +321,10 @@ fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
     let dacl =
         crate::windows_acl::dacl_of(path).map_err(|e| TokenStoreError::Backend(e.to_string()))?;
 
-    match crate::sddl::shared_with(&dacl, &owner) {
+    let shared = crate::sddl::shared_with(&dacl, |grantee| {
+        crate::windows_acl::same_account(grantee, &owner)
+    });
+    match shared {
         Some(holder) => Err(TokenStoreError::Shared { holder }),
         None => Ok(()),
     }
@@ -498,7 +501,9 @@ mod tests {
         let owner = crate::windows_acl::current_user_sid().expect("our own sid");
         let dacl = crate::windows_acl::dacl_of(&path).expect("read the dacl back");
         assert_eq!(
-            crate::sddl::shared_with(&dacl, &owner),
+            crate::sddl::shared_with(&dacl, |grantee| crate::windows_acl::same_account(
+                grantee, &owner
+            )),
             None,
             "a freshly written token file is reachable by someone else: {dacl}"
         );
