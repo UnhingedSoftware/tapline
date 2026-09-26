@@ -1,14 +1,22 @@
 use crate::tls::connect_tls;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tapline_io::{Fetch, FetchError, Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
+
+/// How long a connection may sit in the pool before it is thrown away rather
+/// than reused. CDN edges close idle keep-alive connections on their own
+/// schedule, and a request written into one of those gets end-of-stream back
+/// instead of a status line.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct Connection {
     runtime: tokio::runtime::Id,
     stream: crate::tls::TlsStream,
     leftover: Vec<u8>,
+    idle_since: Instant,
 }
 
 pub struct HttpClient {
@@ -33,13 +41,15 @@ impl HttpClient {
         }
     }
 
-    async fn acquire(&self, host: &str, port: u16) -> Result<Connection, FetchError> {
+    async fn acquire(&self, host: &str, port: u16, pooled: bool) -> Result<Connection, FetchError> {
         let here = tokio::runtime::Handle::try_current()
             .map_err(|error| FetchError::Transport(error.to_string()))?
             .id();
 
-        if let Some(pool) = self.pools.lock().await.get_mut(host) {
-            pool.retain(|connection| connection.runtime == here);
+        if pooled && let Some(pool) = self.pools.lock().await.get_mut(host) {
+            pool.retain(|connection| {
+                connection.runtime == here && connection.idle_since.elapsed() < IDLE_TIMEOUT
+            });
             if let Some(connection) = pool.pop() {
                 return Ok(connection);
             }
@@ -52,10 +62,12 @@ impl HttpClient {
             runtime: here,
             stream,
             leftover: Vec::new(),
+            idle_since: Instant::now(),
         })
     }
 
-    async fn release(&self, host: &str, connection: Connection) {
+    async fn release(&self, host: &str, mut connection: Connection) {
+        connection.idle_since = Instant::now();
         let mut pools = self.pools.lock().await;
         let idle: usize = pools.values().map(Vec::len).sum();
         if idle >= self.idle_total {
@@ -112,7 +124,11 @@ impl Fetch for HttpClient {
 
         let mut last_error = None;
         for attempt in 0..2 {
-            let connection = self.acquire(&host, port).await?;
+            // A pooled connection may have been closed by the server while it
+            // sat idle, which only shows once a request is written into it.
+            // The retry therefore always dials a new connection: popping a
+            // second pooled one could meet the same fate.
+            let connection = self.acquire(&host, port, attempt == 0).await?;
 
             match perform(connection, &host, &path, &request, limit).await {
                 Ok((response, connection)) => {

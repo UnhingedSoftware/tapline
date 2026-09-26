@@ -20,7 +20,7 @@ use tapline_proto::steammessages_clientserver_2::{
 };
 use tapline_proto::steammessages_contentsystem_steamclient::{
     CContentServerDirectory_GetManifestRequestCode_Request,
-    CContentServerDirectory_GetServersForSteamPipe_Request,
+    CContentServerDirectory_GetServersForSteamPipe_Request, CContentServerDirectory_ServerInfo,
 };
 use tapline_proto::steammessages_publishedfile_steamclient::{
     CPublishedFile_GetDetails_Request, CPublishedFile_Subscribe_Request,
@@ -234,28 +234,54 @@ impl Session {
             })
             .await?;
 
-        let hosts: Vec<Host> = directory
-            .servers
-            .iter()
-            .filter_map(|server| {
-                if !tapline_cdn::usable_over_tls(server.https_support.as_deref()) {
-                    return None;
-                }
-                let host = server.host.clone()?;
-                Some(Host {
-                    vhost: server.vhost.clone().unwrap_or_else(|| host.clone()),
-                    host,
-                    load: server
-                        .load
-                        .and_then(|value| u32::try_from(value).ok())
-                        .unwrap_or(u32::MAX),
-                    https_required: server.https_support.as_deref() == Some("mandatory"),
-                })
-            })
-            .collect();
-
+        let hosts = cdn_hosts(&directory.servers);
         self.pool = HostPool::new(hosts);
         Ok(())
+    }
+
+    /// Fetch a manifest, moving on to another CDN host when one fails. A
+    /// single host that hangs up or errors must not fail the whole download,
+    /// which is what happened when this asked exactly one host once.
+    async fn fetch_manifest_from_pool(
+        &mut self,
+        depot: DepotId,
+        manifest_id: u64,
+        request_code: u64,
+        key: &[u8; 32],
+    ) -> Result<Manifest, InstallError> {
+        const ATTEMPTS: usize = 4;
+
+        let mut last_error = None;
+        for _ in 0..ATTEMPTS {
+            let host = match self.pool.acquire() {
+                Ok(host) => host,
+                Err(error) if last_error.is_none() => return Err(error.into()),
+                Err(_) => break,
+            };
+            match fetch_manifest(
+                self.shared.http.as_ref(),
+                &host.host,
+                depot,
+                manifest_id,
+                request_code,
+                Some(key),
+            )
+            .await
+            {
+                Ok(manifest) => {
+                    self.pool.succeed(&host.host);
+                    return Ok(manifest);
+                }
+                Err(error) => {
+                    self.pool.demote(&host.host);
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.map_or(
+            InstallError::Pool(tapline_cdn::PoolError::AllDemoted),
+            Into::into,
+        ))
     }
 
     pub async fn keep_alive(&mut self) -> Result<(), InstallError> {
@@ -349,16 +375,9 @@ impl Session {
                 .manifest_request_code
                 .unwrap_or(0);
 
-            let host = self.pool.acquire()?;
-            let manifest = fetch_manifest(
-                self.shared.http.as_ref(),
-                &host.host,
-                depot.id,
-                depot.manifest.get(),
-                code,
-                Some(&key),
-            )
-            .await?;
+            let manifest = self
+                .fetch_manifest_from_pool(depot.id, depot.manifest.get(), code, &key)
+                .await?;
 
             resolved.push(ResolvedDepot {
                 depot,
@@ -421,16 +440,9 @@ impl Session {
             .manifest_request_code
             .unwrap_or(0);
 
-        let host = self.pool.acquire()?;
-        let content = fetch_manifest(
-            self.shared.http.as_ref(),
-            &host.host,
-            depot,
-            manifest.get(),
-            code,
-            Some(&key),
-        )
-        .await?;
+        let content = self
+            .fetch_manifest_from_pool(depot, manifest.get(), code, &key)
+            .await?;
 
         Ok(ResolvedDepot {
             depot: tapline_pics::Depot {
@@ -1188,16 +1200,9 @@ impl Session {
                     .manifest_request_code
                     .unwrap_or(0);
 
-                let host = self.pool.acquire()?;
-                let content = fetch_manifest(
-                    self.shared.http.as_ref(),
-                    &host.host,
-                    *depot,
-                    manifest.get(),
-                    code,
-                    Some(&key),
-                )
-                .await?;
+                let content = self
+                    .fetch_manifest_from_pool(*depot, manifest.get(), code, &key)
+                    .await?;
 
                 let entry = ResolvedDepot {
                     depot: tapline_pics::Depot {
@@ -1796,6 +1801,58 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Turn Steam's content server directory into the hosts downloads may use.
+///
+/// Steam hands back more than plain CDN edges: ISP caches that serve only the
+/// apps in `allowed_app_ids`, Steam China servers, and proxies that expect a
+/// rewritten request path. A request for anything else to one of those gets
+/// its connection closed, which surfaced as "headers ended early". This keeps
+/// the entries SteamKit and DepotDownloader use and, like them, addresses a
+/// server by its `vhost`. If the filter would leave nothing, the unfiltered
+/// list is kept so a directory shape this code does not know still works.
+fn cdn_hosts(servers: &[CContentServerDirectory_ServerInfo]) -> Vec<Host> {
+    let reachable = |server: &&CContentServerDirectory_ServerInfo| {
+        tapline_cdn::usable_over_tls(server.https_support.as_deref())
+            && server.host.as_deref().is_some_and(|host| !host.is_empty())
+    };
+    let general = |server: &&CContentServerDirectory_ServerInfo| {
+        server.allowed_app_ids.is_empty()
+            && server.steam_china_only != Some(true)
+            && server.use_as_proxy != Some(true)
+            && server
+                .r#type
+                .as_deref()
+                .is_none_or(|kind| matches!(kind, "CDN" | "SteamCache"))
+    };
+
+    let mut chosen: Vec<&CContentServerDirectory_ServerInfo> =
+        servers.iter().filter(reachable).filter(general).collect();
+    if chosen.is_empty() {
+        chosen = servers.iter().filter(reachable).collect();
+    }
+
+    chosen
+        .into_iter()
+        .filter_map(|server| {
+            let host = server.host.clone()?;
+            let vhost = server
+                .vhost
+                .clone()
+                .filter(|vhost| !vhost.is_empty())
+                .unwrap_or(host);
+            Some(Host {
+                host: vhost.clone(),
+                vhost,
+                load: server
+                    .load
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(u32::MAX),
+                https_required: server.https_support.as_deref() == Some("mandatory"),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::accounts_to_try;
@@ -1859,5 +1916,55 @@ mod tests {
             crate::InstallOptions::default().file_modes,
             crate::FileModes::SteamCmd
         );
+    }
+
+    fn server(host: &str) -> super::CContentServerDirectory_ServerInfo {
+        super::CContentServerDirectory_ServerInfo {
+            r#type: Some("CDN".to_owned()),
+            host: Some(host.to_owned()),
+            vhost: Some(host.to_owned()),
+            load: Some(10),
+            https_support: Some("mandatory".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn restricted_caches_china_servers_and_proxies_are_left_out() {
+        let mut isp = server("isp-cache.invalid");
+        isp.r#type = Some("SteamCache".to_owned());
+        isp.allowed_app_ids = vec![730];
+        let mut china = server("china.invalid");
+        china.steam_china_only = Some(true);
+        let mut proxy = server("proxy.invalid");
+        proxy.use_as_proxy = Some(true);
+        let mut odd = server("open.invalid");
+        odd.r#type = Some("OpenCache".to_owned());
+        let mut no_tls = server("plain.invalid");
+        no_tls.https_support = Some("unavailable".to_owned());
+
+        let hosts = super::cdn_hosts(&[isp, china, server("edge.invalid"), proxy, odd, no_tls]);
+        let names: Vec<&str> = hosts.iter().map(|host| host.host.as_str()).collect();
+        assert_eq!(names, ["edge.invalid"]);
+    }
+
+    #[test]
+    fn a_server_is_addressed_by_its_vhost() {
+        let mut edge = server("10-0-0-1.cache.invalid");
+        edge.vhost = Some("cache1-ams1.steamcontent.invalid".to_owned());
+        let mut bare = server("bare.invalid");
+        bare.vhost = None;
+
+        let hosts = super::cdn_hosts(&[edge, bare]);
+        assert_eq!(hosts[0].host, "cache1-ams1.steamcontent.invalid");
+        assert_eq!(hosts[1].host, "bare.invalid");
+    }
+
+    #[test]
+    fn an_over_eager_filter_falls_back_to_every_reachable_server() {
+        let mut only = server("isp-cache.invalid");
+        only.allowed_app_ids = vec![730];
+        let hosts = super::cdn_hosts(&[only]);
+        assert_eq!(hosts.len(), 1);
     }
 }
