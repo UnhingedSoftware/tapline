@@ -256,11 +256,31 @@ fn resolve_config_dir(configured: Option<PathBuf>, home: Option<PathBuf>) -> Pat
     configured.unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
 }
 
+/// Remove whatever is sitting at the temporary path before the token is
+/// written there.
+///
+/// Both `create_private` arms below ask the operating system to create a new
+/// file with permissions of our choosing, and on both platforms those
+/// permissions are applied at creation and only at creation. Writing into a
+/// file that is already there -- a temporary a crashed run left behind, or one
+/// another local account put there first -- would put the refresh token under
+/// whatever permissions that file already carries. So the old one goes first,
+/// and the create that follows refuses to open anything it did not make, which
+/// turns a race into an error rather than into a readable secret.
+fn clear_temporary(temporary: &Path) -> Result<(), TokenStoreError> {
+    match std::fs::remove_file(temporary) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(TokenStoreError::Backend(e.to_string())),
+    }
+}
+
 #[cfg(windows)]
 fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
 
     let temporary = path.with_extension("tmp");
+    clear_temporary(&temporary)?;
     let owner = crate::windows_acl::current_user_sid()
         .map_err(|e| TokenStoreError::Backend(e.to_string()))?;
     let mut file =
@@ -281,8 +301,15 @@ fn create_private(path: &Path, contents: &str) -> Result<(), TokenStoreError> {
     use std::io::Write;
 
     let temporary = path.with_extension("tmp");
+    clear_temporary(&temporary)?;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    // `create_new` rather than `create` + `truncate`: the mode below is applied
+    // when the file is created and not when an existing one is opened, and
+    // `open` follows symlinks, so opening whatever is already there could put
+    // the token in a world-readable file or somewhere else entirely. O_CREAT
+    // with O_EXCL, which is what `create_new` is, refuses a symlink at the last
+    // component as well, so this closes both.
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -455,6 +482,37 @@ mod tests {
         let mut names = store.accounts().expect("accounts");
         names.sort();
         assert_eq!(names, vec!["one".to_owned(), "two".to_owned()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_left_behind_does_not_lend_the_token_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = Scratch::new("tokens-stale-temporary");
+        let store = scratch.store();
+        let TokenStore::File { path } = &store else {
+            unreachable!("the scratch store is a file store")
+        };
+
+        // A crashed run -- or another account that can write here -- leaves a
+        // readable file where the next save wants to put the token. The save
+        // used to open it as it was, keeping mode 0644, and then rename it over
+        // the real store, so the refresh token ended up world-readable.
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, "left behind").expect("stale temporary");
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o644))
+            .expect("make it readable");
+
+        store.save(&token("someone")).expect("save");
+
+        let mode = std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "the token file must be the owner's alone");
+        assert!(store.load("someone").expect("load").is_some());
     }
 
     #[test]

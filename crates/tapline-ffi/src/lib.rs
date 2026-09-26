@@ -61,6 +61,12 @@ fn shared() -> Option<&'static std::sync::Arc<Shared>> {
 fn pool() -> Option<&'static std::sync::Arc<SessionPool>> {
     static POOL: OnceLock<std::sync::Arc<SessionPool>> = OnceLock::new();
     Some(POOL.get_or_init(|| {
+        // This is the moment the budget stops being changeable, so it is where
+        // the latch belongs. Setting it in `spawn_job` instead meant that
+        // asking for the current budget -- which builds the pool -- left the
+        // latch down, and the next `tapline_set_total_concurrency` answered
+        // TAPLINE_OK while the pool went on running at the old size.
+        STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
         let configured = TOTAL_CONCURRENCY.load(std::sync::atomic::Ordering::Relaxed) as usize;
         let budget = if configured == 0 {
             Shared::new(InstallOptions::default().concurrency)
@@ -73,11 +79,13 @@ fn pool() -> Option<&'static std::sync::Arc<SessionPool>> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tapline_set_total_concurrency(chunks: u32) -> i32 {
-    TOTAL_CONCURRENCY.store(chunks, std::sync::atomic::Ordering::Relaxed);
+    // Checked before the store, so a rejected call leaves the value alone
+    // rather than recording a size that will never be used.
     if STARTED.load(std::sync::atomic::Ordering::Relaxed) {
         set_error("the concurrency budget is already in use and cannot be resized");
         return TAPLINE_BAD_ARGUMENT;
     }
+    TOTAL_CONCURRENCY.store(chunks, std::sync::atomic::Ordering::Relaxed);
     TAPLINE_OK
 }
 
@@ -174,8 +182,6 @@ where
         return TAPLINE_BAD_ARGUMENT;
     };
 
-    STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
-
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let handle = runtime.spawn(build(sender));
 
@@ -184,7 +190,11 @@ where
         held: std::sync::Mutex::new(None),
         handle,
     });
-    unsafe { *out = Box::into_raw(job) };
+    // SAFETY: `out` was null-checked above and the header promises it is
+    // writable for one pointer. `write_unaligned` so a caller whose out-slot is
+    // inside a packed struct is not undefined behaviour; C has no way to
+    // promise us the alignment and we have no way to check it.
+    unsafe { out.write_unaligned(Box::into_raw(job)) };
     TAPLINE_OK
 }
 
@@ -777,8 +787,17 @@ pub unsafe extern "C" fn tapline_job_next(
         return TAPLINE_BAD_ARGUMENT;
     };
 
-    let held = job.held.lock().ok().and_then(|mut slot| slot.take());
-    let message = match held {
+    // One lock for the whole function. Taking the held slot, reading the queue
+    // and putting the message back used to be three separate critical
+    // sections, so two threads calling this on one job could both find the slot
+    // empty, both take a message, and both write the slot -- losing one of
+    // them. The header says every function here is safe to call from any
+    // thread, so this has to serialise rather than interleave.
+    let Ok(mut slot) = job.held.lock() else {
+        set_error("the job's event queue was poisoned");
+        return TAPLINE_BAD_ARGUMENT;
+    };
+    let message = match slot.take() {
         Some(message) => Some(message),
         None => {
             let Ok(mut receiver) = job.events.lock() else {
@@ -808,15 +827,23 @@ pub unsafe extern "C" fn tapline_job_next(
     };
 
     if !out_len.is_null() {
-        unsafe { *out_len = message.len() };
+        // SAFETY: null-checked, and the header promises a writable `size_t`.
+        // Unaligned for the same reason as `spawn_job`'s out-pointer.
+        unsafe { out_len.write_unaligned(message.len()) };
     }
     if buf.is_null() || cap < message.len() {
-        if let Ok(mut slot) = job.held.lock() {
-            *slot = Some(message);
-        }
+        // The message is kept rather than dropped, so a caller that asked for
+        // the length first can ask again with a big enough buffer.
+        *slot = Some(message);
         return TAPLINE_BUFFER_TOO_SMALL;
     }
+    if message.is_empty() {
+        return TAPLINE_OK;
+    }
 
+    // SAFETY: `buf` is non-null and `cap` is at least `message.len()`, both
+    // checked immediately above, and the header promises `buf` is writable for
+    // `cap` bytes. A `String`'s bytes cannot overlap a buffer the caller owns.
     unsafe { std::ptr::copy_nonoverlapping(message.as_ptr(), buf, message.len()) };
     TAPLINE_OK
 }
@@ -849,11 +876,20 @@ pub unsafe extern "C" fn tapline_last_error(buf: *mut u8, cap: usize, out_len: *
     LAST_ERROR.with(|slot| {
         let message = slot.borrow();
         if !out_len.is_null() {
-            unsafe { *out_len = message.len() };
+            // SAFETY: null-checked; the header promises a writable `size_t`.
+            unsafe { out_len.write_unaligned(message.len()) };
         }
-        if buf.is_null() || cap < message.len() {
+        if cap < message.len() || (buf.is_null() && !message.is_empty()) {
             return TAPLINE_BUFFER_TOO_SMALL;
         }
+        if message.is_empty() {
+            // Nothing to copy, and no error set is the ordinary case -- asking
+            // for the length with a null buffer used to answer
+            // TAPLINE_BUFFER_TOO_SMALL for the zero bytes it needed.
+            return TAPLINE_OK;
+        }
+        // SAFETY: `buf` is non-null and writable for `cap` bytes per the
+        // header, and `cap` is at least `message.len()`, checked above.
         unsafe { std::ptr::copy_nonoverlapping(message.as_ptr(), buf, message.len()) };
         TAPLINE_OK
     })

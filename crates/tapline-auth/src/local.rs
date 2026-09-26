@@ -30,11 +30,28 @@ pub fn home_relative_roots() -> &'static [&'static str] {
     }
 }
 
-fn roots(home: &Path) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = home_relative_roots()
-        .iter()
-        .map(|relative| home.join(relative))
-        .collect();
+/// Where the account's home directory is.
+///
+/// Windows does not set `HOME`; it sets `USERPROFILE`. Anything that looks for
+/// a Steam install has to ask for both, which is what this is for -- looking
+/// for only one of them is how `libraries()` used to come back empty on every
+/// Windows machine.
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn roots(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = match home {
+        Some(home) => home_relative_roots()
+            .iter()
+            .map(|relative| home.join(relative))
+            .collect(),
+        // A machine with no home directory named in the environment can still
+        // have Steam installed where the installer puts it.
+        None => Vec::new(),
+    };
     for key in ["ProgramFiles(x86)", "ProgramFiles"] {
         if let Some(base) = std::env::var_os(key) {
             roots.push(PathBuf::from(base).join("Steam"));
@@ -45,13 +62,7 @@ fn roots(home: &Path) -> Vec<PathBuf> {
 
 #[must_use]
 pub fn discover() -> Vec<LocalAccount> {
-    let Some(home) = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-    else {
-        return Vec::new();
-    };
-    discover_in(&roots(&home))
+    discover_in(&roots(home().as_deref()))
 }
 
 #[must_use]
@@ -127,11 +138,7 @@ fn sort_most_recent_first(accounts: &mut [LocalAccount]) {
 
 #[must_use]
 pub fn libraries() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return Vec::new();
-    };
-
-    for root in roots(&home) {
+    for root in roots(home().as_deref()) {
         let path = root.join("config/libraryfolders.vdf");
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -188,12 +195,26 @@ mod tests {
     #[test]
     fn a_home_yields_one_root_per_known_layout() {
         let home = std::path::Path::new("/home/someone");
-        let roots = roots(home);
+        let roots = roots(Some(home));
         assert!(roots.len() >= home_relative_roots().len());
         assert!(
             roots
                 .iter()
                 .all(|root| root.starts_with(home) || root.is_absolute())
+        );
+    }
+
+    #[test]
+    fn no_home_still_leaves_the_install_directories_to_look_in() {
+        // `libraries()` used to give up here, which on Windows was every time:
+        // it asked only for HOME, which Windows does not set.
+        let roots = roots(None);
+        assert_eq!(
+            roots.len(),
+            ["ProgramFiles(x86)", "ProgramFiles"]
+                .iter()
+                .filter(|key| std::env::var_os(key).is_some())
+                .count(),
         );
     }
     use super::*;

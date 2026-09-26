@@ -1,4 +1,4 @@
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tapline_ids::{AppId, PublishedFileId};
@@ -169,7 +169,63 @@ fn hunt(root: &Path, depth: usize) -> Option<PathBuf> {
     None
 }
 
+/// Make sure the Steam client can see which app this is.
+///
+/// `SteamAPI_InitFlat` reads `SteamAppId` from the process environment, and
+/// there is no other way to tell it. Skipping the call whenever the variable is
+/// already set means a host that set it up front never reaches the `unsafe`
+/// below.
+fn announce_app_id(app: AppId) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        for name in ["SteamAppId", "SteamGameId"] {
+            if std::env::var_os(name).is_some_and(|value| !value.is_empty()) {
+                continue;
+            }
+            // SAFETY: `set_var` is unsound while another thread may be reading
+            // the environment -- glibc can reallocate `environ` underneath a
+            // concurrent `getenv` -- and this crate, being a library, cannot
+            // prove on its own that nothing else is running. That is why
+            // `Steam::connect` documents the requirement that it is called
+            // before the host starts other threads, and why this is skipped
+            // entirely when the host has already set the variable. There is no
+            // safe way to set an environment variable in Rust 1.94 and no way
+            // to hand the value to the Steam client except through it.
+            unsafe { std::env::set_var(name, app.get().to_string()) };
+        }
+    });
+}
+
+/// Whatever Steam wrote into an error buffer, read as text.
+///
+/// Bounded by the buffer rather than by a terminator: `CStr::from_ptr` would
+/// scan past the end if Steam ever filled all of it without writing a NUL. No
+/// `unsafe` is needed for any of it -- a `c_char` is one byte, whichever sign
+/// the target gives it.
+fn message_in(buffer: &[c_char]) -> String {
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
+    let bytes: Vec<u8> = buffer
+        .get(..end)
+        .unwrap_or_default()
+        .iter()
+        .map(|byte| *byte as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).trim().to_owned()
+}
+
 impl Steam {
+    /// Connect to a running Steam client.
+    ///
+    /// Call this before the host starts any other thread. The Steam client
+    /// reads `SteamAppId` out of the process environment while it initialises,
+    /// so if it is not already set this has to set it, and setting an
+    /// environment variable is only sound while nothing else can be reading
+    /// one. If the host cannot promise that, it should put `SteamAppId` and
+    /// `SteamGameId` in the environment itself before starting threads, and
+    /// this will find them there and leave them alone.
     pub fn connect(app: AppId) -> Result<Self, SteamError> {
         let roots = steam_roots();
         let path = find_library(&roots).ok_or_else(|| {
@@ -182,11 +238,7 @@ impl Steam {
             )
         })?;
 
-        // SAFETY: still single-threaded; no other thread observes the environment.
-        unsafe {
-            std::env::set_var("SteamAppId", app.get().to_string());
-            std::env::set_var("SteamGameId", app.get().to_string());
-        }
+        announce_app_id(app);
 
         // SAFETY: every signature below is the documented flat-API one.
         unsafe {
@@ -212,13 +264,14 @@ impl Steam {
             let init_flat = std::mem::transmute::<Handle, unsafe extern "C" fn(*mut c_char) -> c_int>(
                 sym(b"SteamAPI_InitFlat\0")?,
             );
-            let mut err = [0_i8; 1024];
+            // `c_char` is `i8` on x86-64 and on Apple silicon but `u8` on
+            // aarch64 Linux, so the element type has to follow it rather than
+            // be spelled out, or this crate stops compiling on a Steam-capable
+            // ARM server.
+            let mut err = [0 as c_char; 1024];
             let rc = init_flat(err.as_mut_ptr());
             if rc != 0 {
-                let why = CStr::from_ptr(err.as_ptr())
-                    .to_string_lossy()
-                    .trim()
-                    .to_owned();
+                let why = message_in(&err);
                 return Err(SteamError::InitFailed(if why.is_empty() {
                     format!("code {rc}")
                 } else {
