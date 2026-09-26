@@ -77,7 +77,7 @@ pub async fn fetch_chunk_bytes<F: Fetch>(
     let response = fetcher
         .get(Request::get(url), limit)
         .await
-        .map_err(|error| CdnError::Fetch(error.to_string()))?;
+        .map_err(|error| CdnError::Fetch(format!("{host}: {error}")))?;
 
     if !response.is_success() {
         return Err(CdnError::Status {
@@ -161,7 +161,7 @@ pub async fn fetch_manifest<F: Fetch>(
     let response = fetcher
         .get(Request::get(url), tapline_manifest::MAX_MANIFEST as u64)
         .await
-        .map_err(|error| CdnError::Fetch(error.to_string()))?;
+        .map_err(|error| CdnError::Fetch(format!("{host}: {error}")))?;
 
     if !response.is_success() {
         return Err(CdnError::Status {
