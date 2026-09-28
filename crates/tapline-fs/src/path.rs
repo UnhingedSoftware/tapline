@@ -1,4 +1,5 @@
 use std::fmt;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +10,7 @@ pub enum PathError {
     Prefix,
     InteriorNul,
     SymlinkEscapes { link: String, target: String },
+    ThroughSymlink { at: String },
 }
 
 impl fmt::Display for PathError {
@@ -24,6 +26,9 @@ impl fmt::Display for PathError {
                     f,
                     "the symlink {link} points outside the install root, at {target}"
                 )
+            }
+            Self::ThroughSymlink { at } => {
+                write!(f, "the path passes through the symlink {at}")
             }
         }
     }
@@ -43,6 +48,37 @@ impl SafePath {
     #[must_use]
     pub fn resolve(&self, root: &Path) -> PathBuf {
         root.join(&self.0)
+    }
+
+    /// Resolves under `root` like [`Self::resolve`], but refuses a path whose
+    /// directories below `root` include a symlink.
+    ///
+    /// Symlinks come from the manifest too, so a write that follows one lands
+    /// wherever an earlier install pointed it. A directory that does not exist
+    /// yet ends the check: nothing below it can be a link.
+    pub fn resolve_without_links(&self, root: &Path) -> io::Result<PathBuf> {
+        let mut at = root.to_path_buf();
+        let mut components = self.0.components().peekable();
+        while let Some(component) = components.next() {
+            if components.peek().is_none() {
+                break;
+            }
+            at.push(component);
+            match std::fs::symlink_metadata(&at) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        PathError::ThroughSymlink {
+                            at: at.to_string_lossy().into_owned(),
+                        },
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(root.join(&self.0))
     }
 
     #[must_use]
@@ -109,9 +145,18 @@ pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathEr
         .map(|parent| parent.components().filter(is_normal).count() as i64)
         .unwrap_or(0);
 
+    // The link is created from a lexically collapsed target: `a/b/../c` becomes
+    // `a/c`. Left as written, `..` after `b` is resolved by the filesystem, and
+    // if `b` is itself a symlink it climbs from wherever `b` points rather than
+    // from where the depth count above assumed it was.
+    let mut ups = 0_usize;
+    let mut downs: Vec<&std::ffi::OsStr> = Vec::new();
     for component in target_path.components() {
         match component {
-            Component::Normal(_) => depth += 1,
+            Component::Normal(part) => {
+                depth += 1;
+                downs.push(part);
+            }
             Component::CurDir => {}
             Component::ParentDir => {
                 depth -= 1;
@@ -120,6 +165,9 @@ pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathEr
                         link: link.as_str(),
                         target: normalised,
                     });
+                }
+                if downs.pop().is_none() {
+                    ups += 1;
                 }
             }
             Component::RootDir | Component::Prefix(_) => {
@@ -131,7 +179,15 @@ pub fn validate_symlink(link: &SafePath, target: &str) -> Result<PathBuf, PathEr
         }
     }
 
-    Ok(target_path.to_path_buf())
+    let mut collapsed = PathBuf::new();
+    for _ in 0..ups {
+        collapsed.push("..");
+    }
+    collapsed.extend(downs);
+    if collapsed.as_os_str().is_empty() {
+        collapsed.push(".");
+    }
+    Ok(collapsed)
 }
 
 fn is_normal(component: &Component<'_>) -> bool {
@@ -252,6 +308,56 @@ mod tests {
             validate_symlink(&link, "\\windows\\system32"),
             Err(PathError::SymlinkEscapes { .. })
         ));
+    }
+
+    #[test]
+    fn a_symlink_target_is_collapsed_so_no_later_link_can_redirect_its_climb() {
+        let link = validate_path("l2").expect("valid link path");
+        assert_eq!(
+            validate_symlink(&link, "a/b/l1/..").expect("stays inside"),
+            Path::new("a/b")
+        );
+        let nested = validate_path("bin/linux64/lib.so").expect("valid link path");
+        assert_eq!(
+            validate_symlink(&nested, "../x/../../lib/./real.so").expect("stays inside"),
+            Path::new("../../lib/real.so")
+        );
+        assert_eq!(
+            validate_symlink(&nested, "a/..").expect("stays inside"),
+            Path::new(".")
+        );
+    }
+
+    #[test]
+    fn a_path_under_a_symlinked_directory_is_refused() {
+        let root = std::env::temp_dir().join(format!("tapline-fs-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("real/dir")).expect("scratch");
+        crate::symlink(Path::new("real"), &root.join("link")).expect("symlink");
+
+        let through = validate_path("link/dir/file").expect("lexically fine");
+        let error = through
+            .resolve_without_links(&root)
+            .expect_err("the write would follow a link");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        let direct = validate_path("real/dir/file").expect("lexically fine");
+        assert_eq!(
+            direct
+                .resolve_without_links(&root)
+                .expect("no link on the way"),
+            root.join("real/dir/file")
+        );
+        let fresh = validate_path("new/deeper/file").expect("lexically fine");
+        fresh
+            .resolve_without_links(&root)
+            .expect("nothing exists yet");
+        let final_link = validate_path("link").expect("lexically fine");
+        final_link
+            .resolve_without_links(&root)
+            .expect("only directories on the way are checked");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

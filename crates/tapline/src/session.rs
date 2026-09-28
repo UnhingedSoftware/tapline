@@ -1260,7 +1260,8 @@ impl Session {
                     )));
                 }
 
-                let path = safe.resolve(&target.install_dir);
+                let path = safe.resolve_without_links(&target.install_dir)?;
+                tapline_fs::remove_symlink(&path)?;
                 let sink = FileSink::create(&path)?;
                 sink.write_at(0, &response.body).await?;
                 sink.sync().await?;
@@ -1346,7 +1347,8 @@ impl Session {
                 path: file.path.clone(),
                 reason,
             })?;
-            let target = safe.resolve(&options.install_dir);
+            let target = safe.resolve_without_links(&options.install_dir)?;
+            tapline_fs::remove_symlink(&target)?;
 
             let existing = if options.resume {
                 std::fs::metadata(&target)
@@ -1493,14 +1495,27 @@ struct ChunkContext {
 async fn fetch_decode_write_chunk(
     ctx: &ChunkContext,
     chunk: &tapline_manifest::Chunk,
-    sink: &FileSink,
+    sink: &Arc<FileSink>,
     resuming: bool,
 ) -> Result<ChunkOutcome, InstallError> {
-    if resuming
-        && let Ok(bytes) = sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
-        && tapline_crypto::sha1(&bytes) == chunk.id
-    {
-        return Ok(ChunkOutcome::reused());
+    // Reading back and hashing a chunk, decoding one, and writing one are all
+    // blocking work, so each runs on the blocking pool rather than stalling a
+    // runtime worker that other chunks' network I/O is waiting on.
+    //
+    // The size is the manifest's claim, and a claim past what any chunk can be
+    // would be allocated by the read-back before a byte is read.
+    if resuming && chunk.uncompressed_size as usize <= tapline_chunk::MAX_CHUNK {
+        let sink = Arc::clone(sink);
+        let chunk = chunk.clone();
+        let intact = tokio::task::spawn_blocking(move || {
+            sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
+                .is_ok_and(|bytes| tapline_crypto::sha1(&bytes) == chunk.id)
+        })
+        .await
+        .unwrap_or(false);
+        if intact {
+            return Ok(ChunkOutcome::reused());
+        }
     }
 
     let mut last_error = None;
@@ -1526,19 +1541,31 @@ async fn fetch_decode_write_chunk(
         let for_decode = chunk.clone();
         let host_for_decode = host.clone();
         let key = ctx.key;
-        let decoded = tokio::task::spawn_blocking(move || {
-            tapline_cdn::decode_chunk_owned(stored, &for_decode, &key, &host_for_decode)
+        let sink = Arc::clone(sink);
+        // Outer error: the write failed, which another host cannot fix.
+        // Inner error: this host's bytes were bad, so the next one is tried.
+        let landed = tokio::task::spawn_blocking(move || {
+            let plaintext = match tapline_cdn::decode_chunk_owned(
+                stored,
+                &for_decode,
+                &key,
+                &host_for_decode,
+            ) {
+                Ok(plaintext) => plaintext,
+                Err(error) => return Ok(Err(error)),
+            };
+            sink.write_at_blocking(for_decode.offset, &plaintext)?;
+            Ok::<_, std::io::Error>(Ok(plaintext.len()))
         })
         .await
-        .map_err(|e| InstallError::Io(e.to_string()))?;
+        .map_err(|e| InstallError::Io(e.to_string()))??;
 
-        match decoded {
-            Ok(plaintext) => {
-                sink.write_at(chunk.offset, &plaintext).await?;
+        match landed {
+            Ok(written) => {
                 return Ok(ChunkOutcome::fetched(
                     &host,
                     u64::from(chunk.compressed_size),
-                    plaintext.len() as u64,
+                    written as u64,
                 ));
             }
             Err(error) => last_error = Some(error),
@@ -1563,7 +1590,9 @@ fn create_directories(
             path: file.path.clone(),
             reason,
         })?;
-        std::fs::create_dir_all(safe.resolve(install_dir))?;
+        let path = safe.resolve_without_links(install_dir)?;
+        tapline_fs::remove_symlink(&path)?;
+        std::fs::create_dir_all(path)?;
     }
     Ok(())
 }
@@ -1596,7 +1625,7 @@ fn create_symlinks(
                 }
             })?;
 
-        let link_path = safe.resolve(install_dir);
+        let link_path = safe.resolve_without_links(install_dir)?;
         if let Some(parent) = link_path.parent() {
             std::fs::create_dir_all(parent)?;
         }

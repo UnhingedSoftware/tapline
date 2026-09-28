@@ -25,6 +25,10 @@ impl FileSink {
         self.file.sync_all()
     }
 
+    pub fn write_at_blocking(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        tapline_fs::write_all_at(&self.file, data, offset)
+    }
+
     pub fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0_u8; len];
         tapline_fs::read_exact_at(&self.file, &mut buffer, offset)?;
@@ -34,7 +38,7 @@ impl FileSink {
 
 impl Sink for FileSink {
     async fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
-        tapline_fs::write_all_at(&self.file, data, offset)
+        self.write_at_blocking(offset, data)
     }
 
     async fn allocate(&self, len: u64) -> io::Result<()> {
