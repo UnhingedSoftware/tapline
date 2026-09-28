@@ -119,9 +119,8 @@ mod tests {
 
     const OWNER: &str = "S-1-5-21-1111111111-2222222222-3333333333-1001";
 
-    /// What the comparison used to be, before Windows' alias substitution made
-    /// a real SID comparison necessary. It is still what every case below but
-    /// the alias one needs.
+    /// A plain string comparison of SIDs, without the alias handling the real
+    /// one needs. Every case below but the alias one only needs this.
     fn owned_by(owner: &str) -> impl Fn(&str) -> bool + '_ {
         move |holder| holder.eq_ignore_ascii_case(owner)
     }

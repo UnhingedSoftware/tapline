@@ -2,11 +2,9 @@
 
 use std::path::PathBuf;
 use tapline::{Session, Window};
-use tapline_ids::{AppId, PublishedFileId};
+use tapline_ids::PublishedFileId;
 
 const ITEM: PublishedFileId = PublishedFileId(104_691_717);
-#[allow(dead_code)]
-const APP: AppId = AppId(4000);
 
 fn scratch_root() -> PathBuf {
     let base = std::env::var("TAPLINE_TEST_DIR").unwrap_or_else(|_| {
