@@ -80,9 +80,6 @@ impl<T: Transport> Session<T> {
     pub async fn recv(&mut self) -> Result<Frame, NetError> {
         loop {
             if !self.pending.is_empty() {
-                if self.pending.is_empty() {
-                    continue;
-                }
                 return Ok(self.pending.remove(0));
             }
             let bytes = self.transport.recv().await?;
@@ -105,14 +102,25 @@ impl<T: Transport> Session<T> {
             let frame = self.recv().await?;
 
             if frame.reply_to() == Some(job_id) {
-                self.pending.splice(0..0, unrelated);
+                self.hold_back(unrelated);
                 return Ok(frame);
             }
             if frame.emsg == EMsg::CLIENT_LOGGED_OFF {
                 let eresult = frame.header.eresult.unwrap_or(0);
                 return Err(NetError::Steam { eresult });
             }
-            unrelated.push(frame);
+            push_bounded(&mut unrelated, frame);
+        }
+    }
+
+    /// Puts frames that arrived while waiting for something else back in
+    /// front of the queue, keeping only the newest [`MAX_HELD`]: nothing in
+    /// the library drains unsolicited frames, so over a long session they
+    /// would otherwise pile up and be rescanned by every later wait.
+    fn hold_back(&mut self, unrelated: Vec<Frame>) {
+        self.pending.splice(0..0, unrelated);
+        if let Some(excess) = self.pending.len().checked_sub(MAX_HELD) {
+            self.pending.drain(..excess);
         }
     }
 
@@ -215,7 +223,7 @@ impl<T: Transport> Session<T> {
             let frame = self.recv().await?;
             match frame.emsg {
                 EMsg::CLIENT_LOGON_RESPONSE => {
-                    self.pending.splice(0..0, unrelated);
+                    self.hold_back(unrelated);
                     return Ok(frame);
                 }
                 EMsg::CLIENT_LOGGED_OFF => {
@@ -223,7 +231,7 @@ impl<T: Transport> Session<T> {
                         eresult: frame.header.eresult.unwrap_or(0),
                     });
                 }
-                _ => unrelated.push(frame),
+                _ => push_bounded(&mut unrelated, frame),
             }
         }
     }
@@ -271,6 +279,16 @@ impl<T: Transport> Session<T> {
 }
 
 const OS_LINUX: u32 = 16;
+
+/// How many unsolicited frames a session keeps for [`Session::take_unsolicited`].
+const MAX_HELD: usize = 256;
+
+fn push_bounded(frames: &mut Vec<Frame>, frame: Frame) {
+    if frames.len() >= MAX_HELD {
+        frames.remove(0);
+    }
+    frames.push(frame);
+}
 
 #[cfg(test)]
 mod tests {
