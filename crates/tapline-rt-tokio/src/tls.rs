@@ -2,7 +2,7 @@ use crate::ws::WebSocket;
 use rustls::pki_types::ServerName;
 use std::io;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -12,16 +12,25 @@ const CM_PATH: &str = "/cmsocket/";
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+/// Built once: the root store is ~150 certificates to copy, and the config
+/// holds the session cache, so a fresh one per connection meant no CDN
+/// reconnect could ever resume a TLS session.
 fn client_config() -> Arc<rustls::ClientConfig> {
-    let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    Arc::new(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-    )
+    static CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+    Arc::clone(CONFIG.get_or_init(|| {
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    }))
 }
+
+/// The upgrade response is a status line and a handful of headers.
+const MAX_UPGRADE_RESPONSE: u64 = 16 * 1024;
 
 pub async fn connect_tls(host: &str, port: u16) -> io::Result<TlsStream> {
     let tcp = TcpStream::connect((host, port)).await?;
@@ -73,8 +82,9 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
     reader.get_mut().write_all(request.as_bytes()).await?;
     reader.get_mut().flush().await?;
 
+    let mut head = (&mut reader).take(MAX_UPGRADE_RESPONSE);
     let mut status = String::new();
-    reader.read_line(&mut status).await?;
+    head.read_line(&mut status).await?;
     if !status.starts_with("HTTP/1.1 101") {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
@@ -85,7 +95,7 @@ async fn upgrade(stream: TlsStream, host: &str, port: u16) -> io::Result<WebSock
     let mut accept = None;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).await? == 0 {
+        if head.read_line(&mut line).await? == 0 {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
         }
         let line = line.trim_end();

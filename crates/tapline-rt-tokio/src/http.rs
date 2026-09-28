@@ -85,6 +85,14 @@ impl HttpClient {
 }
 
 fn split_url(url: &str) -> Result<(String, u16, String), FetchError> {
+    // The URL is written into the request line verbatim, and some URLs come
+    // from Steam's replies: whitespace or a line break would split the request.
+    if url
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return Err(FetchError::InvalidUrl(url.to_owned()));
+    }
     let (scheme, rest) = url
         .split_once("://")
         .ok_or_else(|| FetchError::InvalidUrl(url.to_owned()))?;
@@ -355,6 +363,9 @@ async fn read_chunked(
             return Ok(out);
         }
 
+        if (out.len() as u64).saturating_add(size as u64) > limit {
+            return Err(FetchError::BodyTooLarge { limit });
+        }
         let data_end = data_start
             .checked_add(size)
             .ok_or_else(|| FetchError::MalformedResponse("chunk size overflow".into()))?;
@@ -363,9 +374,6 @@ async fn read_chunked(
         }
 
         out.extend_from_slice(raw.get(data_start..data_end).unwrap_or_default());
-        if out.len() as u64 > limit {
-            return Err(FetchError::BodyTooLarge { limit });
-        }
         cursor = data_end + 2;
     }
 }
@@ -429,6 +437,8 @@ mod tests {
         assert!(split_url("no-scheme.invalid/x").is_err());
         assert!(split_url("https:///path").is_err());
         assert!(split_url("https://host:notaport/x").is_err());
+        assert!(split_url("https://host/x HTTP/1.1\r\nX-Injected: 1").is_err());
+        assert!(split_url("https://host/a b").is_err());
     }
 
     #[test]

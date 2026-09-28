@@ -4,6 +4,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const DIRECTORY_HOST: &str = "api.steampowered.com";
 
+/// A list of 64 servers is around 10 KiB.
+const MAX_RESPONSE: u64 = 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmServer {
     pub endpoint: String,
@@ -75,7 +78,16 @@ async fn get(host: &str, path: &str) -> io::Result<String> {
     stream.flush().await?;
 
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).await?;
+    (&mut stream)
+        .take(MAX_RESPONSE + 1)
+        .read_to_end(&mut raw)
+        .await?;
+    if raw.len() as u64 > MAX_RESPONSE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the CM directory response is implausibly large",
+        ));
+    }
     let text = String::from_utf8_lossy(&raw).into_owned();
 
     let (head, body) = text

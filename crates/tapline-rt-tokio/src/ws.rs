@@ -110,7 +110,7 @@ impl WebSocket {
     }
 
     async fn write_frame(&mut self, opcode: u8, payload: &[u8]) -> io::Result<()> {
-        let mut header = Vec::with_capacity(14);
+        let mut header = Vec::with_capacity(14 + payload.len());
         header.push(0x80 | opcode);
 
         let mask_bit = 0x80_u8;
@@ -129,15 +129,14 @@ impl WebSocket {
         let mask = tapline_crypto::random_bytes::<4>();
         header.extend_from_slice(&mask);
 
-        let mut masked = payload.to_vec();
-        for (index, byte) in masked.iter_mut().enumerate() {
-            if let Some(key) = mask.get(index % 4) {
-                *byte ^= *key;
-            }
-        }
+        header.extend(
+            payload
+                .iter()
+                .zip(mask.iter().cycle())
+                .map(|(byte, key)| byte ^ key),
+        );
 
         self.stream.write_all(&header).await?;
-        self.stream.write_all(&masked).await?;
         self.stream.flush().await
     }
 
