@@ -70,6 +70,16 @@ pub async fn fetch_chunk_bytes<F: Fetch>(
     depot: DepotId,
     chunk: &Chunk,
 ) -> Result<Vec<u8>, CdnError> {
+    // The stored form is the compressed container plus AES padding and IV; a
+    // manifest claiming more than that of the largest chunk would otherwise
+    // set how much the HTTP client is willing to buffer.
+    if chunk.compressed_size as usize > tapline_chunk::MAX_CHUNK + 4096 {
+        return Err(CdnError::Container(format!(
+            "the manifest claims a {}-byte chunk",
+            chunk.compressed_size
+        )));
+    }
+
     let id = chunk.id_hex();
     let url = format!("https://{host}/depot/{depot}/chunk/{id}");
 
@@ -125,9 +135,18 @@ pub fn decode_chunk_into(
     let container =
         tapline_crypto::decrypt_content_owned(depot_key, stored).map_err(|_| CdnError::Decrypt)?;
 
-    tapline_chunk::decode_into(&container, tapline_chunk::MAX_CHUNK, plaintext)
+    // Bounded by what the manifest declares, not only by the format's ceiling.
+    let limit = (chunk.uncompressed_size as usize).min(tapline_chunk::MAX_CHUNK);
+    tapline_chunk::decode_into(&container, limit, plaintext)
         .map_err(|e| CdnError::Container(e.to_string()))?;
     let plaintext = &*plaintext;
+
+    if plaintext.len() != chunk.uncompressed_size as usize {
+        return Err(CdnError::WrongLength {
+            expected: chunk.uncompressed_size,
+            actual: plaintext.len(),
+        });
+    }
 
     let digest = tapline_crypto::sha1(plaintext);
     if digest != chunk.id {
@@ -135,13 +154,6 @@ pub fn decode_chunk_into(
             expected: chunk.id_hex(),
             actual: digest.iter().map(|b| format!("{b:02x}")).collect(),
             host: host.to_owned(),
-        });
-    }
-
-    if plaintext.len() != chunk.uncompressed_size as usize {
-        return Err(CdnError::WrongLength {
-            expected: chunk.uncompressed_size,
-            actual: plaintext.len(),
         });
     }
 

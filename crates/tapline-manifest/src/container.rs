@@ -143,7 +143,7 @@ fn unzip(bytes: &[u8]) -> Result<Vec<u8>, ManifestError> {
 
     let out = match method {
         0 => data.to_vec(),
-        8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, MAX_MANIFEST)
+        8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, uncompressed_size)
             .map_err(|e| ManifestError::Decompress(format!("{:?}", e.status)))?,
         other => return Err(ManifestError::UnsupportedCompression(other)),
     };
