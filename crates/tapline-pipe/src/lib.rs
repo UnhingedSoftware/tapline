@@ -305,13 +305,19 @@ async fn run_selective(
     let mut streamed = 0_u64;
     for ((entry, stored), index) in selected.iter().zip(pieces.iter()).zip(chosen.iter()) {
         sink.begin(entry, *index)?;
-        decode_entry(&pipeline.format, entry, stored, &mut |piece| {
+        let decoded = decode_entry(&pipeline.format, entry, stored, &mut |piece| {
             if piece.is_empty() {
                 return Ok(());
             }
             streamed += piece.len() as u64;
             sink.data(piece)
-        })?;
+        });
+        if let Err(error) = decoded {
+            // The decode error is the one worth reporting; a failed cleanup
+            // only leaves the partial file the error already explains.
+            let _ = sink.abort();
+            return Err(error);
+        }
         sink.end()?;
         observe(tapline::Event::Progress {
             bytes_done: streamed,
@@ -383,12 +389,19 @@ fn decode_entry(
     stored: &[u8],
     emit: &mut dyn FnMut(&[u8]) -> Result<(), tapline_ext::ExtensionError>,
 ) -> Result<(), PipeError> {
-    match entry.compression {
-        tapline_ext::Compression::Stored => Ok(emit(stored)?),
-        tapline_ext::Compression::Deflate => match format {
-            "zip" => Ok(tapline_zip::decode_into(entry, stored, emit)?),
-            other => Err(SpecError::UnknownFormat(other.to_owned()).into()),
-        },
+    match (format, entry.compression) {
+        ("zip", _) => Ok(tapline_zip::decode_into(entry, stored, emit)?),
+        ("gma", tapline_ext::Compression::Stored) => {
+            if stored.len() as u64 > entry.size {
+                return Err(tapline_ext::ExtensionError::Malformed {
+                    extension: "gma",
+                    reason: format!("{:?} holds more than its {} bytes", entry.path, entry.size),
+                }
+                .into());
+            }
+            Ok(emit(stored)?)
+        }
+        (other, _) => Err(SpecError::UnknownFormat(other.to_owned()).into()),
     }
 }
 
