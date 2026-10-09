@@ -193,23 +193,28 @@ impl TokenStore {
 }
 
 fn read_all(path: &Path) -> Result<Vec<(String, String)>, TokenStoreError> {
-    let text = match std::fs::read_to_string(path) {
+    let mut text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(TokenStoreError::Backend(error.to_string())),
     };
 
-    check_permissions(path)?;
-
-    let mut out = Vec::new();
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let (account, token) = line.split_once('\t').ok_or(TokenStoreError::Malformed)?;
-        out.push((account.to_owned(), token.to_owned()));
+    if let Err(error) = check_permissions(path) {
+        text.zeroize();
+        return Err(error);
     }
-    Ok(out)
+
+    let entries = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.split_once('\t')
+                .map(|(account, token)| (account.to_owned(), token.to_owned()))
+                .ok_or(TokenStoreError::Malformed)
+        })
+        .collect();
+    text.zeroize();
+    entries
 }
 
 fn write_all(path: &Path, entries: &[(String, String)]) -> Result<(), TokenStoreError> {
@@ -364,6 +369,14 @@ fn check_permissions(path: &Path) -> Result<(), TokenStoreError> {
 }
 
 fn write_file(path: &Path, token: &StoredToken) -> Result<(), TokenStoreError> {
+    // The file is one `account<TAB>token` line per entry; either separator in a
+    // field would corrupt every other entry on the next read.
+    if [&token.account, &token.refresh_token]
+        .iter()
+        .any(|field| field.contains(['\t', '\n', '\r']))
+    {
+        return Err(TokenStoreError::Malformed);
+    }
     let mut entries = read_all(path)?;
     entries.retain(|(account, _)| account != &token.account);
     entries.push((token.account.clone(), token.refresh_token.clone()));

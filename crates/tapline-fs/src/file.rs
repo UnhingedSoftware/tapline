@@ -128,6 +128,19 @@ pub fn remove_existing(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Removes `path` if it is a symlink, leaving what it points at alone.
+///
+/// For a path the manifest now names as a file or directory where an earlier
+/// install left a link: writing through the link would land at its target.
+pub fn remove_symlink(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => remove_existing(path),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(unix)]
 fn names_a_directory(file_type: &std::fs::FileType) -> bool {
     file_type.is_dir()
@@ -279,6 +292,25 @@ mod tests {
             target.join("inside.txt").is_file(),
             "the target was removed along with the link"
         );
+    }
+
+    #[test]
+    fn remove_symlink_takes_only_links() {
+        let scratch = Scratch::new("file-remove-symlink");
+        let target = scratch.join("real.txt");
+        std::fs::write(&target, b"kept").expect("seed");
+        let link = scratch.join("link.txt");
+        symlink(Path::new("real.txt"), &link).expect("symlink");
+
+        remove_symlink(&target).expect("a regular file is left alone");
+        remove_symlink(&link).expect("remove");
+        remove_symlink(&scratch.join("never-existed")).expect("nothing to remove");
+
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "the link is still there"
+        );
+        assert_eq!(std::fs::read(&target).expect("read"), b"kept");
     }
 
     #[test]

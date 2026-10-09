@@ -62,10 +62,10 @@ fn pool() -> Option<&'static std::sync::Arc<SessionPool>> {
     static POOL: OnceLock<std::sync::Arc<SessionPool>> = OnceLock::new();
     Some(POOL.get_or_init(|| {
         // This is the moment the budget stops being changeable, so it is where
-        // the latch belongs. Setting it in `spawn_job` instead meant that
-        // asking for the current budget -- which builds the pool -- left the
-        // latch down, and the next `tapline_set_total_concurrency` answered
-        // TAPLINE_OK while the pool went on running at the old size.
+        // the latch belongs. Set any later, asking for the current budget --
+        // which builds the pool -- would leave the latch down, and the next
+        // `tapline_set_total_concurrency` would answer TAPLINE_OK while the
+        // pool went on running at the old size.
         STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
         let configured = TOTAL_CONCURRENCY.load(std::sync::atomic::Ordering::Relaxed) as usize;
         let budget = if configured == 0 {
@@ -787,12 +787,12 @@ pub unsafe extern "C" fn tapline_job_next(
         return TAPLINE_BAD_ARGUMENT;
     };
 
-    // One lock for the whole function. Taking the held slot, reading the queue
-    // and putting the message back used to be three separate critical
-    // sections, so two threads calling this on one job could both find the slot
-    // empty, both take a message, and both write the slot -- losing one of
-    // them. The header says every function here is safe to call from any
-    // thread, so this has to serialise rather than interleave.
+    // One lock for the whole function. With separate critical sections for
+    // taking the held slot, reading the queue and putting the message back, two
+    // threads calling this on one job could both find the slot empty, both take
+    // a message, and both write the slot -- losing one of them. The header says
+    // every function here is safe to call from any thread, so this has to
+    // serialise rather than interleave.
     let Ok(mut slot) = job.held.lock() else {
         set_error("the job's event queue was poisoned");
         return TAPLINE_BAD_ARGUMENT;
@@ -883,9 +883,8 @@ pub unsafe extern "C" fn tapline_last_error(buf: *mut u8, cap: usize, out_len: *
             return TAPLINE_BUFFER_TOO_SMALL;
         }
         if message.is_empty() {
-            // Nothing to copy, and no error set is the ordinary case -- asking
-            // for the length with a null buffer used to answer
-            // TAPLINE_BUFFER_TOO_SMALL for the zero bytes it needed.
+            // Nothing to copy. No error set is the ordinary case, and asking
+            // for its length with a null buffer is not a buffer too small.
             return TAPLINE_OK;
         }
         // SAFETY: `buf` is non-null and writable for `cap` bytes per the

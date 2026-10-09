@@ -126,6 +126,12 @@ pub trait EntrySink {
 
     fn end(&mut self) -> Result<(), ExtensionError>;
 
+    /// Called instead of `end` when an entry could not be decoded, so a sink
+    /// can throw away what it wrote of it.
+    fn abort(&mut self) -> Result<(), ExtensionError> {
+        Ok(())
+    }
+
     fn finish(&mut self) -> Result<(), ExtensionError> {
         Ok(())
     }
@@ -144,6 +150,9 @@ impl<S: EntrySink + ?Sized> EntrySink for &mut S {
     fn end(&mut self) -> Result<(), ExtensionError> {
         (**self).end()
     }
+    fn abort(&mut self) -> Result<(), ExtensionError> {
+        (**self).abort()
+    }
     fn finish(&mut self) -> Result<(), ExtensionError> {
         (**self).finish()
     }
@@ -161,6 +170,9 @@ impl<S: EntrySink + ?Sized> EntrySink for Box<S> {
     }
     fn end(&mut self) -> Result<(), ExtensionError> {
         (**self).end()
+    }
+    fn abort(&mut self) -> Result<(), ExtensionError> {
+        (**self).abort()
     }
     fn finish(&mut self) -> Result<(), ExtensionError> {
         (**self).finish()

@@ -196,22 +196,57 @@ pub fn finalize(
 }
 
 pub fn decode(entry: &ArchiveEntry, stored: &[u8]) -> Result<Vec<u8>, ExtensionError> {
-    match entry.compression {
-        Compression::Stored => Ok(stored.to_vec()),
-        Compression::Deflate => {
-            let limit = usize::try_from(entry.size).map_err(|_| ExtensionError::Malformed {
-                extension: "zip",
-                reason: format!(
-                    "{:?} claims {} bytes, which will not fit",
-                    entry.path, entry.size
-                ),
-            })?;
-            miniz_oxide::inflate::decompress_to_vec_with_limit(stored, limit).map_err(|error| {
-                ExtensionError::Malformed {
-                    extension: "zip",
-                    reason: format!("{:?} would not inflate: {:?}", entry.path, error.status),
-                }
-            })
+    let mut out = Vec::new();
+    decode_into(entry, stored, &mut |piece| {
+        out.extend_from_slice(piece);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Inflates `stored` a piece at a time into `emit`, so an entry never has to
+/// sit in memory whole: a few kilobytes of deflate can claim gigabytes.
+/// Fails if the output runs past the entry's declared size.
+pub fn decode_into(
+    entry: &ArchiveEntry,
+    stored: &[u8],
+    emit: &mut dyn FnMut(&[u8]) -> Result<(), ExtensionError>,
+) -> Result<(), ExtensionError> {
+    use miniz_oxide::inflate::stream::{InflateState, inflate};
+    use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
+
+    let malformed = |reason: String| ExtensionError::Malformed {
+        extension: "zip",
+        reason: format!("{:?} {reason}", entry.path),
+    };
+
+    if entry.compression == Compression::Stored {
+        if stored.len() as u64 > entry.size {
+            return Err(malformed(format!(
+                "holds more than its {} bytes",
+                entry.size
+            )));
+        }
+        return emit(stored);
+    }
+
+    let mut state = InflateState::new_boxed(DataFormat::Raw);
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut input = stored;
+    let mut written = 0_u64;
+    loop {
+        let result = inflate(&mut state, input, &mut buffer, MZFlush::None);
+        input = input.get(result.bytes_consumed..).unwrap_or_default();
+        written = written.saturating_add(result.bytes_written as u64);
+        if written > entry.size {
+            return Err(malformed(format!("inflates past its {} bytes", entry.size)));
+        }
+        emit(buffer.get(..result.bytes_written).unwrap_or_default())?;
+        match result.status {
+            Ok(MZStatus::StreamEnd) => return Ok(()),
+            Ok(_) if result.bytes_consumed > 0 || result.bytes_written > 0 => {}
+            Ok(_) | Err(MZError::Buf) => return Err(malformed("ended mid-stream".to_owned())),
+            Err(error) => return Err(malformed(format!("would not inflate: {error:?}"))),
         }
     }
 }
@@ -440,5 +475,50 @@ mod tests {
             let prefix = raw.get(..cut).expect("in range");
             let _ = plan(prefix, 0);
         }
+    }
+
+    fn deflated(body: &[u8], claimed: u64) -> (ArchiveEntry, Vec<u8>) {
+        let stored = miniz_oxide::deflate::compress_to_vec(body, 6);
+        let entry = ArchiveEntry {
+            path: "big.bin".to_owned(),
+            size: claimed,
+            offset: 0,
+            stored_size: stored.len() as u64,
+            compression: Compression::Deflate,
+        };
+        (entry, stored)
+    }
+
+    #[test]
+    fn an_entry_inflates_in_pieces_without_holding_it_whole() {
+        let body = vec![7_u8; 1024 * 1024];
+        let (entry, stored) = deflated(&body, body.len() as u64);
+        let mut pieces = 0;
+        let mut total = 0;
+        decode_into(&entry, &stored, &mut |piece| {
+            assert!(piece.len() <= 64 * 1024);
+            pieces += 1;
+            total += piece.len();
+            Ok(())
+        })
+        .expect("decode");
+        assert_eq!(total, body.len());
+        assert!(pieces > 1);
+    }
+
+    #[test]
+    fn an_entry_inflating_past_its_size_is_refused() {
+        let body = vec![0_u8; 1024 * 1024];
+        let (entry, stored) = deflated(&body, 1000);
+        let error = decode(&entry, &stored).expect_err("must refuse");
+        assert!(error.to_string().contains("past its 1000 bytes"), "{error}");
+    }
+
+    #[test]
+    fn a_cut_short_deflate_stream_is_an_error() {
+        let body: Vec<u8> = (0..100_000_u32).map(|n| (n * 7 % 251) as u8).collect();
+        let (entry, stored) = deflated(&body, body.len() as u64);
+        let cut = stored.get(..stored.len() / 2).expect("half");
+        assert!(decode(&entry, cut).is_err());
     }
 }

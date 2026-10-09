@@ -80,6 +80,16 @@ where
 
         let mut corrupt = Vec::new();
         for chunk in &file.chunks {
+            // Checked before reading, because `read_chunk` allocates the
+            // manifest's claimed length up front.
+            let fits = chunk
+                .offset
+                .checked_add(u64::from(chunk.uncompressed_size))
+                .is_some_and(|end| end <= file.size);
+            if !fits || chunk.uncompressed_size as usize > tapline_chunk::MAX_CHUNK {
+                corrupt.push(chunk.offset);
+                continue;
+            }
             let bytes = match read_chunk(&target, chunk.offset, chunk.uncompressed_size as usize) {
                 Ok(bytes) => bytes,
                 Err(error) => {

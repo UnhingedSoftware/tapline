@@ -1,5 +1,5 @@
 use tapline_ids::{AppId, DepotId, ManifestId};
-use tapline_vdf::{Object, Value};
+use tapline_vdf::Object;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Os {
@@ -223,16 +223,6 @@ impl AppInfo {
     pub const fn from_object(app_id: AppId, root: Object) -> Self {
         Self { app_id, root }
     }
-}
-
-#[allow(dead_code, reason = "kept next to the accessors it mirrors")]
-fn nested<'a>(object: &'a Object, path: &[&str]) -> Option<&'a Value> {
-    let mut current = object;
-    let (last, parents) = path.split_last()?;
-    for step in parents {
-        current = current.get_object(step)?;
-    }
-    current.get(last)
 }
 
 #[cfg(test)]

@@ -323,7 +323,7 @@ impl Session {
             ))
             .await?;
 
-        let reply = self.cm.wait_for_job(job).await?;
+        let reply = answered(self.cm.wait_for_job(job)).await?;
         let response: CMsgClientGetDepotDecryptionKeyResponse = reply.decode_body()?;
 
         let eresult = response.eresult.unwrap_or(0);
@@ -346,7 +346,7 @@ impl Session {
         app: AppId,
         options: &InstallOptions,
     ) -> Result<Vec<ResolvedDepot>, InstallError> {
-        let info = tapline_pics::product_info(&mut self.cm, app).await?;
+        let info = answered(tapline_pics::product_info(&mut self.cm, app)).await?;
         self.app_name = info.name().map(str::to_owned);
         self.build_id = info.build_id(&options.branch);
         let depots = info.depots(&options.filter());
@@ -1021,7 +1021,7 @@ impl Session {
     }
 
     pub async fn app_info(&mut self, app: AppId) -> Result<tapline_pics::AppInfo, InstallError> {
-        Ok(tapline_pics::product_info(&mut self.cm, app).await?)
+        Ok(answered(tapline_pics::product_info(&mut self.cm, app)).await?)
     }
 
     pub async fn workshop_details(
@@ -1050,7 +1050,7 @@ impl Session {
                     let resolved = if app.get() == 0 {
                         None
                     } else {
-                        tapline_pics::product_info(&mut self.cm, app)
+                        answered(tapline_pics::product_info(&mut self.cm, app))
                             .await
                             .ok()
                             .and_then(|info| info.workshop_depot())
@@ -1086,7 +1086,7 @@ impl Session {
         let workshop_depot = if query.app.get() == 0 {
             None
         } else {
-            tapline_pics::product_info(&mut self.cm, query.app)
+            answered(tapline_pics::product_info(&mut self.cm, query.app))
                 .await
                 .ok()
                 .and_then(|info| info.workshop_depot())
@@ -1259,8 +1259,19 @@ impl Session {
                         response.status
                     )));
                 }
+                // A legacy item comes with no hash to check it against, so its
+                // declared size is the one thing that can catch a cut-short or
+                // padded download before it is written.
+                if item.size > 0 && response.body.len() as u64 != item.size {
+                    return Err(InstallError::Io(format!(
+                        "the Workshop CDN sent {} bytes for {url}, the item is {}",
+                        response.body.len(),
+                        item.size
+                    )));
+                }
 
-                let path = safe.resolve(&target.install_dir);
+                let path = safe.resolve_without_links(&target.install_dir)?;
+                tapline_fs::remove_symlink(&path)?;
                 let sink = FileSink::create(&path)?;
                 sink.write_at(0, &response.body).await?;
                 sink.sync().await?;
@@ -1346,7 +1357,8 @@ impl Session {
                 path: file.path.clone(),
                 reason,
             })?;
-            let target = safe.resolve(&options.install_dir);
+            let target = safe.resolve_without_links(&options.install_dir)?;
+            tapline_fs::remove_symlink(&target)?;
 
             let existing = if options.resume {
                 std::fs::metadata(&target)
@@ -1493,14 +1505,27 @@ struct ChunkContext {
 async fn fetch_decode_write_chunk(
     ctx: &ChunkContext,
     chunk: &tapline_manifest::Chunk,
-    sink: &FileSink,
+    sink: &Arc<FileSink>,
     resuming: bool,
 ) -> Result<ChunkOutcome, InstallError> {
-    if resuming
-        && let Ok(bytes) = sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
-        && tapline_crypto::sha1(&bytes) == chunk.id
-    {
-        return Ok(ChunkOutcome::reused());
+    // Reading back and hashing a chunk, decoding one, and writing one are all
+    // blocking work, so each runs on the blocking pool rather than stalling a
+    // runtime worker that other chunks' network I/O is waiting on.
+    //
+    // The size is the manifest's claim, and a claim past what any chunk can be
+    // would be allocated by the read-back before a byte is read.
+    if resuming && chunk.uncompressed_size as usize <= tapline_chunk::MAX_CHUNK {
+        let sink = Arc::clone(sink);
+        let chunk = chunk.clone();
+        let intact = tokio::task::spawn_blocking(move || {
+            sink.read_at(chunk.offset, chunk.uncompressed_size as usize)
+                .is_ok_and(|bytes| tapline_crypto::sha1(&bytes) == chunk.id)
+        })
+        .await
+        .unwrap_or(false);
+        if intact {
+            return Ok(ChunkOutcome::reused());
+        }
     }
 
     let mut last_error = None;
@@ -1526,19 +1551,31 @@ async fn fetch_decode_write_chunk(
         let for_decode = chunk.clone();
         let host_for_decode = host.clone();
         let key = ctx.key;
-        let decoded = tokio::task::spawn_blocking(move || {
-            tapline_cdn::decode_chunk_owned(stored, &for_decode, &key, &host_for_decode)
+        let sink = Arc::clone(sink);
+        // Outer error: the write failed, which another host cannot fix.
+        // Inner error: this host's bytes were bad, so the next one is tried.
+        let landed = tokio::task::spawn_blocking(move || {
+            let plaintext = match tapline_cdn::decode_chunk_owned(
+                stored,
+                &for_decode,
+                &key,
+                &host_for_decode,
+            ) {
+                Ok(plaintext) => plaintext,
+                Err(error) => return Ok(Err(error)),
+            };
+            sink.write_at_blocking(for_decode.offset, &plaintext)?;
+            Ok::<_, std::io::Error>(Ok(plaintext.len()))
         })
         .await
-        .map_err(|e| InstallError::Io(e.to_string()))?;
+        .map_err(|e| InstallError::Io(e.to_string()))??;
 
-        match decoded {
-            Ok(plaintext) => {
-                sink.write_at(chunk.offset, &plaintext).await?;
+        match landed {
+            Ok(written) => {
                 return Ok(ChunkOutcome::fetched(
                     &host,
                     u64::from(chunk.compressed_size),
-                    plaintext.len() as u64,
+                    written as u64,
                 ));
             }
             Err(error) => last_error = Some(error),
@@ -1563,7 +1600,9 @@ fn create_directories(
             path: file.path.clone(),
             reason,
         })?;
-        std::fs::create_dir_all(safe.resolve(install_dir))?;
+        let path = safe.resolve_without_links(install_dir)?;
+        tapline_fs::remove_symlink(&path)?;
+        std::fs::create_dir_all(path)?;
     }
     Ok(())
 }
@@ -1596,7 +1635,7 @@ fn create_symlinks(
                 }
             })?;
 
-        let link_path = safe.resolve(install_dir);
+        let link_path = safe.resolve_without_links(install_dir)?;
         if let Some(parent) = link_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -1851,6 +1890,25 @@ fn cdn_hosts(servers: &[CContentServerDirectory_ServerInfo]) -> Vec<Host> {
             })
         })
         .collect()
+}
+
+/// How long a request to the CM server may go unanswered. `wait_for_job`
+/// itself waits forever, and a server that drops one request while keeping
+/// the connection open would otherwise hang the whole install.
+const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+async fn answered<T, E: From<tapline_net::NetError>>(
+    request: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    tokio::time::timeout(REPLY_TIMEOUT, request)
+        .await
+        .unwrap_or_else(|_| {
+            Err(tapline_net::NetError::Io(format!(
+                "Steam did not answer within {} seconds",
+                REPLY_TIMEOUT.as_secs()
+            ))
+            .into())
+        })
 }
 
 #[cfg(test)]

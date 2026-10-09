@@ -304,14 +304,21 @@ async fn run_selective(
 
     let mut streamed = 0_u64;
     for ((entry, stored), index) in selected.iter().zip(pieces.iter()).zip(chosen.iter()) {
-        let bytes = decode_entry(&pipeline.format, entry, stored)?;
-        let bytes = &bytes;
         sink.begin(entry, *index)?;
-        if !bytes.is_empty() {
-            sink.data(bytes)?;
+        let decoded = decode_entry(&pipeline.format, entry, stored, &mut |piece| {
+            if piece.is_empty() {
+                return Ok(());
+            }
+            streamed += piece.len() as u64;
+            sink.data(piece)
+        });
+        if let Err(error) = decoded {
+            // The decode error is the one worth reporting; a failed cleanup
+            // only leaves the partial file the error already explains.
+            let _ = sink.abort();
+            return Err(error);
         }
         sink.end()?;
-        streamed += bytes.len() as u64;
         observe(tapline::Event::Progress {
             bytes_done: streamed,
             bytes_total: selected.iter().map(|entry| entry.size).sum(),
@@ -380,13 +387,21 @@ fn decode_entry(
     format: &str,
     entry: &tapline_ext::ArchiveEntry,
     stored: &[u8],
-) -> Result<Vec<u8>, PipeError> {
-    match entry.compression {
-        tapline_ext::Compression::Stored => Ok(stored.to_vec()),
-        tapline_ext::Compression::Deflate => match format {
-            "zip" => Ok(tapline_zip::decode(entry, stored)?),
-            other => Err(SpecError::UnknownFormat(other.to_owned()).into()),
-        },
+    emit: &mut dyn FnMut(&[u8]) -> Result<(), tapline_ext::ExtensionError>,
+) -> Result<(), PipeError> {
+    match (format, entry.compression) {
+        ("zip", _) => Ok(tapline_zip::decode_into(entry, stored, emit)?),
+        ("gma", tapline_ext::Compression::Stored) => {
+            if stored.len() as u64 > entry.size {
+                return Err(tapline_ext::ExtensionError::Malformed {
+                    extension: "gma",
+                    reason: format!("{:?} holds more than its {} bytes", entry.path, entry.size),
+                }
+                .into());
+            }
+            Ok(emit(stored)?)
+        }
+        (other, _) => Err(SpecError::UnknownFormat(other.to_owned()).into()),
     }
 }
 

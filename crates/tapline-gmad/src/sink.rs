@@ -86,6 +86,16 @@ impl EntrySink for ToDirectory {
         }
         Ok(())
     }
+
+    fn abort(&mut self) -> Result<(), ExtensionError> {
+        if self.current.take().is_none() {
+            return Ok(());
+        }
+        match self.targets.get(self.at) {
+            Some(target) => Ok(std::fs::remove_file(target)?),
+            None => Ok(()),
+        }
+    }
 }
 
 const BATCH_BYTES: usize = 8 << 20;
@@ -169,7 +179,8 @@ impl EntrySink for ToZip {
     fn begin(&mut self, entry: &ArchiveEntry, index: usize) -> Result<(), ExtensionError> {
         self.at = index;
         self.buffer.clear();
-        self.buffer.reserve(entry.size as usize);
+        self.buffer
+            .reserve(entry.size.min(BATCH_BYTES as u64) as usize);
         Ok(())
     }
 
@@ -243,6 +254,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("mkdir");
         Scratch(path)
+    }
+
+    #[test]
+    fn an_aborted_entry_leaves_no_partial_file() {
+        let dir = scratch("abort");
+        let entries = [ArchiveEntry {
+            path: "lua/a.lua".into(),
+            size: 8,
+            offset: 0,
+            stored_size: 8,
+            compression: tapline_ext::Compression::Stored,
+        }];
+        let mut sink = ToDirectory::new(&dir.0);
+        sink.index(&entries).expect("index");
+        sink.begin(&entries[0], 0).expect("begin");
+        sink.data(b"prin").expect("data");
+        sink.abort().expect("abort");
+
+        assert!(!dir.0.join("lua/a.lua").exists());
+        assert!(sink.produced().is_empty());
     }
 
     #[test]
@@ -402,6 +433,13 @@ impl<S: EntrySink> EntrySink for Filtered<S> {
         Ok(())
     }
 
+    fn abort(&mut self) -> Result<(), ExtensionError> {
+        if std::mem::take(&mut self.passing) {
+            self.inner.abort()?;
+        }
+        Ok(())
+    }
+
     fn finish(&mut self) -> Result<(), ExtensionError> {
         self.inner.finish()
     }
@@ -462,6 +500,17 @@ impl EntrySink for Fanout {
             sink.end()?;
         }
         Ok(())
+    }
+
+    fn abort(&mut self) -> Result<(), ExtensionError> {
+        let mut first = Ok(());
+        for sink in &mut self.sinks {
+            let result = sink.abort();
+            if first.is_ok() {
+                first = result;
+            }
+        }
+        first
     }
 
     fn finish(&mut self) -> Result<(), ExtensionError> {

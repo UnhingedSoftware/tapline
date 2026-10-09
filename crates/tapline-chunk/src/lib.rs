@@ -79,9 +79,7 @@ pub fn decode_into(input: &[u8], max_output: usize, out: &mut Vec<u8>) -> Result
         return vz::decode_into(input, max_output, out);
     }
     if zip::matches(input) {
-        let decoded = zip::decode(input, max_output)?;
-        out.clear();
-        out.extend_from_slice(&decoded);
+        *out = zip::decode(input, max_output)?;
         return Ok(());
     }
 

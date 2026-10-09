@@ -36,8 +36,12 @@ pub fn read_index(path: &Path) -> Result<(Addon, u64), ExtensionError> {
         filled += read;
         let slice = buffer.get(..filled).unwrap_or_default();
 
-        match parse(slice) {
+        // The index alone: the content it describes runs far past the probe,
+        // and checking entries against the probe instead of the file refused
+        // every addon whose content ends beyond INDEX_LIMIT.
+        match parse_index(slice) {
             Ok(addon) => {
+                check_fits(&addon, file.metadata()?.len())?;
                 let offset = addon
                     .entries
                     .first()
@@ -50,7 +54,6 @@ pub fn read_index(path: &Path) -> Result<(Addon, u64), ExtensionError> {
                     ExtensionError::Malformed { reason, .. }
                         if reason.contains("ends in the middle")
                             || reason.contains("not terminated")
-                            || reason.contains("past the archive")
                 );
                 if !truncated || read == 0 && filled < buffer.len() {
                     return Err(error);
@@ -72,6 +75,22 @@ pub fn read_index(path: &Path) -> Result<(Addon, u64), ExtensionError> {
             }
         }
     }
+}
+
+fn check_fits(addon: &Addon, total: u64) -> Result<(), ExtensionError> {
+    for entry in &addon.entries {
+        let end = (entry.offset as u64).saturating_add(entry.size);
+        if end > total {
+            return Err(ExtensionError::Malformed {
+                extension: "gmad",
+                reason: format!(
+                    "{:?} claims {} bytes at offset {}, past the archive's {total}",
+                    entry.path, entry.size, entry.offset
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn read_upto(file: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, ExtensionError> {
@@ -439,6 +458,39 @@ mod tests {
         assert!(!extract.claims(&file("gma")));
 
         assert!(ToZip::new().claims(&file("addons/x.gma")));
+    }
+
+    #[test]
+    fn the_index_of_an_addon_larger_than_the_probe_limit_is_read_from_its_head() {
+        let dir = std::env::temp_dir().join(format!("tapline-gmad-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let path = dir.join("big.gma");
+
+        let content = (INDEX_LIMIT as u64) * 2;
+        let mut head = Vec::new();
+        head.extend_from_slice(MAGIC);
+        head.push(3);
+        head.extend_from_slice(&0_u64.to_le_bytes());
+        head.extend_from_slice(&1_u64.to_le_bytes());
+        head.push(0);
+        head.extend_from_slice(b"Big\0desc\0author\0");
+        head.extend_from_slice(&1_i32.to_le_bytes());
+        head.extend_from_slice(&1_u32.to_le_bytes());
+        head.extend_from_slice(b"models/huge.mdl\0");
+        head.extend_from_slice(&(content as i64).to_le_bytes());
+        head.extend_from_slice(&0_u32.to_le_bytes());
+        head.extend_from_slice(&0_u32.to_le_bytes());
+        let file = std::fs::File::create(&path).expect("create");
+        std::io::Write::write_all(&mut &file, &head).expect("head");
+        // Sparse: the content is never read, only its length matters.
+        file.set_len(head.len() as u64 + content).expect("extend");
+        drop(file);
+
+        let result = read_index(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        let (addon, offset) = result.expect("the index is complete in the first few bytes");
+        assert_eq!(addon.entries.len(), 1);
+        assert_eq!(offset, head.len() as u64);
     }
 
     #[test]

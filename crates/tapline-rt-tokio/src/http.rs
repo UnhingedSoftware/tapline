@@ -85,15 +85,24 @@ impl HttpClient {
 }
 
 fn split_url(url: &str) -> Result<(String, u16, String), FetchError> {
+    // The URL is written into the request line verbatim, and some URLs come
+    // from Steam's replies: whitespace or a line break would split the request.
+    if url
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return Err(FetchError::InvalidUrl(url.to_owned()));
+    }
     let (scheme, rest) = url
         .split_once("://")
         .ok_or_else(|| FetchError::InvalidUrl(url.to_owned()))?;
 
-    let default_port = match scheme {
-        "https" => 443,
-        "http" => 80,
-        _ => return Err(FetchError::InvalidUrl(url.to_owned())),
-    };
+    // Every connection is TLS. Accepting `http://` would only dial TLS on
+    // port 80, so it is refused rather than failing in a confusing way.
+    if scheme != "https" {
+        return Err(FetchError::InvalidUrl(url.to_owned()));
+    }
+    let default_port = 443;
 
     let (authority, path) = match rest.find('/') {
         Some(index) => (
@@ -323,6 +332,10 @@ async fn read_to_end(
     }
 }
 
+/// A chunk-size line is a hex number and optional extensions; anything longer
+/// than this is not one, and waiting for its end would buffer without bound.
+const MAX_CHUNK_LINE: usize = 4096;
+
 async fn read_chunked(
     connection: &mut Connection,
     start: Vec<u8>,
@@ -330,17 +343,21 @@ async fn read_chunked(
 ) -> Result<Vec<u8>, FetchError> {
     let mut raw = start;
     let mut out = Vec::new();
-    let mut cursor = 0_usize;
 
     loop {
         let line_end = loop {
-            if let Some(index) = find_crlf(&raw, cursor) {
+            if let Some(index) = find_crlf(&raw, 0) {
                 break index;
+            }
+            if raw.len() > MAX_CHUNK_LINE {
+                return Err(FetchError::MalformedResponse(
+                    "chunk size line too long".into(),
+                ));
             }
             fill(connection, &mut raw).await?;
         };
 
-        let size_text = String::from_utf8_lossy(raw.get(cursor..line_end).unwrap_or_default());
+        let size_text = String::from_utf8_lossy(raw.get(..line_end).unwrap_or_default());
         let size_text = size_text.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| FetchError::MalformedResponse(format!("bad chunk size: {size_text}")))?;
@@ -355,6 +372,9 @@ async fn read_chunked(
             return Ok(out);
         }
 
+        if (out.len() as u64).saturating_add(size as u64) > limit {
+            return Err(FetchError::BodyTooLarge { limit });
+        }
         let data_end = data_start
             .checked_add(size)
             .ok_or_else(|| FetchError::MalformedResponse("chunk size overflow".into()))?;
@@ -363,10 +383,7 @@ async fn read_chunked(
         }
 
         out.extend_from_slice(raw.get(data_start..data_end).unwrap_or_default());
-        if out.len() as u64 > limit {
-            return Err(FetchError::BodyTooLarge { limit });
-        }
-        cursor = data_end + 2;
+        raw.drain(..data_end + 2);
     }
 }
 
@@ -410,12 +427,8 @@ mod tests {
             )
         );
         assert_eq!(
-            split_url("http://lancache.lan:8080/depot/1/chunk/a").expect("must split"),
-            (
-                "lancache.lan".to_owned(),
-                8080,
-                "/depot/1/chunk/a".to_owned()
-            )
+            split_url("https://cache.lan:8443/depot/1/chunk/a").expect("must split"),
+            ("cache.lan".to_owned(), 8443, "/depot/1/chunk/a".to_owned())
         );
         assert_eq!(
             split_url("https://example.invalid").expect("must split"),
@@ -426,9 +439,12 @@ mod tests {
     #[test]
     fn unusable_urls_are_refused() {
         assert!(split_url("ftp://example.invalid/x").is_err());
+        assert!(split_url("http://example.invalid/x").is_err());
         assert!(split_url("no-scheme.invalid/x").is_err());
         assert!(split_url("https:///path").is_err());
         assert!(split_url("https://host:notaport/x").is_err());
+        assert!(split_url("https://host/x HTTP/1.1\r\nX-Injected: 1").is_err());
+        assert!(split_url("https://host/a b").is_err());
     }
 
     #[test]

@@ -33,9 +33,7 @@ pub fn home_relative_roots() -> &'static [&'static str] {
 /// Where the account's home directory is.
 ///
 /// Windows does not set `HOME`; it sets `USERPROFILE`. Anything that looks for
-/// a Steam install has to ask for both, which is what this is for -- looking
-/// for only one of them is how `libraries()` used to come back empty on every
-/// Windows machine.
+/// a Steam install has to ask for both, or it finds nothing on Windows.
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -206,8 +204,8 @@ mod tests {
 
     #[test]
     fn no_home_still_leaves_the_install_directories_to_look_in() {
-        // `libraries()` used to give up here, which on Windows was every time:
-        // it asked only for HOME, which Windows does not set.
+        // No home directory is the ordinary case on Windows when only HOME is
+        // consulted, so this must not give up.
         let roots = roots(None);
         assert_eq!(
             roots.len(),
