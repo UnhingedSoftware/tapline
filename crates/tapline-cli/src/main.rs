@@ -11,15 +11,17 @@ steamcmd's command line, unchanged:
   tapline +login anonymous +workshop_download_item APPID ITEMID +quit
 
 Native:
-  tapline app plan APPID --dir DIR [--branch NAME] [--json]
+  tapline app plan APPID --dir DIR [--branch NAME] [--path P]... [--json]
       What an install would cost. Fetches no content.
-  tapline app download APPID --dir DIR [--branch NAME] [--validate] [--json]
+  tapline app download APPID --dir DIR [--branch NAME] [--path P]...
+                            [--validate] [--json]
                             [--concurrency N]   chunks in flight; default 48,
                               the fewest that reach full speed. Peak memory is
                               about 15 + 1.1N MB; 10 holds a download to ~25 MB
                               and costs 30-45% of the speed. Above 48 is slower
                               and dearer.
       Install or update. Downloads nothing if already current.
+      --path installs only that file or folder of the app; repeat for more.
   tapline app info APPID [--json]
       Depots, branches and sizes.
   tapline workshop search APPID [--text QUERY] [--search-in WHERE]

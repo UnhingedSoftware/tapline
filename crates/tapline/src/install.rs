@@ -18,6 +18,15 @@ pub struct InstallOptions {
     pub concurrency: usize,
     pub file_modes: FileModes,
     pub workshop_layout: WorkshopLayout,
+    /// Install only these files and folders of an app, rather than all of it.
+    /// Each is a path inside the app, `/`-separated, matched without regard
+    /// to case or to `\` versus `/`; a folder brings everything under it.
+    /// Empty installs everything.
+    ///
+    /// A partial install leaves the app's install state alone, so a later
+    /// full install is not mistaken for an unchanged one. Workshop items
+    /// ignore this.
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,6 +66,7 @@ impl Default for InstallOptions {
             concurrency: 48,
             file_modes: FileModes::default(),
             workshop_layout: WorkshopLayout::default(),
+            paths: Vec::new(),
         }
     }
 }
@@ -70,6 +80,42 @@ impl InstallOptions {
             include_dlc: self.include_dlc,
         }
     }
+
+    /// Whether `paths` asks for part of an app rather than all of it.
+    #[must_use]
+    pub fn is_partial(&self) -> bool {
+        !self.paths.is_empty()
+    }
+
+    /// Whether a manifest entry at `path` is part of what `paths` asks for.
+    /// A folder that leads to a selected path counts too, so it is created.
+    #[must_use]
+    pub fn selects(&self, path: &str, directory: bool) -> bool {
+        if self.paths.is_empty() {
+            return true;
+        }
+        let path = normalise(path);
+        self.paths
+            .iter()
+            .map(|wanted| normalise(wanted))
+            .any(|wanted| {
+                wanted.is_empty()
+                    || path == wanted
+                    || is_under(&path, &wanted)
+                    || (directory && is_under(&wanted, &path))
+            })
+    }
+}
+
+fn normalise(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn is_under(path: &str, folder: &str) -> bool {
+    path.strip_prefix(folder)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -91,10 +137,24 @@ pub enum InstallError {
     Manifest(ManifestError),
     Cdn(CdnError),
     Pool(PoolError),
-    UnsafePath { path: String, reason: PathError },
+    UnsafePath {
+        path: String,
+        reason: PathError,
+    },
     Io(String),
-    NoDepotKey { depot: DepotId, eresult: i32 },
-    NothingToInstall { app: AppId, branch: String },
+    NoDepotKey {
+        depot: DepotId,
+        eresult: i32,
+    },
+    NothingToInstall {
+        app: AppId,
+        branch: String,
+    },
+    /// None of the paths asked for are in the app.
+    NothingSelected {
+        app: AppId,
+        paths: Vec<String>,
+    },
 }
 
 impl fmt::Display for InstallError {
@@ -128,6 +188,11 @@ impl fmt::Display for InstallError {
             Self::NothingToInstall { app, branch } => write!(
                 f,
                 "app {app} has nothing to install on branch {branch} for this platform"
+            ),
+            Self::NothingSelected { app, paths } => write!(
+                f,
+                "app {app} has none of the paths asked for: {}",
+                paths.join(", ")
             ),
         }
     }
@@ -232,6 +297,37 @@ mod tests {
             "the default should sit at the measured plateau; \
              above it is slower and dearer, below it is slower and cheaper"
         );
+    }
+
+    #[test]
+    fn no_paths_select_everything() {
+        let options = InstallOptions::default();
+        assert!(!options.is_partial());
+        assert!(options.selects("bin/wallpaper64.exe", false));
+    }
+
+    #[test]
+    fn a_folder_selects_what_is_under_it_and_the_folders_leading_to_it() {
+        let options = InstallOptions {
+            paths: vec!["assets/shaders".to_owned(), "LICENSE.txt".to_owned()],
+            ..InstallOptions::default()
+        };
+        assert!(options.is_partial());
+        assert!(options.selects("assets/shaders/genericimage2.frag", false));
+        assert!(options.selects("Assets\\Shaders\\common.h", false));
+        assert!(options.selects("assets/shaders", true));
+        assert!(options.selects("license.txt", false));
+        assert!(
+            options.selects("assets", true),
+            "a parent folder is created"
+        );
+        assert!(
+            !options.selects("assets", false),
+            "a file is not a parent folder"
+        );
+        assert!(!options.selects("assets/materials/a.json", false));
+        assert!(!options.selects("assets/shadersextra/a.frag", false));
+        assert!(!options.selects("bin/wallpaper64.exe", false));
     }
 
     #[test]

@@ -27,12 +27,14 @@ pub enum Command {
         app: AppId,
         dir: PathBuf,
         branch: String,
+        paths: Vec<String>,
         json: bool,
     },
     Download {
         app: AppId,
         dir: PathBuf,
         branch: String,
+        paths: Vec<String>,
         validate: bool,
         concurrency: Option<usize>,
         json: bool,
@@ -417,12 +419,14 @@ fn parse_app(
             app,
             dir: option_dir(options),
             branch: option_branch(options),
+            paths: options.all_values("path"),
             json,
         }),
         "download" | "update" | "install" => Ok(Command::Download {
             app,
             dir: option_dir(options),
             branch: option_branch(options),
+            paths: options.all_values("path"),
             validate: options.flag("validate"),
             concurrency: option_concurrency(options)?,
             json,
@@ -695,6 +699,7 @@ mod tests {
                 app: AppId(232_250),
                 dir: PathBuf::from("/srv/tf2"),
                 branch: "public".to_owned(),
+                paths: Vec::new(),
                 json: true,
             }
         );
@@ -708,6 +713,7 @@ mod tests {
                 app: AppId(232_250),
                 dir: PathBuf::from("/srv/tf2"),
                 branch: "prerelease".to_owned(),
+                paths: Vec::new(),
                 validate: true,
                 concurrency: None,
                 json: false,
@@ -990,6 +996,20 @@ mod tests {
         ))
         .expect_err("must refuse");
         assert!(error.message.contains("--extensions"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_app_install_can_be_narrowed_to_some_paths() {
+        let parsed = parse(&args(
+            "app download 431960 --dir /x --path assets --path=LICENSE.txt",
+        ))
+        .expect("must parse");
+        match parsed {
+            Command::Download { paths, .. } => {
+                assert_eq!(paths, vec!["assets".to_owned(), "LICENSE.txt".to_owned()]);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
     }
 
     #[test]

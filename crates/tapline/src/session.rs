@@ -375,14 +375,26 @@ impl Session {
                 .manifest_request_code
                 .unwrap_or(0);
 
-            let manifest = self
+            let mut manifest = self
                 .fetch_manifest_from_pool(depot.id, depot.manifest.get(), code, &key)
                 .await?;
+            if options.is_partial() {
+                manifest.retain(|file| options.selects(&file.path, file.flags.directory));
+                if manifest.regular_files().next().is_none() {
+                    continue;
+                }
+            }
 
             resolved.push(ResolvedDepot {
                 depot,
                 manifest,
                 key,
+            });
+        }
+        if resolved.is_empty() {
+            return Err(InstallError::NothingSelected {
+                app,
+                paths: options.paths.clone(),
             });
         }
         Ok(resolved)
@@ -692,6 +704,9 @@ impl Session {
         observe(Event::Planned { plan: planned });
         std::fs::create_dir_all(&options.install_dir)?;
 
+        // Install state describes a whole app, so a partial install neither
+        // trusts it to skip a depot nor records itself in it.
+        let partial = options.is_partial();
         let mut state = AppState::read(&options.install_dir, app)
             .map_err(|e| InstallError::Io(e.to_string()))?
             .unwrap_or_else(|| {
@@ -710,7 +725,8 @@ impl Session {
         for entry in &resolved {
             report.depots.push(entry.depot.id);
 
-            if state.installed_manifest(entry.depot.id) == Some(entry.depot.manifest)
+            if !partial
+                && state.installed_manifest(entry.depot.id) == Some(entry.depot.manifest)
                 && !options.force
             {
                 report.depots_unchanged += 1;
@@ -735,11 +751,18 @@ impl Session {
             observe(Event::DepotCompleted {
                 depot: entry.depot.id,
             });
+            if partial {
+                continue;
+            }
             state.set_depot(
                 entry.depot.id,
                 entry.depot.manifest,
                 entry.manifest.total_size,
             );
+        }
+
+        if partial {
+            return Ok(report);
         }
 
         let current: std::collections::HashSet<DepotId> =
