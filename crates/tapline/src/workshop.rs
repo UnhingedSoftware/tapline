@@ -75,7 +75,7 @@ pub fn classify(
         .file_url
         .as_deref()
         .filter(|url| !url.is_empty())
-        .map(str::to_owned);
+        .map(https);
 
     let content = match (manifest, url) {
         (Some(handle), _) => {
@@ -134,6 +134,15 @@ pub fn target_dir(base: &InstallOptions, app: AppId, id: PublishedFileId) -> std
 impl From<WorkshopError> for InstallError {
     fn from(error: WorkshopError) -> Self {
         Self::Io(error.to_string())
+    }
+}
+
+/// Older items still list `http://` download links. Steam's UGC hosts serve
+/// the same path over TLS, and tapline only speaks TLS.
+fn https(url: &str) -> String {
+    match url.strip_prefix("http://") {
+        Some(rest) => format!("https://{rest}"),
+        None => url.to_owned(),
     }
 }
 
@@ -317,5 +326,14 @@ mod tests {
             InstallOptions::default().workshop_layout,
             crate::WorkshopLayout::SteamCmd
         );
+    }
+
+    #[test]
+    fn an_old_http_download_link_is_fetched_over_tls() {
+        assert_eq!(
+            super::https("http://cloud-3.steamusercontent.com/ugc/1/2/"),
+            "https://cloud-3.steamusercontent.com/ugc/1/2/"
+        );
+        assert_eq!(super::https("https://x.invalid/a"), "https://x.invalid/a");
     }
 }

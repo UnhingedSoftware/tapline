@@ -97,11 +97,12 @@ fn split_url(url: &str) -> Result<(String, u16, String), FetchError> {
         .split_once("://")
         .ok_or_else(|| FetchError::InvalidUrl(url.to_owned()))?;
 
-    let default_port = match scheme {
-        "https" => 443,
-        "http" => 80,
-        _ => return Err(FetchError::InvalidUrl(url.to_owned())),
-    };
+    // Every connection is TLS. Accepting `http://` would only dial TLS on
+    // port 80, so it is refused rather than failing in a confusing way.
+    if scheme != "https" {
+        return Err(FetchError::InvalidUrl(url.to_owned()));
+    }
+    let default_port = 443;
 
     let (authority, path) = match rest.find('/') {
         Some(index) => (
@@ -426,12 +427,8 @@ mod tests {
             )
         );
         assert_eq!(
-            split_url("http://lancache.lan:8080/depot/1/chunk/a").expect("must split"),
-            (
-                "lancache.lan".to_owned(),
-                8080,
-                "/depot/1/chunk/a".to_owned()
-            )
+            split_url("https://cache.lan:8443/depot/1/chunk/a").expect("must split"),
+            ("cache.lan".to_owned(), 8443, "/depot/1/chunk/a".to_owned())
         );
         assert_eq!(
             split_url("https://example.invalid").expect("must split"),
@@ -442,6 +439,7 @@ mod tests {
     #[test]
     fn unusable_urls_are_refused() {
         assert!(split_url("ftp://example.invalid/x").is_err());
+        assert!(split_url("http://example.invalid/x").is_err());
         assert!(split_url("no-scheme.invalid/x").is_err());
         assert!(split_url("https:///path").is_err());
         assert!(split_url("https://host:notaport/x").is_err());
