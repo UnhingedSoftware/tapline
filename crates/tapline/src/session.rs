@@ -323,7 +323,7 @@ impl Session {
             ))
             .await?;
 
-        let reply = self.cm.wait_for_job(job).await?;
+        let reply = answered(self.cm.wait_for_job(job)).await?;
         let response: CMsgClientGetDepotDecryptionKeyResponse = reply.decode_body()?;
 
         let eresult = response.eresult.unwrap_or(0);
@@ -346,7 +346,7 @@ impl Session {
         app: AppId,
         options: &InstallOptions,
     ) -> Result<Vec<ResolvedDepot>, InstallError> {
-        let info = tapline_pics::product_info(&mut self.cm, app).await?;
+        let info = answered(tapline_pics::product_info(&mut self.cm, app)).await?;
         self.app_name = info.name().map(str::to_owned);
         self.build_id = info.build_id(&options.branch);
         let depots = info.depots(&options.filter());
@@ -1021,7 +1021,7 @@ impl Session {
     }
 
     pub async fn app_info(&mut self, app: AppId) -> Result<tapline_pics::AppInfo, InstallError> {
-        Ok(tapline_pics::product_info(&mut self.cm, app).await?)
+        Ok(answered(tapline_pics::product_info(&mut self.cm, app)).await?)
     }
 
     pub async fn workshop_details(
@@ -1050,7 +1050,7 @@ impl Session {
                     let resolved = if app.get() == 0 {
                         None
                     } else {
-                        tapline_pics::product_info(&mut self.cm, app)
+                        answered(tapline_pics::product_info(&mut self.cm, app))
                             .await
                             .ok()
                             .and_then(|info| info.workshop_depot())
@@ -1086,7 +1086,7 @@ impl Session {
         let workshop_depot = if query.app.get() == 0 {
             None
         } else {
-            tapline_pics::product_info(&mut self.cm, query.app)
+            answered(tapline_pics::product_info(&mut self.cm, query.app))
                 .await
                 .ok()
                 .and_then(|info| info.workshop_depot())
@@ -1880,6 +1880,25 @@ fn cdn_hosts(servers: &[CContentServerDirectory_ServerInfo]) -> Vec<Host> {
             })
         })
         .collect()
+}
+
+/// How long a request to the CM server may go unanswered. `wait_for_job`
+/// itself waits forever, and a server that drops one request while keeping
+/// the connection open would otherwise hang the whole install.
+const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+async fn answered<T, E: From<tapline_net::NetError>>(
+    request: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    tokio::time::timeout(REPLY_TIMEOUT, request)
+        .await
+        .unwrap_or_else(|_| {
+            Err(tapline_net::NetError::Io(format!(
+                "Steam did not answer within {} seconds",
+                REPLY_TIMEOUT.as_secs()
+            ))
+            .into())
+        })
 }
 
 #[cfg(test)]
