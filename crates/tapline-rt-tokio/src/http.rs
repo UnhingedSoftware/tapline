@@ -331,6 +331,10 @@ async fn read_to_end(
     }
 }
 
+/// A chunk-size line is a hex number and optional extensions; anything longer
+/// than this is not one, and waiting for its end would buffer without bound.
+const MAX_CHUNK_LINE: usize = 4096;
+
 async fn read_chunked(
     connection: &mut Connection,
     start: Vec<u8>,
@@ -338,17 +342,21 @@ async fn read_chunked(
 ) -> Result<Vec<u8>, FetchError> {
     let mut raw = start;
     let mut out = Vec::new();
-    let mut cursor = 0_usize;
 
     loop {
         let line_end = loop {
-            if let Some(index) = find_crlf(&raw, cursor) {
+            if let Some(index) = find_crlf(&raw, 0) {
                 break index;
+            }
+            if raw.len() > MAX_CHUNK_LINE {
+                return Err(FetchError::MalformedResponse(
+                    "chunk size line too long".into(),
+                ));
             }
             fill(connection, &mut raw).await?;
         };
 
-        let size_text = String::from_utf8_lossy(raw.get(cursor..line_end).unwrap_or_default());
+        let size_text = String::from_utf8_lossy(raw.get(..line_end).unwrap_or_default());
         let size_text = size_text.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| FetchError::MalformedResponse(format!("bad chunk size: {size_text}")))?;
@@ -374,7 +382,7 @@ async fn read_chunked(
         }
 
         out.extend_from_slice(raw.get(data_start..data_end).unwrap_or_default());
-        cursor = data_end + 2;
+        raw.drain(..data_end + 2);
     }
 }
 
