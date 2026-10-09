@@ -304,14 +304,15 @@ async fn run_selective(
 
     let mut streamed = 0_u64;
     for ((entry, stored), index) in selected.iter().zip(pieces.iter()).zip(chosen.iter()) {
-        let bytes = decode_entry(&pipeline.format, entry, stored)?;
-        let bytes = &bytes;
         sink.begin(entry, *index)?;
-        if !bytes.is_empty() {
-            sink.data(bytes)?;
-        }
+        decode_entry(&pipeline.format, entry, stored, &mut |piece| {
+            if piece.is_empty() {
+                return Ok(());
+            }
+            streamed += piece.len() as u64;
+            sink.data(piece)
+        })?;
         sink.end()?;
-        streamed += bytes.len() as u64;
         observe(tapline::Event::Progress {
             bytes_done: streamed,
             bytes_total: selected.iter().map(|entry| entry.size).sum(),
@@ -380,11 +381,12 @@ fn decode_entry(
     format: &str,
     entry: &tapline_ext::ArchiveEntry,
     stored: &[u8],
-) -> Result<Vec<u8>, PipeError> {
+    emit: &mut dyn FnMut(&[u8]) -> Result<(), tapline_ext::ExtensionError>,
+) -> Result<(), PipeError> {
     match entry.compression {
-        tapline_ext::Compression::Stored => Ok(stored.to_vec()),
+        tapline_ext::Compression::Stored => Ok(emit(stored)?),
         tapline_ext::Compression::Deflate => match format {
-            "zip" => Ok(tapline_zip::decode(entry, stored)?),
+            "zip" => Ok(tapline_zip::decode_into(entry, stored, emit)?),
             other => Err(SpecError::UnknownFormat(other.to_owned()).into()),
         },
     }
