@@ -1259,6 +1259,16 @@ impl Session {
                         response.status
                     )));
                 }
+                // A legacy item comes with no hash to check it against, so its
+                // declared size is the one thing that can catch a cut-short or
+                // padded download before it is written.
+                if item.size > 0 && response.body.len() as u64 != item.size {
+                    return Err(InstallError::Io(format!(
+                        "the Workshop CDN sent {} bytes for {url}, the item is {}",
+                        response.body.len(),
+                        item.size
+                    )));
+                }
 
                 let path = safe.resolve_without_links(&target.install_dir)?;
                 tapline_fs::remove_symlink(&path)?;

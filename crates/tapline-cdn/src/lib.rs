@@ -185,6 +185,12 @@ pub async fn fetch_manifest<F: Fetch>(
     let manifest = Manifest::parse(&response.body, depot_key)
         .map_err(|e| CdnError::Container(e.to_string()))?;
 
+    if manifest.depot.get() != 0 && manifest.depot != depot {
+        return Err(CdnError::Container(format!(
+            "asked for a manifest of depot {depot}, received one of {}",
+            manifest.depot
+        )));
+    }
     if manifest.id.get() != manifest_id {
         return Err(CdnError::Container(format!(
             "asked for manifest {manifest_id}, received {}",
