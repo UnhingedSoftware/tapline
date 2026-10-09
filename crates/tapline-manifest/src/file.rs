@@ -151,6 +151,15 @@ impl Manifest {
         (chunks, bytes)
     }
 
+    /// Keep only the entries `keep` accepts, and recount the totals the
+    /// manifest carries so a plan or progress report made from the narrowed
+    /// manifest describes what will actually be written.
+    pub fn retain(&mut self, keep: impl FnMut(&FileEntry) -> bool) {
+        self.files.retain(keep);
+        self.total_size = self.regular_files().map(|file| file.size).sum();
+        self.unique_chunks = u32::try_from(self.distinct_chunks().0.len()).unwrap_or(u32::MAX);
+    }
+
     pub fn regular_files(&self) -> impl Iterator<Item = &FileEntry> {
         self.files
             .iter()
@@ -305,6 +314,44 @@ mod tests {
         let (chunks, bytes) = manifest.distinct_chunks();
         assert_eq!(chunks.len(), 1, "the shared chunk was counted twice");
         assert_eq!(bytes, 40, "the shared chunk's bytes were counted twice");
+    }
+
+    #[test]
+    fn retain_recounts_the_size_and_the_chunks_it_keeps() {
+        let chunk = |id: u8, size: u32| Chunk {
+            id: [id; 20],
+            crc: 0,
+            offset: 0,
+            uncompressed_size: size,
+            compressed_size: size / 2,
+        };
+        let file = |path: &str, size: u64, chunks: Vec<Chunk>| FileEntry {
+            path: path.into(),
+            size,
+            flags: FileFlags::default(),
+            raw_flags: 0,
+            link_target: None,
+            chunks,
+        };
+        let mut manifest = Manifest {
+            depot: DepotId(1),
+            id: ManifestId(2),
+            created: 0,
+            total_size: 600,
+            unique_chunks: 3,
+            files: vec![
+                file("keep/a", 100, vec![chunk(1, 100)]),
+                file("keep/b", 200, vec![chunk(2, 200)]),
+                file("drop/c", 300, vec![chunk(3, 300)]),
+            ],
+        };
+
+        manifest.retain(|file| file.path.starts_with("keep/"));
+
+        assert_eq!(manifest.files.len(), 2);
+        assert_eq!(manifest.total_size, 300);
+        assert_eq!(manifest.unique_chunks, 2);
+        assert_eq!(manifest.distinct_chunks().1, 150);
     }
 
     #[test]

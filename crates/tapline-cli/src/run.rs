@@ -9,16 +9,18 @@ pub async fn execute(command: Command) -> Result<(), String> {
             app,
             dir,
             branch,
+            paths,
             json,
-        } => plan(app, dir, branch, json).await,
+        } => plan(app, dir, branch, paths, json).await,
         Command::Download {
             app,
             dir,
             branch,
+            paths,
             validate,
             concurrency,
             json,
-        } => download(app, dir, branch, validate, concurrency, json).await,
+        } => download(app, dir, branch, paths, validate, concurrency, json).await,
         Command::Info { app, json } => info(app, json).await,
         Command::WorkshopDownload {
             flat,
@@ -137,11 +139,18 @@ async fn run_script(steps: Vec<Step>) -> Result<(), String> {
     Ok(())
 }
 
-async fn plan(app: AppId, dir: PathBuf, branch: String, json: bool) -> Result<(), String> {
+async fn plan(
+    app: AppId,
+    dir: PathBuf,
+    branch: String,
+    paths: Vec<String>,
+    json: bool,
+) -> Result<(), String> {
     let mut session = Session::automatic(None).await.map_err(|e| e.to_string())?;
     let options = InstallOptions {
         install_dir: dir,
         branch,
+        paths,
         ..InstallOptions::default()
     };
 
@@ -169,10 +178,12 @@ async fn plan(app: AppId, dir: PathBuf, branch: String, json: bool) -> Result<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download(
     app: AppId,
     dir: PathBuf,
     branch: String,
+    paths: Vec<String>,
     validate: bool,
     concurrency: Option<usize>,
     json: bool,
@@ -188,6 +199,7 @@ async fn download(
         branch,
         force: validate,
         concurrency,
+        paths,
         ..defaults
     };
 
